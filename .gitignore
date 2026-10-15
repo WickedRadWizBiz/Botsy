@@ -1,0 +1,24 @@
+# Secrets
+.env
+.etsy_tokens.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Licensed research exports stay local (do not redistribute)
+data/research_inputs/*
+!data/research_inputs/.gitkeep
+
+# Generated outputs go to workflow artifacts, not git
+output/*
+!output/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

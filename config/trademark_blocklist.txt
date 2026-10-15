@@ -1,0 +1,182 @@
+# Trademark / licensed-property blocklist
+# One term per line, matched case-insensitively as a whole word or phrase
+# against briefs, prompts, titles, tags and descriptions.
+#   plain line  -> hard block (item is rejected)
+#   ?term       -> flag for human review (not auto-rejected)
+# Seed list only. Add terms as you find them; when in doubt, add it.
+
+# --- Studios / brands ---
+Disney
+Pixar
+Marvel
+DC Comics
+Lucasfilm
+DreamWorks
+Illumination
+Nickelodeon
+Cartoon Network
+Sanrio
+Nintendo
+Sega
+Mattel
+Hasbro
+Warner Bros
+Universal Studios
+Netflix
+Crayola
+Play-Doh
+LEGO
+Highlights
+Hidden Pictures
+Mad Libs
+Where's Waldo
+Where's Wally
+
+# --- Disney / Pixar properties ---
+Mickey Mouse
+Minnie Mouse
+Donald Duck
+Goofy
+Disney Princess
+Frozen
+Elsa
+Olaf
+Moana
+Encanto
+Lilo
+Stitch
+Toy Story
+Buzz Lightyear
+Woody
+Cars
+Lightning McQueen
+Finding Nemo
+Inside Out
+Bluey
+Bingo Heeler
+
+# --- Superheroes ---
+Spider-Man
+Spiderman
+Avengers
+Iron Man
+Hulk
+Captain America
+Batman
+Superman
+Wonder Woman
+Justice League
+
+# --- Kids' TV / preschool ---
+Paw Patrol
+Peppa Pig
+PJ Masks
+Cocomelon
+Baby Shark
+Pinkfong
+Sesame Street
+Elmo
+Cookie Monster
+Dora the Explorer
+SpongeBob
+Thomas the Tank Engine
+Gabby's Dollhouse
+Blippi
+Ms Rachel
+Hey Duggee
+Daniel Tiger
+Curious George
+Paddington
+Peanuts
+Snoopy
+Charlie Brown
+Looney Tunes
+Bugs Bunny
+Scooby-Doo
+Tom and Jerry
+
+# --- Games ---
+Pokemon
+Pokémon
+Pikachu
+Minecraft
+Creeper
+Roblox
+Fortnite
+Super Mario
+Mario Kart
+Luigi
+Zelda
+Kirby
+Sonic the Hedgehog
+Among Us
+Animal Crossing
+
+# --- Toys / dolls ---
+Barbie
+Hot Wheels
+Polly Pocket
+American Girl
+LOL Surprise
+Rainbow High
+Bratz
+Monster High
+My Little Pony
+Care Bears
+Strawberry Shortcake
+Transformers
+Teenage Mutant Ninja Turtles
+Ninja Turtles
+Squishmallows
+Hatchimals
+Furby
+Beanie Babies
+Rubik's
+
+# --- Film franchises ---
+Star Wars
+Baby Yoda
+Grogu
+Harry Potter
+Hogwarts
+Minions
+Despicable Me
+Shrek
+Trolls
+Kung Fu Panda
+How to Train Your Dragon
+Jurassic Park
+Jurassic World
+Ghostbusters
+Wednesday Addams
+Stranger Things
+
+# --- Sanrio / character brands ---
+Hello Kitty
+Kuromi
+My Melody
+Cinnamoroll
+Pusheen
+Garfield
+Smurfs
+Miffy
+
+# --- Sports leagues / fashion ---
+NFL
+NBA
+MLB
+NHL
+FIFA
+Nike
+Adidas
+
+# --- Flag for review (public-domain originals, protected modern versions) ---
+?Winnie the Pooh
+?Peter Rabbit
+?Alice in Wonderland
+?Peter Pan
+?Pinocchio
+?Cinderella
+?Snow White
+?Little Mermaid
+?Steamboat Willie

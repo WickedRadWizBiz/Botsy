@@ -1,0 +1,23 @@
+# Text + image APIs
+anthropic>=0.40
+google-genai>=1.0
+
+# PDFs and images
+reportlab>=4.0
+svglib>=1.5
+Pillow>=10.0
+numpy>=1.26
+
+# Research data
+pandas>=2.1
+
+# Config, HTTP
+PyYAML>=6.0
+python-dotenv>=1.0
+requests>=2.31
+
+# Tests
+pytest>=8.0
+
+# System dependency (not pip): potrace, for vectorizing coloring-page line art
+#   Windows: choco install potrace   |  macOS: brew install potrace  |  Ubuntu: apt install potrace

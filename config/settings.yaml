@@ -1,0 +1,67 @@
+# Etsy Agents — main settings
+# Secrets never go here; they live in .env (see .env.example).
+
+shops:
+  - id: main                     # internal key used in output paths and logs
+    name: "YOUR_SHOP_NAME"       # display name, used in {shop_name} in ai_disclosure.txt
+    etsy_shop_id_env: ETSY_SHOP_ID   # env var holding this shop's numeric Etsy shop_id
+    niches: [stickers, coloring_pages, activity_sheets]
+    default_price_usd:
+      stickers: 3.50
+      coloring_pages: 4.00
+      activity_sheets: 4.00
+
+niches:
+  stickers:
+    generator: image_api
+    output: [png_transparent, sticker_sheet_pdf]
+  coloring_pages:
+    generator: image_api
+    output: [pdf]
+    pages_per_pack: [10, 20, 30]
+  activity_sheets:
+    generator: procedural        # reportlab only, no image model
+    types: [maze, word_search, tracing, dot_to_dot]
+    output: [pdf]
+    pages_per_pack: [10, 20, 30]
+
+models:
+  text:
+    provider: anthropic
+    model: claude-sonnet-4-5     # verify current model id before Phase 1
+    max_tokens: 2000
+  image:
+    provider: google_imagen
+    model: imagen-4.0-generate-001   # verify current model id before Phase 2
+    api: gemini                  # "gemini" (GOOGLE_API_KEY) or "vertex" (GOOGLE_CLOUD_PROJECT)
+    aspect_ratio_coloring: "3:4"
+    aspect_ratio_sticker: "1:1"
+
+print:
+  dpi: 300
+  page_sizes:
+    us_letter: {width_in: 8.5, height_in: 11.0}
+    a4: {width_in: 8.27, height_in: 11.69}
+  deliver_both_sizes: true
+  margin_in: 0.5
+  min_line_weight_pt: 1.5        # coloring pages: thinner lines get flagged in QA
+
+research:
+  inputs_dir: data/research_inputs
+  briefs_dir: data/briefs
+  source_tool: TBD               # eRank / EverBee / other — need a sample CSV
+  min_listings_per_pattern: 10   # compliance: never brief from fewer than 10 listings
+
+compliance:
+  trademark_blocklist: config/trademark_blocklist.txt
+  ai_disclosure: config/ai_disclosure.txt
+  publisher_mode: draft_only     # never change; the user activates listings in Etsy
+
+listing:
+  title_max_chars: 140
+  tags_count: 13
+  tag_max_chars: 20
+
+paths:
+  output_dir: output
+  review_dir: output/review
