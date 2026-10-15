@@ -1,11 +1,11 @@
 # Task State
-_Last updated: 2026-10-15 (Phases 0–6 built and pushed; cross-stage audit fixes integrated, not yet committed)_
+_Last updated: 2026-10-15 (Phases 0–6 built, audited, committed and pushed; CI green)_
 
 ## Current objective
-Commit and push the integrated cross-stage audit fixes, then hand the open decisions below to the user.
+Pipeline is code-complete. Waiting on the user's answers under "Open decisions" and the setup items under "Waiting on the user".
 
 ## Next immediate action
-User: review the working-tree diff, then commit and push (883 tests pass, `pytest -q`; dry-run e2e exits 0 for all three niches and is idempotent on rerun). Then answer "Open decisions".
+User: answer "Open decisions" (start with the hard-blocked common words), fill in the shop name and taxonomy ids, then do one live smoke run: `python -m pipeline run --niche activity_sheets --max-items 1` (needs ANTHROPIC_API_KEY + Etsy auth).
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
@@ -53,7 +53,7 @@ User: review the working-tree diff, then commit and push (883 tests pass, `pytes
 - [x] Phase 4 — Listing agent: `listing/`
 - [x] Phase 5 — Publisher (drafts only): `publisher/`
 - [x] Phase 6 — `pipeline/` orchestrator + `.github/workflows/weekly.yml` and `ci.yml`
-- [x] Cross-stage audit fixes integrated (2026-10-15; awaiting commit)
+- [x] Cross-stage audit fixes integrated and pushed (2026-10-15, commit a07efb1)
 
 ## Completed
 - 2026-10-15: Phase 0 skeleton, config files, smoke tests; switched image model to gemini-nano-banana-2.1; vectorize toolchain.
