@@ -28,7 +28,7 @@ niches:
 models:
   text:
     provider: anthropic
-    model: claude-sonnet-4-5     # verify current model id before Phase 1
+    model: claude-opus-5-5
     max_tokens: 2000
   image:
     provider: google_gemini
@@ -67,7 +67,7 @@ print:
 research:
   inputs_dir: data/research_inputs
   briefs_dir: data/briefs
-  source_tool: TBD               # eRank / EverBee / other — need a sample CSV
+  source_tool: auto              # auto-detect eRank / EverBee columns via aliases (research/columns.py)
   min_listings_per_pattern: 10   # compliance: never brief from fewer than 10 listings
 
 compliance:
