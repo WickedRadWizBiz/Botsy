@@ -1,75 +1,57 @@
 # Task State
-_Last updated: 2026-10-15 (Phase 0 pushed; core + contracts done; Phases 1–6 in progress)_
+_Last updated: 2026-10-15 (Phases 0–6 built and pushed; cross-stage audit in progress)_
 
 ## Current objective
-Build Phases 1–6 on branch `claude/zen-newton-w7xzq9` (user chose full scope, 2026-10-15).
+Finish the cross-stage audit (compliance, real-API wiring, CI, duplication), commit its fixes, then hand the open decisions below to the user.
 
 ## Next immediate action
-Parallel build of research/, generators/, qa/, listing/, publisher/ against `docs/CONTRACTS.md`; then pipeline CLI + GitHub Actions, review, commit, push.
+Merge the audit workflow's fixes, run `pytest -q` and the dry-run e2e, commit, push. Then wait for the user's answers under "Open decisions".
 
 ## Decisions made
-- Image API: Google Gemini `gemini-nano-banana-2.1` (Nano Banana 2.1, stable; Imagen 4 deprecated). Gemini API route via `generate_content`.
-- Shops: one shop (`main`) covering stickers, coloring pages, activity sheets. Shop name placeholder in settings.yaml.
-- Repo hosted on GitHub: WickedRadWizBiz/Botsy, branch `claude/zen-newton-w7xzq9`.
-- Text model: `claude-opus-5-5`.
-- Research CSVs: one parser that recognizes both eRank and EverBee columns via aliases.
-- Shared code in `core/` (config, compliance blocklist checker, item helpers, PDF render via pypdfium2). Stage data formats in `docs/CONTRACTS.md`.
-- Vectorizing: free local tools. potrace for coloring pages, vtracer for stickers, rembg for sticker backgrounds, OpenCV pre-cleanup. Settings under `vectorize:`.
-- Recraft API: added to settings but `enabled: false`. Free plan forbids commercial use (Recraft owns + publicizes output); API is prepaid units (~$0.011/vectorize). Revisit if user buys a paid plan; confirm API ownership terms first.
+- Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
+- Shops: one shop (`main`) covering stickers, coloring pages, activity sheets.
+- Repo: WickedRadWizBiz/Botsy, branch `claude/zen-newton-w7xzq9`.
+- Text model: `claude-opus-5-5`, max_tokens 16000, effort low, structured output.
+- Research CSVs: one parser recognizing eRank and EverBee columns via aliases (`research/columns.py`; override with `research.column_overrides`). Research is deterministic, no model calls.
+- Shared code in `core/`; stage data formats in `docs/CONTRACTS.md`.
+- Vectorizing: potrace (coloring), rembg `isnet-general-use` or floodfill (sticker backgrounds), OpenCV cleanup. Recraft stays disabled.
+- Licensed research exports stay local; briefs (aggregated, compliant) are committed and the weekly Action starts from them.
+- Weekly Action is dry-run unless repo variable `PIPELINE_LIVE=true`; drafts only when `PIPELINE_PUBLISH=true`.
+- Flagged (`?term`) items and QA warnings wait in `output/review/` for `python -m qa review approve <id>` before drafting; clean items go straight to draft (user approves every draft in Etsy).
+- Listings always include the AI disclosure (`listing.always_disclose_ai: true`), since the copy itself is AI-written.
+- Blocklist: added ~36 franchise terms, 5 review terms, 11 app/platform brands as review terms (2026-10-15).
 
 ## Open decisions (ask the user)
-- A real sample CSV (eRank or EverBee) to confirm the column aliases.
-- Shop display name for `config/settings.yaml` (`YOUR_SHOP_NAME`) and default prices (placeholders set).
+- Hard-blocked common words (Cars, Frozen, Stitch, Woody, Goofy, Trolls, Peanuts, Creeper, Highlights, Inside Out) reject generic themes like "race cars" or "cross stitch". Move some to `?review`? (Loosening needs the user's OK.)
+- Research uses competitor tags as brief keywords when 10+ distinct listings share them; those keywords reach the listing model. OK, or keyword-tool phrases only?
+- Add `min_shops_per_pattern` (10 listings from one shop currently satisfy the rule)?
+- Etsy refresh tokens may rotate, so publishing from CI may work for one run only. Publish locally, or add a secret-update step?
+- `listings_d` scope (lets `python -m publisher discard` delete our own failed drafts): keep or drop?
+- Primary listing photo: fanned-pages hero (current) or single-page close-up first?
+- Tracing font: Helvetica (current) or embed a school-style font (e.g. Andika, OFL)?
 
 ## Waiting on the user
-- [ ] Register an Etsy developer app (personal use, own shop) and get it approved.
-- [ ] Download a first research export into `data/research_inputs/`.
-- [ ] Install potrace locally before Phase 2.
+- [ ] Shop display name in `config/settings.yaml` (`YOUR_SHOP_NAME`; real drafts are blocked until set) and default prices.
+- [ ] Register an Etsy developer app (personal use, own shop) with redirect `https://localhost:3003/callback`; run `python -m publisher auth`.
+- [ ] Taxonomy ids: `python -m publisher taxonomy --search sticker` (and coloring, activity) → `listing.taxonomy_ids` in settings.
+- [ ] One real eRank and one real EverBee export in `data/research_inputs/` to confirm column aliases.
+- [ ] One live smoke test with `GOOGLE_API_KEY` (confirm the model accepts `generate_content` + `image_size: 4K`).
+- [ ] GitHub secrets for live runs: ANTHROPIC_API_KEY, GOOGLE_API_KEY, ETSY_API_KEYSTRING, ETSY_SHARED_SECRET, ETSY_SHOP_ID, ETSY_REFRESH_TOKEN.
 
 ## Phases
-
-### Phase 0 — Setup
-- [x] Folders: research/, generators/, qa/, listing/, publisher/, config/, data/research_inputs/, data/briefs/, output/, tests/
-- [x] `config/settings.yaml`: shops, niches, models, image provider, page sizes (US Letter + A4)
-- [x] `config/trademark_blocklist.txt`: ~170 seed terms; `?term` = flag for review
-- [x] `config/ai_disclosure.txt` (uses `{shop_name}` placeholder)
-- [x] `.env.example`, `.gitignore`, `requirements.txt`, README.md
-- [x] `tests/test_config.py` — 6 smoke tests, all passing
-- [x] Push to GitHub (history imported into WickedRadWizBiz/Botsy)
-
-### Phase 1 — Research agent
-- [ ] Parser for research CSV exports → normalized table
-- [ ] Aggregate into patterns: themes, formats, page counts, price bands, keyword clusters
-- [ ] Output `data/briefs/<niche>-<date>.json`; enforce 10+ listing aggregation and blocklist check
-
-### Phase 2 — Generators
-- [ ] Activity sheets (procedural): maze, word search, tracing, dot-to-dot → PDF
-- [ ] Coloring pages: Nano Banana 2.1 → cleanup → vector → PDF
-- [ ] Stickers: Nano Banana 2.1 → transparent PNGs + sheet (transparency not documented; plan background removal)
-
-### Phase 3 — QA and mockups
-- [ ] Checks: 300 DPI, page size, line weight, file size within Etsy's digital-file limits (verify current limits)
-- [ ] Listing photo mockups
-- [ ] Review queue in `output/review/`
-
-### Phase 4 — Listing agent
-- [ ] Title (max 140 chars), 13 tags (max 20 chars each), description, alt text
-- [ ] AI disclosure and blocklist check
-- [ ] Write `output/<id>/listing.json`
-
-### Phase 5 — Publisher
-- [ ] OAuth for own shop; create draft; upload images and digital files
-- [ ] Drafts only, never activate
-
-### Phase 6 — Automation
-- [ ] GitHub Actions weekly run: research → generate → listing → drafts
-- [ ] Upload outputs as workflow artifacts for review
+- [x] Phase 0 — Setup (pushed 2026-10-15)
+- [x] Phase 1 — Research: `research/` (CSV aliases, niche rules, n-gram themes, 10-listing guard, briefs)
+- [x] Phase 2 — Generators: `generators/activity_sheets`, `generators/coloring_pages`, `generators/stickers`, shared `generators/imaging`
+- [x] Phase 3 — QA + mockups + review queue: `qa/`
+- [x] Phase 4 — Listing agent: `listing/`
+- [x] Phase 5 — Publisher (drafts only): `publisher/`
+- [x] Phase 6 — `pipeline/` orchestrator + `.github/workflows/weekly.yml` and `ci.yml`
+- [ ] Cross-stage audit fixes merged
 
 ## Completed
-- 2026-10-15: Phase 0 skeleton, config files, smoke tests (committed locally).
-- 2026-10-15: Switched image model to gemini-nano-banana-2.1.
-- 2026-10-15: Added vtracer, rembg, OpenCV to requirements; vectorize + disabled Recraft config.
-- 2026-10-15: Pushed to GitHub. Added `core/` + `docs/CONTRACTS.md` + 21 core tests.
+- 2026-10-15: Phase 0 skeleton, config files, smoke tests; switched image model to gemini-nano-banana-2.1; vectorize toolchain.
+- 2026-10-15: Pushed to GitHub. Added `core/` + `docs/CONTRACTS.md`.
+- 2026-10-15: Built Phases 1–5 with parallel agents + adversarial review per stage (~720 tests). Built Phase 6 orchestrator + Actions. Dry-run e2e passes for all three niches.
 
 ## Deferred until reset
 (none)
