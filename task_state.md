@@ -1,26 +1,27 @@
 # Task State
-_Last updated: 2026-10-15 (Phase 0 skeleton done)_
+_Last updated: 2026-10-15 (Phase 0 pushed; core + contracts done; Phases 1–6 in progress)_
 
 ## Current objective
-Phase 0 — finish by pushing the repo to GitHub. Then Phase 1 (research agent).
+Build Phases 1–6 on branch `claude/zen-newton-w7xzq9` (user chose full scope, 2026-10-15).
 
 ## Next immediate action
-Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample research CSV is in `data/research_inputs/`.
+Parallel build of research/, generators/, qa/, listing/, publisher/ against `docs/CONTRACTS.md`; then pipeline CLI + GitHub Actions, review, commit, push.
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` (Nano Banana 2.1, stable; Imagen 4 deprecated). Gemini API route via `generate_content`.
 - Shops: one shop (`main`) covering stickers, coloring pages, activity sheets. Shop name placeholder in settings.yaml.
-- Repo hosted on GitHub.
+- Repo hosted on GitHub: WickedRadWizBiz/Botsy, branch `claude/zen-newton-w7xzq9`.
+- Text model: `claude-opus-5-5`.
+- Research CSVs: one parser that recognizes both eRank and EverBee columns via aliases.
+- Shared code in `core/` (config, compliance blocklist checker, item helpers, PDF render via pypdfium2). Stage data formats in `docs/CONTRACTS.md`.
 - Vectorizing: free local tools. potrace for coloring pages, vtracer for stickers, rembg for sticker backgrounds, OpenCV pre-cleanup. Settings under `vectorize:`.
 - Recraft API: added to settings but `enabled: false`. Free plan forbids commercial use (Recraft owns + publicizes output); API is prepaid units (~$0.011/vectorize). Revisit if user buys a paid plan; confirm API ownership terms first.
 
 ## Open decisions (ask the user)
-- Which research tool's exports will be used (eRank, EverBee, other). Need one sample CSV to build the parser.
+- A real sample CSV (eRank or EverBee) to confirm the column aliases.
 - Shop display name for `config/settings.yaml` (`YOUR_SHOP_NAME`) and default prices (placeholders set).
-- Text model id in settings.yaml (`claude-sonnet-4-5` placeholder) — confirm before Phase 1.
 
 ## Waiting on the user
-- [ ] Add WickedRadWizBiz/Botsy to the session's repository sources (push access). Remote `origin` is set; push blocked by git proxy 403 until then.
 - [ ] Register an Etsy developer app (personal use, own shop) and get it approved.
 - [ ] Download a first research export into `data/research_inputs/`.
 - [ ] Install potrace locally before Phase 2.
@@ -34,7 +35,7 @@ Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample r
 - [x] `config/ai_disclosure.txt` (uses `{shop_name}` placeholder)
 - [x] `.env.example`, `.gitignore`, `requirements.txt`, README.md
 - [x] `tests/test_config.py` — 6 smoke tests, all passing
-- [ ] Push to GitHub
+- [x] Push to GitHub (history imported into WickedRadWizBiz/Botsy)
 
 ### Phase 1 — Research agent
 - [ ] Parser for research CSV exports → normalized table
@@ -68,6 +69,7 @@ Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample r
 - 2026-10-15: Phase 0 skeleton, config files, smoke tests (committed locally).
 - 2026-10-15: Switched image model to gemini-nano-banana-2.1.
 - 2026-10-15: Added vtracer, rembg, OpenCV to requirements; vectorize + disabled Recraft config.
+- 2026-10-15: Pushed to GitHub. Added `core/` + `docs/CONTRACTS.md` + 21 core tests.
 
 ## Deferred until reset
 (none)
