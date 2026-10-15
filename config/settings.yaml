@@ -29,7 +29,7 @@ models:
   text:
     provider: anthropic
     model: claude-opus-5-5
-    max_tokens: 2000
+    max_tokens: 16000            # Opus thinks before answering and thinking counts toward max_tokens
   image:
     provider: google_gemini
     model: gemini-nano-banana-2.1    # Nano Banana 2.1 (stable); Imagen 4 is deprecated
@@ -59,7 +59,7 @@ print:
   dpi: 300
   page_sizes:
     us_letter: {width_in: 8.5, height_in: 11.0}
-    a4: {width_in: 8.27, height_in: 11.69}
+    a4: {width_in: 8.2677, height_in: 11.6929}   # ISO 210 x 297 mm
   deliver_both_sizes: true
   margin_in: 0.5
   min_line_weight_pt: 1.5        # coloring pages: thinner lines get flagged in QA
@@ -68,7 +68,27 @@ research:
   inputs_dir: data/research_inputs
   briefs_dir: data/briefs
   source_tool: auto              # auto-detect eRank / EverBee columns via aliases (research/columns.py)
-  min_listings_per_pattern: 10   # compliance: never brief from fewer than 10 listings
+  min_listings_per_pattern: 10   # compliance: never brief from fewer than 10 listings (values < 10 are raised to 10)
+  briefs_per_niche: 5            # top N non-overlapping themes per niche become briefs
+  keywords_per_brief: 10
+  column_overrides: {}           # canonical column -> header(s), e.g. {search_volume: "Searches (US)", sales: ["Est. Mo. Sales"]}
+  # Niche per row: regexes on lowercase, punctuation-free title/keyword/category text.
+  # Most matching rules wins; ties go to the niche listed first. "<niche>__*.csv" file names override.
+  niche_rules:
+    stickers: ['\bstickers?\b', '\bclip ?art\b', '\bsticker (sheets?|packs?|bundles?)\b']
+    coloring_pages: ['\bcolou?ring\b', '\bcolou?r (by|in) (numbers?|the)\b']
+    activity_sheets: ['\bmazes?\b', '\bword ?(search|find)(es)?\b', '\btracing\b', '\bdot ?to ?dots?\b',
+                      '\bconnect the dots\b', '\bworksheets?\b', '\bactivit(y|ies)\b', '\bbusy book\b']
+  extra_stopwords: []            # words/phrases never used as themes, on top of research/text.py
+  pack_sizes: {stickers: [6, 12, 20, 30, 50]}   # stickers per pack (other niches use niches.<niche>.pages_per_pack)
+  default_pack: {stickers: 12, coloring_pages: 20, activity_sheets: 20}   # when the data states no counts
+  price_clamp: {min_factor: 0.75, max_factor: 1.5, step_usd: 0.25}       # median price clamped to x shop default
+  own_shop_boost: 0.1            # own_shop*.csv: closes up to 10% of a theme's gap to demand 1.0 (never counted)
+  trend_boost: 0.1               # trends*.csv: same, from interest 0-100 (never counted)
+  blocked_cooccurrence: {flag_share: 0.2, drop_share: 0.5}   # share of a theme's rows naming a blocked term
+  # Not set here on purpose (lists in YAML replace the defaults): excluded_terms (platform and
+  # planner brands), extra_blocked_terms / extra_review_terms (a stricter-only supplement to
+  # config/trademark_blocklist.txt) live in research/defaults.py DEFAULTS.
 
 compliance:
   trademark_blocklist: config/trademark_blocklist.txt
@@ -76,10 +96,159 @@ compliance:
   publisher_mode: draft_only     # never change; the user activates listings in Etsy
 
 listing:
-  title_max_chars: 140
+  title_max_chars: 140           # Etsy Help Center
   tags_count: 13
   tag_max_chars: 20
+  alt_text_max_chars: 500        # Open API v3 uploadListingImage alt_text: "Max length 500 characters."
+  always_disclose_ai: true       # the listing copy itself is AI-written, so disclose even on procedural activity sheets
+  quantity: 999
+  taxonomy_ids:                  # Etsy seller taxonomy id per niche; createDraftListing requires one. null = not chosen yet
+    stickers: null
+    coloring_pages: null
+    activity_sheets: null
+  max_retries: 2                 # times the model is asked again with the rule errors before the code repairs the draft
+  effort: low                    # Opus 5.5 always thinks, and thinking counts toward models.text.max_tokens
+  refusal_fallback: true         # server-side fallback model if a request is declined (beta server-side-fallback-2026-07-01, fallbacks: default)
+  terms: "For personal use only. Please do not share, resell or redistribute the files or printed copies."
 
 paths:
   output_dir: output
   review_dir: output/review
+
+# --- Orchestrator (python -m pipeline) ---
+pipeline:
+  max_items_per_run: 10          # caps image/API spend per run
+  dry_run_output_dir: output/dry-run
+
+# --- Per-stage tuning. Defaults live in each module's DEFAULTS dict; these override them. ---
+
+activity_sheets:
+  difficulty: auto               # easy | medium | hard | auto (auto: youngest age in brief audience <= auto_easy_max_age -> easy, else medium; brief["difficulty"] overrides if valid)
+  auto_easy_max_age: 5
+  max_pages: 100                 # sanity cap on a brief's page_count
+  levels:
+    easy:
+      maze: {cols: 8, rows: 10}
+      word_search: {words: 8, max_size: 10, directions: [right, down]}
+      dot_to_dot: {dots: 20}
+    medium:
+      maze: {cols: 12, rows: 15}
+      word_search: {words: 12, max_size: 13, directions: [right, down, down_right]}
+      dot_to_dot: {dots: 35}
+    hard:
+      maze: {cols: 16, rows: 20}
+      word_search: {words: 15, max_size: 15, directions: [right, down, down_right, up_right, left, up, up_left, down_left]}
+      dot_to_dot: {dots: 50}
+  tracing: {style: gray, letters_per_page: 2, numbers_per_page: 5, words_per_page: 5}   # style: gray (light filled letters) | dotted (dotted outlines)
+  dot_to_dot: {faint_preview: false}   # true = faint dashed outline under the dots
+  answer_key_grid: [2, 2]        # answer keys per page (cols x rows); answer pages are not counted in page_count
+  preview_pages: 6
+  preview_dpi: 150
+  footer_text: "For personal use only. Please do not share, resell or redistribute this file."
+
+# --- Image generators (generators/imaging, generators/coloring_pages, generators/stickers) ---
+# Defaults live in each module's DEFAULTS dict; these blocks document and override them.
+imaging:
+  max_images_per_run: 80        # hard cost cap per process (CLI run or pipeline run). A pack that cannot
+                                # fit in what is left fails BEFORE any image is generated.
+  max_retries: 5                # retries on 408/429/5xx/network errors (the google-genai SDK does not retry by default)
+  backoff_base_s: 2.0           # delay = base * 2**attempt, capped at backoff_max_s, plus 0..jitter random
+  backoff_max_s: 60.0
+  backoff_jitter: 0.25
+  timeout_s: 300                # per request; 4K images are slow
+  response_modalities: [IMAGE]  # image only; we never use the model's text
+  vertex_location: global       # used when models.image.api = vertex and GOOGLE_CLOUD_LOCATION is unset
+  fake_long_side_px: 1200       # dry-run FakeImageClient image size
+
+coloring_pages:
+  default_pages: 20             # brief has no page_count and niches.coloring_pages.pages_per_pack is unset
+  max_pages: 50
+  dry_run_max_pages: 6          # dry runs only, for speed; null = full pack
+  spare_subjects: 3             # extra planned subjects that replace refused or blank images
+  max_failures: 3               # more refused/blank images than this fails the item
+  pad_frac: 0.03                # white margin kept around the art when cropping
+  max_ink_fraction: 0.45        # more black than this looks like shading, so the item is marked needs_review
+  vector_in_pdf: true           # place the potrace SVG; false places the cleaned raster
+  preview_dpi: 150
+  footer_text: ""               # optional small line at the bottom of every page
+
+stickers:
+  default_count: 12             # brief has no page_count (= sticker count)
+  max_count: 60                 # textured 2K art is ~1-2.5 MB per PNG; past ~24 stickers the ZIP parts plus
+                                # sheet PDFs can exceed Etsy's 5 files (item is then marked needs_review)
+  dry_run_max_stickers: 6       # dry runs only; null = full pack
+  spare_subjects: 3
+  max_failures: 3
+  sticker_px: 1500              # long side of the artwork before the border (5 in at 300 dpi)
+  die_cut_border_px: 36         # white die-cut border, at sticker_px scale
+  border_color: [255, 255, 255]
+  shadow: false                 # optional soft drop shadow
+  shadow_offset_px: 8
+  shadow_blur_px: 10
+  shadow_opacity: 0.3
+  floodfill_tolerance: 24       # dry-run / floodfill background removal
+  rembg_model: isnet-general-use  # NOT rembg's default "bria-rmbg" (RMBG-2.0 is CC BY-NC 4.0, non-commercial)
+  min_island_px: 400            # detached specks smaller than this are dropped before the border
+  sheet: {cols: 3, rows: 4, gap_in: 0.25}   # sticker sheet grid per page, with cut spacing
+  sheet_jpeg_quality: 92        # sheet PDFs: stickers flattened on white as JPEG (~10x smaller); null = lossless
+  zip_max_mb: 19.0              # PNG ZIP is split into -part-N.zip files below Etsy's 20 MB per-file limit
+  preview_dpi: 150
+  preview_stickers: 4
+  preview_background: checker   # checker | white
+  preview_px: 800
+  footer_text: ""
+
+# Existing key, now documented: vectorize.stickers.background_removal accepts rembg | floodfill
+# (floodfill suits the "plain solid white background" prompt and needs no model download).
+
+qa:
+  # Etsy digital-file limits for instant downloads: up to 5 files per listing, each at most 20 MB.
+  # Source: Etsy Help Center "How to Manage Your Digital Listings"
+  # (help.etsy.com/hc/en-us/articles/115015628347), re-checked 2026-10-15.
+  # 20 MB is read as 20,000,000 bytes (the stricter reading).
+  etsy_max_files: 5
+  etsy_max_file_bytes: 20000000
+  page_size_tolerance_pt: 1.0
+  dpi_tolerance: 0.02            # 2480 px across A4 still counts as 300 DPI
+  blank_check_dpi: 36
+  blank_min_ink: 0.002           # share of non-white pixels below which a page counts as blank
+  black_max_ink: 0.85            # share of dark pixels above which a page counts as solid black
+  line_check_dpi: 200            # coloring pages: render for line weight / black-white / region checks
+  line_check_max_pages: 40
+  gray_max_fraction: 0.005       # coloring pages: share of mid-gray pixels allowed
+  min_regions: 3                 # enclosed areas to color per page (warning only)
+  mockups:
+    enabled: true
+    width: 2700                  # 4:3; Etsy recommends at least 2000 px on both sides
+    height: 2025
+    quality: 90                  # JPEG quality; stepped down (not below 70) to fit max_bytes
+    max_bytes: 1000000           # Etsy Help Center: listing images over 1 MB may not finish uploading
+    min_count: 5
+    fonts: []                    # optional .ttf/.otf paths tried before the system fonts (never downloaded)
+
+publisher:
+  # Etsy Open API v3, our own shop, DRAFTS ONLY (all keys and defaults: publisher/defaults.py)
+  # listings_d is used only by `python -m publisher discard` on drafts this tool created;
+  # remove it to forbid deletes entirely.
+  scopes: [listings_r, listings_w, listings_d, shops_r]
+  currency: USD                # listing.json prices are USD; a shop in another currency is refused
+  min_price_usd: 0.20          # Etsy's price range (USD 0.20 - 50,000)
+  max_price_usd: 50000
+  max_quantity: 999            # Etsy: at most 999 units per listing
+  max_files: 5                 # Etsy: up to 5 digital files per listing ...
+  max_file_bytes: 20000000     # ... each up to 20 MB (same reading as qa)
+  max_images: 20               # spec: a listing holds up to 20 images
+  extra_fields: {}             # extra createDraftListing fields, e.g. {shop_section_id: 123, should_auto_renew: false}
+  retries: 4                   # per request, for 429 / 5xx (never 5xx on createDraftListing or file uploads)
+  backoff_s: 2.0               # exponential: 2, 4, 8, 16 s (at least Retry-After)
+  max_wait_s: 120              # a longer Retry-After (daily quota spent) fails instead of sleeping
+  own_stats_file: data/research_inputs/own_shop_stats.csv
+# The publisher also reads listing.taxonomy_ids.<niche> (already a key in the listing stage's DEFAULTS)
+# as a fallback when listing.json has taxonomy_id: null. Fill it with ids from `python -m publisher taxonomy --search ...`.
+# Multi-shop (optional keys on each entry under `shops:`): etsy_token_file_env (default ETSY_TOKEN_FILE)
+# and etsy_refresh_token_env (default ETSY_REFRESH_TOKEN). Each Etsy shop belongs to a different
+# Etsy user, so a second shop needs its own token file, e.g.
+#   - id: second
+#     etsy_shop_id_env: ETSY_SHOP_ID_SECOND
+#     etsy_token_file_env: ETSY_TOKEN_FILE_SECOND
+#     etsy_refresh_token_env: ETSY_REFRESH_TOKEN_SECOND

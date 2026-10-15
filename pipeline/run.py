@@ -34,13 +34,6 @@ def latest_briefs(briefs_dir: Path, niches: list[str]) -> list[Path]:
     return [p for _, p in sorted(newest.values(), key=lambda t: t[1].name)]
 
 
-def _repo_relative(p: Path) -> str:
-    try:
-        return p.resolve().relative_to(resolve(".").resolve()).as_posix()
-    except ValueError:
-        return str(p)
-
-
 def _record(summary: dict, item_id: str, stage: str, ok: bool, detail: str = "") -> None:
     summary["items"].setdefault(item_id, {})[stage] = {"ok": ok, "detail": detail}
 
@@ -69,7 +62,7 @@ def run(
         out_root = Path(out_root)
     else:
         out_root = resolve(cfg["dry_run_output_dir"]) if dry_run else items.output_root(settings)
-    review_dir = out_root / "review" if (dry_run or out_root != items.output_root(settings)) else None
+    review_dir = None  # each stage derives it per item via core.items.review_dir_for()
     max_items = max_items if max_items is not None else cfg["max_items_per_run"]
 
     summary = {"date": date, "shop_id": shop["id"], "dry_run": dry_run, "stages": list(stages),
@@ -96,22 +89,24 @@ def run(
         import generators
 
         files = [Path(p) for p in brief_files] if brief_files else latest_briefs(briefs_dir, niches)
+        queues = []
         for bf in files:
-            doc = items.read_json(bf)
-            summary["briefs"].append(_repo_relative(bf))
-            for brief in doc.get("briefs", []):
-                if len(new_dirs) >= max_items:
-                    summary["errors"].append(f"max_items={max_items} reached; remaining briefs skipped")
-                    break
-                try:
-                    new_dirs += generators.generate(
-                        brief, brief_file=_repo_relative(bf), shop_id=shop["id"],
-                        out_root=out_root, date=date, dry_run=dry_run)
-                except Exception as e:
-                    summary["errors"].append(f"generate[{brief.get('brief_id')}]: {type(e).__name__}: {e}")
-                    log.debug(traceback.format_exc())
+            summary["briefs"].append(items.repo_relative(bf))
+            queues.append([(bf, b) for b in items.read_json(bf).get("briefs", [])])
+        # Round-robin across brief files (one per niche) so a small max_items still
+        # covers every niche instead of filling up from the first file.
+        order = [q[i] for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)]
+        for n, (bf, brief) in enumerate(order):
             if len(new_dirs) >= max_items:
+                summary["errors"].append(f"max_items={max_items} reached; {len(order) - n} brief(s) skipped")
                 break
+            try:
+                new_dirs += generators.generate(
+                    brief, brief_file=items.repo_relative(bf), shop_id=shop["id"],
+                    out_root=out_root, date=date, dry_run=dry_run)
+            except Exception as e:
+                summary["errors"].append(f"generate[{brief.get('brief_id')}]: {type(e).__name__}: {e}")
+                log.debug(traceback.format_exc())
 
     # Later stages work on this run's items, or on everything in out_root when
     # generation was skipped (e.g. `--stages qa,listing` to redo one step).

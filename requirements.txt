@@ -1,12 +1,12 @@
 # Text + image APIs
-anthropic>=0.40
-google-genai>=1.0
+anthropic>=1.14             # listing stage uses output_config + server-side fallback (1.x only)
+google-genai>=2.31          # ImageConfig.image_size and response shape verified on 2.31
 
 # PDFs and images
 reportlab>=4.0
 svglib>=1.5
-Pillow>=10.0
-pypdfium2>=4.30          # Apache-2.0; render PDFs to PNG for previews, QA and mockups
+Pillow>=10.1                # ImageFont.load_default(size=...) for mockups
+pypdfium2>=5.0              # Apache-2.0; render PDFs to PNG for previews, QA and mockups
 numpy>=1.26
 opencv-python-headless>=4.9   # pre-trace cleanup: threshold, despeckle, line thickening
 vtracer>=0.6.15               # MIT; raster -> SVG (color for stickers, binary mode to compare with potrace)
