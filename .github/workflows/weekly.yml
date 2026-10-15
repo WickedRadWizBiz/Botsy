@@ -1,0 +1,107 @@
+# Weekly batch: newest committed briefs -> generate -> QA -> listing -> Etsy drafts.
+# Research CSV exports are licensed and stay on your machine (gitignored), so run
+# `python -m research` locally and commit the resulting data/briefs/*.json files.
+#
+# Scheduled runs are dry runs unless the repo variable PIPELINE_LIVE is "true".
+# Drafts are created only when PIPELINE_PUBLISH is "true" (or the manual "publish" input).
+# Everything generated is uploaded as a workflow artifact for review; nothing is committed.
+name: weekly-batch
+
+on:
+  schedule:
+    - cron: "17 13 * * 1"   # Mondays 13:17 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: no API calls, fake images, template listings, no Etsy drafts"
+        type: boolean
+        default: true
+      publish:
+        description: "Create Etsy drafts (live runs only; needs the Etsy secrets)"
+        type: boolean
+        default: false
+      niche:
+        description: "Limit to one niche (blank = all of the shop's niches)"
+        type: string
+        default: ""
+      max_items:
+        description: "Max items to generate"
+        type: string
+        default: "10"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-batch
+  cancel-in-progress: false
+
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+      ETSY_API_KEYSTRING: ${{ secrets.ETSY_API_KEYSTRING }}
+      ETSY_SHARED_SECRET: ${{ secrets.ETSY_SHARED_SECRET }}
+      ETSY_SHOP_ID: ${{ secrets.ETSY_SHOP_ID }}
+      ETSY_REFRESH_TOKEN: ${{ secrets.ETSY_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install potrace
+        run: sudo apt-get update -q && sudo apt-get install -y -q potrace > /dev/null
+
+      - name: Install Python deps
+        run: pip install -q -r requirements.txt
+
+      - name: Cache rembg model
+        uses: actions/cache@v4
+        with:
+          path: ~/.u2net
+          key: rembg-u2net-v1
+
+      - name: Choose mode
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_DRY: ${{ inputs.dry_run }}
+          IN_PUBLISH: ${{ inputs.publish }}
+          LIVE: ${{ vars.PIPELINE_LIVE }}
+          PUBLISH: ${{ vars.PIPELINE_PUBLISH }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then dry="$IN_DRY"; pub="$IN_PUBLISH";
+          else if [ "$LIVE" = "true" ]; then dry=false; else dry=true; fi; pub="$PUBLISH"; fi
+          stages="generate,qa,listing"
+          if [ "$dry" = "true" ] || [ "$pub" = "true" ]; then stages="$stages,publish"; fi
+          flags="--stages $stages"
+          if [ "$dry" = "true" ]; then flags="$flags --dry-run"; fi
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          echo "Mode: dry_run=$dry publish=$pub stages=$stages"
+
+      - name: Run pipeline
+        env:
+          FLAGS: ${{ steps.mode.outputs.flags }}
+          NICHE: ${{ inputs.niche }}
+          MAX_ITEMS: ${{ inputs.max_items || '10' }}
+          ETSY_TOKEN_FILE: ${{ runner.temp }}/etsy_tokens.json   # job-level env cannot use runner.*
+        run: |
+          extra=""
+          if [ -n "$NICHE" ]; then extra="--niche $NICHE"; fi
+          python -m pipeline run $FLAGS $extra --max-items "$MAX_ITEMS"
+
+      - name: Upload outputs for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-${{ github.run_id }}
+          path: output/
+          retention-days: 14
+          if-no-files-found: warn

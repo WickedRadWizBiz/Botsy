@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install potrace
+        run: sudo apt-get update -q && sudo apt-get install -y -q potrace > /dev/null
+      - name: Install Python deps
+        run: pip install -q -r requirements.txt
+      - name: Tests (offline)
+        run: pytest -q
+      - name: End-to-end dry run on sample data
+        if: hashFiles('data/samples/**') != ''
+        run: python -m pipeline run --dry-run --inputs data/samples --briefs-dir "$RUNNER_TEMP/briefs" --out "$RUNNER_TEMP/out" --max-items 3
