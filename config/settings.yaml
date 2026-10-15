@@ -39,6 +39,21 @@ models:
     api: gemini                  # "gemini" (GOOGLE_API_KEY) or "vertex" (GOOGLE_CLOUD_PROJECT)
     aspect_ratio_coloring: "3:4"
     aspect_ratio_sticker: "1:1"
+  recraft:
+    enabled: false               # OFF until a paid plan is chosen: free-plan images are Recraft-owned,
+                                 # public, and not licensed for commercial use. API units are prepaid.
+                                 # Confirm API-output ownership in Recraft's API terms before enabling.
+    use_for: [vectorize]         # options: vectorize, remove_background, generate_vector
+    token_env: RECRAFT_API_TOKEN
+
+vectorize:
+  coloring_pages:
+    preprocess: {grayscale: true, threshold: 180, despeckle_px: 20, min_line_px: 4}
+    tracer: potrace              # potrace | vtracer_binary
+  stickers:
+    background_removal: rembg
+    tracer: vtracer
+    vtracer: {colormode: color, mode: spline, filter_speckle: 4, corner_threshold: 60, path_precision: 8}
 
 print:
   dpi: 300

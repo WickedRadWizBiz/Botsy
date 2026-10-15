@@ -7,6 +7,9 @@ reportlab>=4.0
 svglib>=1.5
 Pillow>=10.0
 numpy>=1.26
+opencv-python-headless>=4.9   # pre-trace cleanup: threshold, despeckle, line thickening
+vtracer>=0.6.15               # MIT; raster -> SVG (color for stickers, binary mode to compare with potrace)
+rembg[cpu]>=2.0               # sticker background removal (downloads its model on first run)
 
 # Research data
 pandas>=2.1

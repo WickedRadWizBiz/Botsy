@@ -11,6 +11,8 @@ Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample r
 - Image API: Google Gemini `gemini-nano-banana-2.1` (Nano Banana 2.1, stable; Imagen 4 deprecated). Gemini API route via `generate_content`.
 - Shops: one shop (`main`) covering stickers, coloring pages, activity sheets. Shop name placeholder in settings.yaml.
 - Repo hosted on GitHub.
+- Vectorizing: free local tools. potrace for coloring pages, vtracer for stickers, rembg for sticker backgrounds, OpenCV pre-cleanup. Settings under `vectorize:`.
+- Recraft API: added to settings but `enabled: false`. Free plan forbids commercial use (Recraft owns + publicizes output); API is prepaid units (~$0.011/vectorize). Revisit if user buys a paid plan; confirm API ownership terms first.
 
 ## Open decisions (ask the user)
 - Which research tool's exports will be used (eRank, EverBee, other). Need one sample CSV to build the parser.
@@ -65,6 +67,7 @@ Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample r
 ## Completed
 - 2026-10-15: Phase 0 skeleton, config files, smoke tests (committed locally).
 - 2026-10-15: Switched image model to gemini-nano-banana-2.1.
+- 2026-10-15: Added vtracer, rembg, OpenCV to requirements; vectorize + disabled Recraft config.
 
 ## Deferred until reset
 (none)
