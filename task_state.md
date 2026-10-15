@@ -20,7 +20,7 @@ Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample r
 - Text model id in settings.yaml (`claude-sonnet-4-5` placeholder) — confirm before Phase 1.
 
 ## Waiting on the user
-- [ ] GitHub repo name + a way to push (cloud session's GitHub token is invalid).
+- [ ] Add WickedRadWizBiz/Botsy to the session's repository sources (push access). Remote `origin` is set; push blocked by git proxy 403 until then.
 - [ ] Register an Etsy developer app (personal use, own shop) and get it approved.
 - [ ] Download a first research export into `data/research_inputs/`.
 - [ ] Install potrace locally before Phase 2.
