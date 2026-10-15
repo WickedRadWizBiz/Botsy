@@ -15,6 +15,9 @@ rotates the refresh token is not documented, so every refresh response is saved.
 
 Tokens live in ETSY_TOKEN_FILE (default .etsy_tokens.json, gitignored), written with
 mode 600. In CI there is no token file; ETSY_REFRESH_TOKEN seeds one (see TokenStore).
+The file records `refresh_issued`, the date the current refresh token was issued, so the
+client can warn REFRESH_WARN_DAYS before the 90-day expiry (in CI the date comes from
+ETSY_REFRESH_TOKEN_ISSUED).
 """
 from __future__ import annotations
 
@@ -36,6 +39,8 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 log = logging.getLogger("publisher.auth")
 
 VERIFIER_RE = re.compile(r"[A-Za-z0-9._~-]{43,128}")
+REFRESH_TOKEN_DAYS = 90   # Etsy: refresh tokens last 90 days
+REFRESH_WARN_DAYS = 80    # warn this long after issue
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}  # the catcher binds 127.0.0.1 only
 
 
@@ -181,6 +186,37 @@ def tokens_from_response(resp: dict, now: float | None = None) -> dict:
     }
 
 
+def carry_refresh_issued(new: dict, old: dict | None) -> dict:
+    """Set new["refresh_issued"]: the old date when Etsy kept the same refresh token, else
+    now (a new token was issued; also after `auth`). Unknown stays None."""
+    if old and old.get("refresh_token") == new.get("refresh_token"):
+        new["refresh_issued"] = old.get("refresh_issued")
+    else:
+        new["refresh_issued"] = str(new.get("obtained") or datetime.now(UTC).isoformat(timespec="seconds"))[:10]
+    return new
+
+
+def refresh_token_age_days(tokens: dict | None, now: float | None = None) -> int | None:
+    """Whole days since tokens["refresh_issued"] (YYYY-MM-DD or ISO time), or None if unknown."""
+    issued = str((tokens or {}).get("refresh_issued") or "")[:10]
+    try:
+        day = datetime.strptime(issued, "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    now_dt = datetime.fromtimestamp(time.time() if now is None else now, UTC)
+    return (now_dt - day).days
+
+
+def refresh_age_warning(tokens: dict | None, now: float | None = None) -> str | None:
+    """A warning once the refresh token is REFRESH_WARN_DAYS old, else None."""
+    age = refresh_token_age_days(tokens, now)
+    if age is None or age < REFRESH_WARN_DAYS:
+        return None
+    when = "has expired" if age >= REFRESH_TOKEN_DAYS else f"expires at {REFRESH_TOKEN_DAYS} days"
+    return (f"the Etsy refresh token was issued {age} days ago ({tokens['refresh_issued'][:10]}) and {when}; "
+            "run `python -m publisher auth` (and update ETSY_REFRESH_TOKEN and ETSY_REFRESH_TOKEN_ISSUED in CI)")
+
+
 class TokenStore:
     """Tokens in a JSON file (mode 600), seeded from ETSY_REFRESH_TOKEN when the file is absent.
 
@@ -193,9 +229,12 @@ class TokenStore:
     secret expires 90 days after it was issued.
     """
 
-    def __init__(self, path: str | Path, env_refresh_token: str | None = None):
+    def __init__(self, path: str | Path, env_refresh_token: str | None = None,
+                 env_refresh_issued: str | None = None):
         self.path = Path(path)
         self.env_refresh_token = (env_refresh_token or "").strip() or None
+        # ETSY_REFRESH_TOKEN_ISSUED (YYYY-MM-DD): when the seed token was issued, if known.
+        self.env_refresh_issued = (env_refresh_issued or "").strip() or None
 
     def load(self) -> dict | None:
         if self.path.exists():
@@ -207,7 +246,10 @@ class TokenStore:
             if isinstance(data, dict) and data.get("refresh_token"):
                 return data
         if self.env_refresh_token:
-            return {"refresh_token": self.env_refresh_token, "expires_at": 0, "source": "env"}
+            seed = {"refresh_token": self.env_refresh_token, "expires_at": 0, "source": "env"}
+            if self.env_refresh_issued:
+                seed["refresh_issued"] = self.env_refresh_issued
+            return seed
         return None
 
     def save(self, tokens: dict) -> None:

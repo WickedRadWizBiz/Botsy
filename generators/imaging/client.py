@@ -123,7 +123,8 @@ class GeminiImageClient(_Budget):
             if self.api == "vertex":
                 project = require_env("GOOGLE_CLOUD_PROJECT")
                 location = os.environ.get("GOOGLE_CLOUD_LOCATION", "").strip() or self.cfg["vertex_location"]
-                self._sdk = genai.Client(vertexai=True, project=project, location=location, http_options=http)
+                # `enterprise` replaces the legacy `vertexai` flag (google-genai >= 2.31, the floor).
+                self._sdk = genai.Client(enterprise=True, project=project, location=location, http_options=http)
             else:
                 self._sdk = genai.Client(api_key=require_env("GOOGLE_API_KEY"), http_options=http)
         return self._sdk

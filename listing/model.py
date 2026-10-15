@@ -162,7 +162,7 @@ def write(client, facts: dict, cfg: dict, *, model: str, max_tokens: int, blockl
             if stop == "max_tokens":
                 errors.append("the response was cut off; keep every field shorter")
         if draft is not None:
-            found = rules.check_each(blocklist, rules.texts(draft))
+            found = blocklist.check(*rules.texts(draft))  # each field on its own
             if found.blocked:
                 raise ListingComplianceError(
                     f"model draft contains blocked terms: {', '.join(found.blocked)}", found.blocked)

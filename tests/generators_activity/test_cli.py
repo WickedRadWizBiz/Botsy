@@ -11,7 +11,7 @@ def _brief_file(tmp_path, brief):
     other = dict(brief, brief_id="coloring_pages-2026-10-15-01", niche="coloring_pages")
     second = dict(brief, brief_id="activity_sheets-2026-10-15-02", theme="outer space", page_count=4)
     data = {"schema": "brief/v1", "niche": "activity_sheets", "created": "2026-10-15", "shop_id": "main",
-            "briefs": [dict(brief, page_count=4), other, second]}
+            "min_listings_per_pattern": 10, "briefs": [dict(brief, page_count=4), other, second]}
     path = tmp_path / "activity_sheets-2026-10-15.json"
     path.write_text(json.dumps(data))
     return path

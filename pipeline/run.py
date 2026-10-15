@@ -1,27 +1,46 @@
 """Run the stages in order: research -> generate -> QA -> listing -> Etsy draft.
 
-Each stage is called only through its public entry point (docs/CONTRACTS.md), and a
-failure on one item is recorded and does not stop the others. The run summary goes
-to <out_root>/runs/run-<date>.json so the GitHub Action can upload it with the items.
+Each stage is called only through its public entry point (docs/CONTRACTS.md) and runs
+over all of this run's items before the next stage starts. A failure on one item is
+recorded and does not stop the others. A setup problem (a missing secret, no Etsy tokens,
+a safety-layer refusal) stops that stage instead, because every item would fail the same
+way and the publisher would retry the bad credentials once per item.
+
+Reruns are cheap: an item that already exists for a brief (same shop and brief_id, any
+run date) is reused at its current status instead of being generated and paid for again;
+`regenerate=True` rebuilds it in its own folder. Items with an Etsy draft or rejected in
+the review queue are never rebuilt.
+
+The run summary goes to <out_root>/runs/run-<date>-<HHMMSS>.json so the GitHub Action can
+upload it with the items. exit_code(summary) gives the CLI's exit status.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import re
 import traceback
 from pathlib import Path
 
 from core import items
-from core.config import get_shop, load_settings, resolve, section, today
+from core.briefs import BriefComplianceError, validate_brief_doc
+from core.compliance import Blocklist
+from core.config import MissingSecretError, check_date, get_shop, load_settings, resolve, section, today
 
 log = logging.getLogger("pipeline")
 
 STAGES = ("research", "generate", "qa", "listing", "publish")
 DEFAULTS = {
     "max_items_per_run": 10,       # caps image/API spend per run
-    "dry_run_output_dir": "output/dry-run",
+    "dry_run_output_dir": items.DRY_RUN_OUTPUT_DIR,
+    # Live runs skip the newest brief file of a niche when it is older than this many days
+    # (from the date in its name), so a weekly schedule on a fresh checkout never drafts
+    # the same briefs twice. null turns the check off. Files named with --brief are exempt.
+    "max_brief_age_days": 6,
 }
 BRIEF_FILE_RE = re.compile(r"^(?P<niche>[a-z_]+)-(?P<date>\d{4}-\d{2}-\d{2})\.json$")
+# Most advanced first: which existing item stands for a brief when several do.
+_STATUS_RANK = {"drafted": 4, "listed": 3, "qa_passed": 2, "generated": 1, "qa_failed": 0}
 
 
 def latest_briefs(briefs_dir: Path, niches: list[str]) -> list[Path]:
@@ -34,8 +53,72 @@ def latest_briefs(briefs_dir: Path, niches: list[str]) -> list[Path]:
     return [p for _, p in sorted(newest.values(), key=lambda t: t[1].name)]
 
 
-def _record(summary: dict, item_id: str, stage: str, ok: bool, detail: str = "") -> None:
-    summary["items"].setdefault(item_id, {})[stage] = {"ok": ok, "detail": detail}
+def _record(summary: dict, item_id: str, stage: str, ok: bool, detail: str = "", skipped: bool = False) -> None:
+    rec = {"ok": ok, "detail": detail}
+    if skipped:
+        rec["skipped"] = True
+    summary["items"].setdefault(item_id, {})[stage] = rec
+
+
+def _manifest(d: Path) -> dict | None:
+    """The item's manifest, or None when it is missing or unreadable."""
+    try:
+        m = items.read_manifest(d)
+    except (OSError, ValueError):
+        return None
+    return m if isinstance(m, dict) else None
+
+
+def _status(d: Path) -> str | None:
+    return (_manifest(d) or {}).get("status")
+
+
+def _read_optional(path: Path) -> dict:
+    try:
+        data = items.read_json(path)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _review_entry(d: Path, settings: dict) -> dict:
+    try:
+        path = items.review_entry_path(d.name, items.review_dir_for(d, settings))
+    except ValueError:
+        return {}
+    return _read_optional(path) if path.exists() else {}
+
+
+def _has_real_draft(d: Path) -> bool:
+    """publish.json from a real (not dry-run) draft; an unreadable one counts as real."""
+    p = d / "publish.json"
+    if not p.exists():
+        return False
+    try:
+        rec = items.read_json(p)
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(rec, dict) and rec.get("dry_run") is True)
+
+
+def _brief_age_days(path: Path, date: str) -> int | None:
+    m = BRIEF_FILE_RE.match(path.name)
+    if not m:
+        return None
+    try:
+        return (_dt.date.fromisoformat(date) - _dt.date.fromisoformat(m["date"])).days
+    except ValueError:
+        return None
+
+
+def _summary_path(out_root: Path, date: str) -> Path:
+    """runs/run-<date>-<HHMMSS>.json, never overwriting an earlier run's summary."""
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%H%M%S")
+    base = out_root / "runs" / f"run-{date}-{stamp}"
+    p, n = base.with_suffix(".json"), 2
+    while p.exists():
+        p, n = base.parent / f"{base.name}-{n}.json", n + 1
+    return p
 
 
 def run(
@@ -51,131 +134,379 @@ def run(
     max_items: int | None = None,
     date: str | None = None,
     settings: dict | None = None,
+    regenerate: bool = False,
 ) -> dict:
     settings = settings or load_settings()
     cfg = section(settings, "pipeline", DEFAULTS)
     shop = get_shop(settings, shop_id)
-    date = date or today()
+    date = check_date(date) if date else today()
+    if niche and niche not in shop["niches"]:
+        raise ValueError(f"niche {niche!r} is not one of shop {shop['id']!r}'s niches: {shop['niches']}")
     niches = [niche] if niche else list(shop["niches"])
-    briefs_dir = Path(briefs_dir) if briefs_dir else resolve(settings["research"]["briefs_dir"])
-    if out_root:
-        out_root = Path(out_root)
+    out_root = items.stage_out_root(out_root, settings, dry_run=dry_run)
+    if briefs_dir:
+        briefs_dir = Path(briefs_dir)
+    elif dry_run and "research" in stages:
+        briefs_dir = out_root / "briefs"  # a simulated run never writes into data/briefs
     else:
-        out_root = resolve(cfg["dry_run_output_dir"]) if dry_run else items.output_root(settings)
-    review_dir = None  # each stage derives it per item via core.items.review_dir_for()
-    max_items = max_items if max_items is not None else cfg["max_items_per_run"]
+        briefs_dir = resolve(settings["research"]["briefs_dir"])
+    cap = max_items if max_items is not None else int(cfg["max_items_per_run"])
 
     summary = {"date": date, "shop_id": shop["id"], "dry_run": dry_run, "stages": list(stages),
-               "briefs": [], "items": {}, "errors": []}
+               "started": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+               "briefs": [], "items": {}, "errors": [], "setup_errors": [], "notes": [],
+               "awaiting_review": {}}
 
     # 1. research: CSV exports -> brief files. The exports are licensed and stay local,
-    # so in CI this stage usually finds nothing and the committed briefs are used.
+    # so in CI this stage is usually not run and the committed briefs are used.
     if "research" in stages:
-        import research
+        _research(summary, niches=niches, shop=shop, inputs_dir=inputs_dir, briefs_dir=briefs_dir,
+                  date=date, settings=settings)
 
-        for n in niches:
-            try:
-                research.run(niche=n, shop_id=shop["id"], inputs_dir=inputs_dir,
-                             briefs_dir=briefs_dir, date=date)
-            except SystemExit as e:  # research exits cleanly when there are no inputs
-                summary["errors"].append(f"research[{n}]: {e}")
-            except Exception as e:
-                summary["errors"].append(f"research[{n}]: {type(e).__name__}: {e}")
-                log.exception("research failed for %s", n)
-
-    # 2. generate: newest brief per niche -> items (capped by max_items)
-    new_dirs: list[Path] = []
+    # 2. generate: newest brief per niche -> items (at most max_items, reused ones included).
+    # Later stages work on this run's items, or on everything in out_root when generation
+    # was skipped (e.g. `--stages qa,listing` to redo one step).
     if "generate" in stages:
-        import generators
+        targets = _generate(summary, brief_files=brief_files, briefs_dir=briefs_dir, niches=niches,
+                            shop=shop, out_root=out_root, date=date, dry_run=dry_run, settings=settings,
+                            cap=cap, max_age=cfg.get("max_brief_age_days"), regenerate=regenerate)
+    elif {"qa", "listing", "publish"} & set(stages):
+        targets = _existing(summary, out_root, niche=niche, shop_id=shop["id"] if shop_id else None,
+                            qa_runs="qa" in stages)
+    else:
+        targets = []
 
-        files = [Path(p) for p in brief_files] if brief_files else latest_briefs(briefs_dir, niches)
-        queues = []
-        for bf in files:
-            summary["briefs"].append(items.repo_relative(bf))
-            queues.append([(bf, b) for b in items.read_json(bf).get("briefs", [])])
-        # Round-robin across brief files (one per niche) so a small max_items still
-        # covers every niche instead of filling up from the first file.
-        order = [q[i] for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)]
-        for n, (bf, brief) in enumerate(order):
-            if len(new_dirs) >= max_items:
-                summary["errors"].append(f"max_items={max_items} reached; {len(order) - n} brief(s) skipped")
-                break
+    if "qa" in stages:
+        _qa(summary, targets, settings)
+    if "listing" in stages:
+        # Without generation, --max-items still caps the text-model calls of this run.
+        budget = max_items if (max_items is not None and "generate" not in stages) else None
+        _listing(summary, targets, settings, dry_run=dry_run, budget=budget)
+    if "publish" in stages:
+        _publish(summary, targets, settings, dry_run=dry_run)
+
+    path = _summary_path(out_root, date)
+    summary["path"] = str(path)
+    items.write_json(path, summary)
+    return summary
+
+
+def _research(summary: dict, *, niches, shop, inputs_dir, briefs_dir, date, settings) -> None:
+    import research
+
+    for n in niches:
+        try:
+            written = research.run(niche=n, shop_id=shop["id"], inputs_dir=inputs_dir,
+                                   briefs_dir=briefs_dir, date=date, settings=settings)
+        except research.NoInputsError as e:
+            # Same answer for every niche (it is about the inputs folder): say it once.
+            summary["notes"].append(f"research: {e}")
+            return
+        except Exception as e:
+            summary["errors"].append(f"research[{n}]: {type(e).__name__}: {e}")
+            log.debug(traceback.format_exc())
+            continue
+        if not written:
+            summary["notes"].append(f"research[{n}]: no rows for this niche; no brief file written")
+
+
+def _pick_brief_files(summary, *, brief_files, briefs_dir: Path, niches, date, dry_run, max_age) -> list[Path]:
+    if brief_files:
+        return [Path(p) for p in brief_files]
+    files = latest_briefs(briefs_dir, niches)
+    if not files:
+        summary["errors"].append(
+            f"no brief files (<niche>-<YYYY-MM-DD>.json) for {', '.join(niches)} in "
+            f"{items.repo_relative(briefs_dir)}; run `python -m research` locally and commit "
+            "data/briefs/*.json, or pass --brief")
+        return []
+    found = {BRIEF_FILE_RE.match(p.name)["niche"] for p in files}
+    missing = [n for n in niches if n not in found]
+    if missing:
+        summary["notes"].append(f"no brief file for {', '.join(missing)} in {items.repo_relative(briefs_dir)}")
+    if dry_run or max_age is None:
+        return files
+    fresh = []
+    for p in files:
+        age = _brief_age_days(p, date)
+        if age is not None and age > int(max_age):
+            summary["errors"].append(
+                f"{items.repo_relative(p)} is {age} days old (pipeline.max_brief_age_days={max_age}), so an "
+                "earlier run has probably drafted it already; commit new briefs from `python -m research`, "
+                "or name the file with --brief to use it anyway")
+        else:
+            fresh.append(p)
+    return fresh
+
+
+def _load_brief_queue(summary: dict, bf: Path, blocklist: Blocklist) -> list[tuple[Path, dict]]:
+    """The file's briefs, or [] (with an error) when the file breaks the brief rules."""
+    rel = items.repo_relative(bf)
+    summary["briefs"].append(rel)
+    try:
+        doc = items.read_json(bf)
+        if not isinstance(doc, dict):
+            raise ValueError("not a JSON object")
+        # Same rules research applies before writing: >= 10 listings per pattern and
+        # brief, no URLs, image names, listing ids or blocked terms.
+        validate_brief_doc(doc, [], [], blocklist=blocklist)
+    except BriefComplianceError as e:
+        summary["errors"].append(f"brief file {rel} breaks the brief rules; not used: {e}")
+        return []
+    except (OSError, ValueError) as e:
+        summary["errors"].append(f"brief file {rel} is unreadable; not used: {type(e).__name__}: {e}")
+        return []
+    return [(bf, b) for b in doc.get("briefs") or [] if isinstance(b, dict)]
+
+
+def _index_existing(out_root: Path) -> dict[tuple, tuple[Path, dict]]:
+    """(shop_id, brief_id) -> the most advanced existing item made from that brief."""
+    found: dict[tuple, tuple[Path, dict]] = {}
+    for d in items.iter_item_dirs(out_root):
+        m = _manifest(d)
+        if not m or not m.get("brief_id"):
+            continue
+        key = (m.get("shop_id"), m["brief_id"])
+        old = found.get(key)
+        if old is None or _STATUS_RANK.get(m.get("status"), -1) >= _STATUS_RANK.get(old[1].get("status"), -1):
+            found[key] = (d, m)
+    return found
+
+
+def _item_date(d: Path, manifest: dict, brief: dict, run_date: str) -> str:
+    """The date that rebuilds `d` in place (its id is derived from it), else the run date."""
+    created = manifest.get("created")
+    try:
+        theme = str(brief.get("theme") or "").strip()
+        if items.new_item_id(created, brief.get("niche", ""), theme, salt=brief.get("brief_id") or "") == d.name:
+            return created
+    except (ValueError, TypeError):
+        pass
+    return run_date
+
+
+def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path, date, dry_run, settings,
+              cap, max_age, regenerate) -> list[Path]:
+    import generators
+
+    files = _pick_brief_files(summary, brief_files=brief_files, briefs_dir=briefs_dir, niches=niches,
+                              date=date, dry_run=dry_run, max_age=max_age)
+    blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
+    queues = [q for q in (_load_brief_queue(summary, bf, blocklist) for bf in files) if q]
+    # Round-robin across brief files (one per niche) so a small max_items still
+    # covers every niche instead of filling up from the first file.
+    order = [q[i] for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)]
+    if files and not order and not summary["errors"]:
+        summary["errors"].append("the brief files hold no briefs; nothing to generate")
+
+    existing = _index_existing(out_root)
+    targets: list[Path] = []
+    taken = not_taken = 0  # reused items count too, so a rerun retries instead of spending more
+    for bf, brief in order:
+        if taken >= cap:
+            not_taken += 1
+            continue
+        bid = brief.get("brief_id")
+        prior = existing.get((shop["id"], bid)) if bid else None
+        if prior is None:
             try:
-                new_dirs += generators.generate(
-                    brief, brief_file=items.repo_relative(bf), shop_id=shop["id"],
-                    out_root=out_root, date=date, dry_run=dry_run)
-            except Exception as e:
-                summary["errors"].append(f"generate[{brief.get('brief_id')}]: {type(e).__name__}: {e}")
-                log.debug(traceback.format_exc())
+                d = items.item_dir(items.new_item_id(date, str(brief.get("niche", "")),
+                                                     str(brief.get("theme") or "").strip(), salt=bid or ""), out_root)
+            except ValueError:
+                d = None  # the generator reports the bad brief
+            m = _manifest(d) if d else None
+            prior = (d, m) if m else None
+        gen_date = date
+        if prior is not None:
+            d, m = prior
+            if d in targets:
+                continue
+            if _review_entry(d, settings).get("status") == "rejected":
+                summary["awaiting_review"][d.name] = "rejected in the review queue"
+                _record(summary, d.name, "generate", True, "rejected in the review queue; not rebuilt", skipped=True)
+                continue
+            drafted = _has_real_draft(d)
+            if not regenerate or drafted:
+                why = "has an Etsy draft; not rebuilt" if regenerate else "reused; --regenerate rebuilds it"
+                _record(summary, d.name, "generate", True, f"{m.get('status')} ({why})", skipped=True)
+                targets.append(d)
+                taken += 1
+                continue
+            gen_date = _item_date(d, m, brief, date)
+        try:
+            dirs = generators.generate(brief, brief_file=items.repo_relative(bf), shop_id=shop["id"],
+                                       out_root=out_root, date=gen_date, dry_run=dry_run, settings=settings)
+        except MissingSecretError as e:
+            summary["setup_errors"].append(f"generate: {e}; no further briefs were generated")
+            break
+        except generators.ImageCapExceeded as e:
+            summary["errors"].append(f"generate[{bid}]: {e}; the remaining briefs were not generated")
+            break
+        except Exception as e:
+            summary["errors"].append(f"generate[{bid}]: {type(e).__name__}: {e}")
+            log.debug(traceback.format_exc())
+            continue
+        taken += 1
+        for d in dirs:
+            if d not in targets:
+                targets.append(d)
+                _record(summary, d.name, "generate", True, "generated")
+    if not_taken:
+        summary["notes"].append(f"max_items={cap}: {not_taken} brief(s) not used this run")
+    return targets
 
-    # Later stages work on this run's items, or on everything in out_root when
-    # generation was skipped (e.g. `--stages qa,listing` to redo one step).
-    targets = new_dirs if "generate" in stages else list(items.iter_item_dirs(out_root))
+
+def _existing(summary: dict, out_root: Path, *, niche, shop_id, qa_runs: bool) -> list[Path]:
+    """Every item in out_root, filtered by --niche / --shop. Unreadable manifests are
+    reported (QA writes a failing report for them when it runs) and do not stop the run."""
+    targets = []
+    for d in items.iter_item_dirs(out_root):
+        m = _manifest(d)
+        if m is None:
+            if qa_runs:
+                targets.append(d)
+            else:
+                _record(summary, d.name, "manifest", False, "manifest.json is unreadable")
+            continue
+        if (niche and m.get("niche") != niche) or (shop_id and m.get("shop_id") != shop_id):
+            continue
+        targets.append(d)
+    if not targets and not summary["items"]:
+        summary["notes"].append(f"no items in {out_root}")
+    return targets
+
+
+def _qa(summary: dict, targets: list[Path], settings: dict) -> None:
+    import qa
 
     for d in targets:
-        item_id = d.name
-        status = items.read_manifest(d).get("status")
-        _record(summary, item_id, "generate", True, status or "")
+        if _status(d) not in ("generated", "qa_failed", "qa_passed", None):
+            continue
+        try:
+            report = qa.run(d, settings=settings)
+            failed = [c["name"] for c in report["checks"] if not c["passed"] and c.get("severity") == "error"]
+            _record(summary, d.name, "qa", bool(report.get("passed")), ", ".join(failed))
+        except Exception as e:
+            _record(summary, d.name, "qa", False, f"{type(e).__name__}: {e}")
 
-        if "qa" in stages and status in ("generated", "qa_failed", "qa_passed"):
-            import qa
 
-            try:
-                report = qa.run(d, settings=settings, review_dir=review_dir)
-                failed = [c["name"] for c in report["checks"] if not c["passed"] and c.get("severity") == "error"]
-                _record(summary, item_id, "qa", report["passed"], ", ".join(failed))
-            except Exception as e:
-                _record(summary, item_id, "qa", False, f"{type(e).__name__}: {e}")
-            status = items.read_manifest(d).get("status")
+def _listing(summary: dict, targets: list[Path], settings: dict, *, dry_run: bool, budget: int | None) -> None:
+    import listing
 
-        if "listing" in stages and status == "qa_passed":
-            import listing
+    capped = 0
+    for d in targets:
+        # qa_passed items, and in a real run 'listed' real items whose copy the publisher
+        # would refuse as stale (dry-run template text, or an old shop name / disclosure).
+        if not listing.needs_listing(d, dry_run=dry_run, settings=settings):
+            continue
+        if _review_entry(d, settings).get("status") == "rejected":  # no model call spent on it
+            summary["awaiting_review"][d.name] = "rejected in the review queue"
+            _record(summary, d.name, "listing", True, "rejected in the review queue; not listed", skipped=True)
+            continue
+        if budget is not None:
+            if budget <= 0:
+                capped += 1
+                continue
+            budget -= 1
+        try:
+            lst = listing.write_listing(d, dry_run=dry_run, settings=settings)
+            if lst.get("preview"):  # dry run on a real item: nothing written, it stays qa_passed
+                _record(summary, d.name, "listing", True, f"preview only (dry run on a real item): "
+                        f"{lst.get('title', '')}", skipped=True)
+            else:
+                _record(summary, d.name, "listing", True, lst.get("title", ""))
+        except MissingSecretError as e:
+            summary["setup_errors"].append(f"listing: {e}")
+            _record(summary, d.name, "listing", False, f"{type(e).__name__}: {e}")
+            break
+        except Exception as e:
+            _record(summary, d.name, "listing", False, f"{type(e).__name__}: {e}")
+    if capped:
+        summary["notes"].append(f"--max-items: {capped} item(s) not listed this run")
 
-            try:
-                lst = listing.write_listing(d, dry_run=dry_run, settings=settings, review_dir=review_dir)
-                _record(summary, item_id, "listing", True, lst.get("title", ""))
-            except Exception as e:
-                _record(summary, item_id, "listing", False, f"{type(e).__name__}: {e}")
-            status = items.read_manifest(d).get("status")
 
-        if "publish" in stages and status == "listed":
-            import publisher
+def _publish(summary: dict, targets: list[Path], settings: dict, *, dry_run: bool) -> None:
+    import publisher
 
-            try:
-                rec = publisher.publish_draft(d, dry_run=dry_run, settings=settings, review_dir=review_dir)
-                _record(summary, item_id, "publish", True, f"draft {rec.get('listing_id')}")
-            except Exception as e:
-                # Gate refusals (e.g. waiting for review approval) land here too.
-                _record(summary, item_id, "publish", False, f"{type(e).__name__}: {e}")
+    mode = (settings.get("compliance") or {}).get("publisher_mode", "draft_only")
+    if mode != "draft_only":  # CLAUDE.md: the publisher only ever creates drafts
+        summary["setup_errors"].append(f"publish: settings compliance.publisher_mode is {mode!r}; "
+                                       "only 'draft_only' is allowed, so nothing was published")
+        return
+    setup = (MissingSecretError, publisher.AuthError, publisher.SafetyViolation)
+    for d in targets:
+        if _status(d) != "listed":
+            continue
+        try:  # the publisher's own review rule, asked first so no Etsy client is built for it
+            wait = publisher.review_wait(d, settings=settings)
+        except publisher.PublishGateError:
+            wait = None  # unreadable item file: publish_draft reports it
+        if wait:
+            summary["awaiting_review"][d.name] = wait
+            _record(summary, d.name, "publish", True, wait, skipped=True)
+            continue
+        try:
+            rec = publisher.publish_draft(d, dry_run=dry_run, settings=settings)
+            _record(summary, d.name, "publish", True,
+                    f"draft {rec.get('listing_id')}" + (" (dry run)" if rec.get("dry_run") else ""))
+        except publisher.ReviewPending as e:  # only the review gate stopped it
+            summary["awaiting_review"][d.name] = str(e)
+            _record(summary, d.name, "publish", True, str(e), skipped=True)
+        except setup as e:
+            # Wrong setup, not a bad item: stop instead of retrying it once per item.
+            summary["setup_errors"].append(f"publish: {type(e).__name__}: {e}")
+            _record(summary, d.name, "publish", False, f"{type(e).__name__}: {e}")
+            break
+        except Exception as e:
+            _record(summary, d.name, "publish", False, f"{type(e).__name__}: {e}")
 
-    summary["path"] = str(items.write_json(out_root / "runs" / f"run-{date}.json", summary))
-    return summary
+
+def exit_code(summary: dict) -> int:
+    """0 = every stage that ran succeeded (items waiting for review count as success),
+    1 = an item, brief or stage failed, 2 = setup error (missing secret, Etsy auth, safety
+    layer), the same codes as `python -m publisher`."""
+    if summary.get("setup_errors"):
+        return 2
+    if summary.get("errors"):
+        return 1
+    if any(not rec["ok"] for st in summary["items"].values() for rec in st.values()):
+        return 1
+    return 0
 
 
 def format_summary(summary: dict) -> str:
     lines = [f"run {summary['date']} shop={summary['shop_id']} dry_run={summary['dry_run']}",
              f"briefs: {', '.join(summary['briefs']) or '(none)'}"]
     for item_id, stages in summary["items"].items():
-        cells = []
-        for st in ("qa", "listing", "publish"):
-            if st in stages:
-                cells.append(f"{st}={'ok' if stages[st]['ok'] else 'FAIL'}")
+        cells = [f"{st}={'skip' if rec.get('skipped') else 'ok' if rec['ok'] else 'FAIL'}"
+                 for st, rec in stages.items() if st != "generate" or not rec["ok"] or rec.get("skipped")]
         lines.append(f"  {item_id}: {' '.join(cells) or 'generated'}")
-        lines += [f"      {st}: {v['detail']}" for st, v in stages.items() if not v["ok"] and v["detail"]]
+        lines += [f"      {st}: {rec['detail']}" for st, rec in stages.items()
+                  if (not rec["ok"] or rec.get("skipped")) and rec["detail"]]
+    lines += [f"! setup: {e}" for e in summary.get("setup_errors", [])]
     lines += [f"! {e}" for e in summary["errors"]]
+    lines += [f"- {e}" for e in summary.get("notes", [])]
+    if summary.get("awaiting_review"):
+        lines.append(f"awaiting review: {len(summary['awaiting_review'])} item(s) "
+                     "(`python -m qa review list`)")
     lines.append(f"summary: {summary['path']}")
     return "\n".join(lines)
 
 
-def status_table(out_root: str | Path | None = None, review_dir: str | Path | None = None) -> str:
-    out_root = Path(out_root) if out_root else items.output_root()
-    review_dir = Path(review_dir) if review_dir else (out_root / "review")
+def status_table(out_root: str | Path | None = None, review_dir: str | Path | None = None,
+                 settings: dict | None = None) -> str:
+    settings = settings or load_settings()
+    out_root = Path(out_root) if out_root else items.output_root(settings)
+    review_dir = Path(review_dir) if review_dir else items.review_dir_for_root(out_root, settings)
     rows = []
     for d in items.iter_item_dirs(out_root):
-        m = items.read_manifest(d)
-        review = review_dir / f"{d.name}.json"
-        rstatus = items.read_json(review).get("status", "") if review.exists() else ""
-        pub = d / "publish.json"
-        draft = items.read_json(pub).get("listing_id", "") if pub.exists() else ""
-        rows.append(f"{d.name:<60} {m.get('status', ''):<10} review={rstatus or '-':<9} draft={draft or '-'}")
+        m = _manifest(d)
+        status = m.get("status", "") if m else "unreadable"
+        try:
+            entry = items.review_entry_path(d.name, review_dir)
+            rstatus = _read_optional(entry).get("status", "") if entry.exists() else ""
+        except ValueError:
+            rstatus = ""
+        draft = _read_optional(d / "publish.json").get("listing_id", "")
+        rows.append(f"{d.name:<60} {status:<10} review={rstatus or '-':<9} draft={draft or '-'}")
     return "\n".join(rows) or f"no items in {out_root}"

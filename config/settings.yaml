@@ -11,6 +11,7 @@ shops:
       coloring_pages: 4.00
       activity_sheets: 4.00
 
+# niches.*.generator and niches.*.output only document each niche; no code reads them.
 niches:
   stickers:
     generator: image_api
@@ -27,7 +28,7 @@ niches:
 
 models:
   text:
-    provider: anthropic
+    provider: anthropic          # documentation only (not read by code): the listing stage always uses Anthropic
     model: claude-opus-5-5
     max_tokens: 16000            # Opus thinks before answering and thinking counts toward max_tokens
   image:
@@ -39,7 +40,7 @@ models:
     api: gemini                  # "gemini" (GOOGLE_API_KEY) or "vertex" (GOOGLE_CLOUD_PROJECT)
     aspect_ratio_coloring: "3:4"
     aspect_ratio_sticker: "1:1"
-  recraft:
+  recraft:                       # documentation only: no code reads this block yet
     enabled: false               # OFF until a paid plan is chosen: free-plan images are Recraft-owned,
                                  # public, and not licensed for commercial use. API units are prepaid.
                                  # Confirm API-output ownership in Recraft's API terms before enabling.
@@ -52,6 +53,8 @@ vectorize:
     tracer: potrace              # potrace | vtracer_binary
   stickers:
     background_removal: rembg
+    # tracer / vtracer are not read by code yet (stickers ship as PNGs; the binary vtracer
+    # comparison in generators/imaging/cleanup.py uses its own fixed parameters).
     tracer: vtracer
     vtracer: {colormode: color, mode: spline, filter_speckle: 4, corner_threshold: 60, path_precision: 8}
 
@@ -89,14 +92,19 @@ research:
   # Not set here on purpose (lists in YAML replace the defaults): excluded_terms (platform and
   # planner brands), extra_blocked_terms / extra_review_terms (a stricter-only supplement to
   # config/trademark_blocklist.txt) live in research/defaults.py DEFAULTS.
+  # style_notes / default_style_notes (research/defaults.py) end up in each brief. The image
+  # generators use only the clauses listed in generators/imaging/prompts.py STYLE_CLAUSES;
+  # any other clause is left out of the prompt and marks the item for review, so a custom
+  # style_notes needs matching STYLE_CLAUSES entries.
 
 compliance:
   trademark_blocklist: config/trademark_blocklist.txt
   ai_disclosure: config/ai_disclosure.txt
-  publisher_mode: draft_only     # never change; the user activates listings in Etsy
+  publisher_mode: draft_only     # never change; the user activates listings in Etsy. The pipeline
+                                 # refuses its publish stage unless this is draft_only.
 
 listing:
-  title_max_chars: 140           # Etsy Help Center
+  title_max_chars: 140           # Etsy Help Center (core/etsy.py); the publisher caps these at Etsy's limits
   tags_count: 13
   tag_max_chars: 20
   alt_text_max_chars: 500        # Open API v3 uploadListingImage alt_text: "Max length 500 characters."
@@ -117,8 +125,12 @@ paths:
 
 # --- Orchestrator (python -m pipeline) ---
 pipeline:
-  max_items_per_run: 10          # caps image/API spend per run
-  dry_run_output_dir: output/dry-run
+  max_items_per_run: 10          # caps image/API spend per run (items reused from earlier runs count too)
+  dry_run_output_dir: output/dry-run   # --dry-run without --out writes here: the pipeline and every stage
+                                       # CLI (generators, qa, listing, publisher publish) use it
+  max_brief_age_days: 6          # live runs skip the newest brief file of a niche older than this (from the
+                                 # date in its name), so the weekly Action drafts each committed brief file
+                                 # once. Keep it below 7. null = off. Files named with --brief are exempt.
 
 # --- Per-stage tuning. Defaults live in each module's DEFAULTS dict; these override them. ---
 
@@ -205,7 +217,8 @@ qa:
   # Etsy digital-file limits for instant downloads: up to 5 files per listing, each at most 20 MB.
   # Source: Etsy Help Center "How to Manage Your Digital Listings"
   # (help.etsy.com/hc/en-us/articles/115015628347), re-checked 2026-10-15.
-  # 20 MB is read as 20,000,000 bytes (the stricter reading).
+  # 20 MB is read as 20,000,000 bytes (the stricter reading). The values are defined once in
+  # core/etsy.py (shared with the generators, listing and publisher); keep these equal to them.
   etsy_max_files: 5
   etsy_max_file_bytes: 20000000
   page_size_tolerance_pt: 1.0
@@ -236,7 +249,7 @@ publisher:
   max_price_usd: 50000
   max_quantity: 999            # Etsy: at most 999 units per listing
   max_files: 5                 # Etsy: up to 5 digital files per listing ...
-  max_file_bytes: 20000000     # ... each up to 20 MB (same reading as qa)
+  max_file_bytes: 20000000     # ... each up to 20 MB (same reading as qa; both default to core/etsy.py)
   max_images: 20               # spec: a listing holds up to 20 images
   extra_fields: {}             # extra createDraftListing fields, e.g. {shop_section_id: 123, should_auto_renew: false}
   retries: 4                   # per request, for 429 / 5xx (never 5xx on createDraftListing or file uploads)
@@ -247,7 +260,8 @@ publisher:
 # as a fallback when listing.json has taxonomy_id: null. Fill it with ids from `python -m publisher taxonomy --search ...`.
 # Multi-shop (optional keys on each entry under `shops:`): etsy_token_file_env (default ETSY_TOKEN_FILE)
 # and etsy_refresh_token_env (default ETSY_REFRESH_TOKEN). Each Etsy shop belongs to a different
-# Etsy user, so a second shop needs its own token file, e.g.
+# Etsy user, so a second shop needs its own token file. Keep "etsy_tokens" in its file name
+# (e.g. .etsy_tokens_second.json) so .gitignore keeps it out of git, e.g.
 #   - id: second
 #     etsy_shop_id_env: ETSY_SHOP_ID_SECOND
 #     etsy_token_file_env: ETSY_TOKEN_FILE_SECOND

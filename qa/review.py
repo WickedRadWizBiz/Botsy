@@ -2,9 +2,12 @@
 
 QA writes a `pending` entry for every item that passes. Items with needs_review must be
 `approved` here before the publisher drafts them. A decision (approved / rejected) is the
-user's, so a QA rerun keeps it, with one exception: an approval covers only the reasons the
+user's, so a QA rerun keeps it, with two exceptions. An approval covers only the reasons the
 person saw, so when a rerun finds a new reason the entry goes back to `pending` (the same
-rule listing/review.py applies to new listing review terms). A rejection always stays.
+rule listing/review.py applies to new listing review terms). It also covers only the content
+the person saw: the entry keeps the QA report's `content_digest` (files, previews, assets and
+listing photos), and when a regenerated item has a different one, or the approval records
+none, the entry goes back to `pending` too. A rejection always stays.
 
 Other stages add reasons to the entry too (the listing stage's review terms). QA records
 which reasons are its own in `qa_reasons` and replaces only those on a rerun.
@@ -12,35 +15,17 @@ which reasons are its own in `qa_reasons` and replaces only those on a rerun.
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 
-from core.config import load_settings, resolve, today
-from core.items import read_json, write_json
+from core.config import today
+from core.items import read_json, review_entry_path, write_json
 
 log = logging.getLogger("qa.review")
 
 DECISIONS = ("approved", "rejected")
 STATUSES = ("pending", *DECISIONS)
-ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-def default_dir(item_dir: str | Path, settings: dict | None = None) -> Path:
-    """settings paths.review_dir for items in the configured output dir; otherwise a
-    `review/` folder next to the item, so dry runs and tests never touch output/review."""
-    settings = settings or load_settings()
-    item_dir = Path(item_dir).resolve()
-    if item_dir.parent == resolve(settings["paths"]["output_dir"]).resolve():
-        return resolve(settings["paths"]["review_dir"])
-    return item_dir.parent / "review"
-
-
-def entry_path(item_id: str, review_dir: str | Path) -> Path:
-    """Path of an item's entry. Ids come from the CLI too, so anything that could
-    escape the review folder is refused."""
-    if not ITEM_ID_RE.match(item_id or "") or ".." in item_id:
-        raise ValueError(f"invalid item id {item_id!r}")
-    return Path(review_dir) / f"{item_id}.json"
+# Path of an item's entry. Ids come from the CLI too; anything that could leave the folder is refused.
+entry_path = review_entry_path
 
 
 def read_entry(item_id: str, review_dir: str | Path) -> dict | None:
@@ -57,10 +42,12 @@ def read_entry(item_id: str, review_dir: str | Path) -> dict | None:
 
 def submit(report: dict, manifest: dict, review_dir: str | Path) -> dict:
     """Queue a passing item as pending. Keeps a rejection, and an approval unless QA now
-    reports a reason the approval did not cover. Keeps reasons other stages added."""
+    reports a reason or content (report `content_digest`) the approval did not cover.
+    Keeps reasons other stages added."""
     item_id = report["item_id"]
     old = read_entry(item_id, review_dir)
     qa_reasons = [str(r) for r in report.get("reasons", [])]
+    digest = report.get("content_digest")
     if old and old.get("status") == "rejected":
         return old
     old_reasons = [str(r) for r in old.get("reasons") or []] if old else []
@@ -68,9 +55,13 @@ def submit(report: dict, manifest: dict, review_dir: str | Path) -> dict:
     others = [r for r in old_reasons if r not in own and r not in qa_reasons]
     if old and old.get("status") == "approved":
         new = [r for r in qa_reasons if r not in old_reasons]
-        if not new:
+        changed = not digest or old.get("content_digest") != digest  # no digest: cannot tell, so ask
+        if not new and not changed:
             return old
-        log.warning("%s: QA reports reasons the approval did not cover; back to pending: %s", item_id, new)
+        if new:
+            log.warning("%s: QA reports reasons the approval did not cover; back to pending: %s", item_id, new)
+        if changed:
+            log.warning("%s: files or listing photos differ from the ones approved; back to pending", item_id)
     entry = {
         **(old or {}),  # keep fields other stages added (listing: previous_status, reopened)
         "item_id": item_id,
@@ -80,6 +71,7 @@ def submit(report: dict, manifest: dict, review_dir: str | Path) -> dict:
         "reasons": qa_reasons + others,
         "qa_reasons": qa_reasons,
         "mockups": list(report.get("mockups", [])),
+        "content_digest": digest,
         "queued": report.get("checked") or today(),
     }
     if old and old.get("status") == "approved":

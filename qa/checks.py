@@ -9,12 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from core import etsy
 from core.compliance import Blocklist, find_urls, iter_strings
 from core.items import STATUSES
 
 ERROR, WARNING = "error", "warning"
 KINDS = ("pdf", "png", "png_transparent", "zip", "svg")
 GROUPS = ("files", "previews", "assets")
+# Characters Etsy accepts in a digital file name (core/etsy.py; length limit in qa.DEFAULTS).
+ETSY_FILE_NAME_RE = etsy.FILE_NAME_RE
 
 # Required manifest fields and their JSON types (manifest/v1).
 REQUIRED: dict[str, type] = {
@@ -148,20 +151,34 @@ def check_paths(item: Item) -> list[dict]:
 
 
 def check_etsy_limits(item: Item) -> list[dict]:
-    """Etsy accepts a limited number of digital files per listing, each under a size cap
-    (values and source in qa.DEFAULTS). Exceeding either makes the publisher's upload fail."""
+    """Etsy accepts a limited number of digital files per listing, each under a size cap and
+    with a short plain file name (values and source in qa.DEFAULTS). Exceeding a limit makes
+    the publisher's upload fail, and a file name cannot be changed once uploaded."""
     max_n, max_bytes = int(item.cfg["etsy_max_files"]), int(item.cfg["etsy_max_file_bytes"])
-    n = len(_dicts(item.manifest.get("files")))
-    too_big = []
+    max_name = int(item.cfg["etsy_max_file_name_chars"])
+    allowed = f"at most {max_name} letters, digits, '.', '_' or '-'"
+    files = _dicts(item.manifest.get("files"))
+    too_big, bad_names = [], []
     for e in item.entries("files"):
         size = item.path(e).stat().st_size
         if size > max_bytes:
             too_big.append(f"{e['path']} is {size / 1e6:.1f} MB")
+    for e in files:
+        if not isinstance(e.get("path"), str):
+            continue  # reported by manifest_schema
+        name = PurePosixPath(e["path"].replace("\\", "/")).name
+        if len(name) > max_name:
+            bad_names.append(f"{name!r} is {len(name)} characters")
+        elif not ETSY_FILE_NAME_RE.fullmatch(name):
+            bad_names.append(f"{name!r} has other characters")
     return [
-        result("etsy_file_count", 1 <= n <= max_n, f"{n} digital files (Etsy allows 1 to {max_n})"),
+        result("etsy_file_count", 1 <= len(files) <= max_n, f"{len(files)} digital files (Etsy allows 1 to {max_n})"),
         result("etsy_file_size", not too_big,
                "; ".join(too_big) + f" (limit {max_bytes / 1e6:.0f} MB)" if too_big
                else f"every file under {max_bytes / 1e6:.0f} MB"),
+        result("etsy_file_name", not bad_names,
+               "; ".join(bad_names) + f" (Etsy allows {allowed}; a name cannot be changed after upload)"
+               if bad_names else f"every file name has {allowed}"),
     ]
 
 

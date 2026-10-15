@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import copy
 import json
+import re
+import shlex
 
 import pytest
 import yaml
 
 import publisher
 from core.compliance import load_ai_disclosure
-from core.items import read_json, read_manifest, write_json
+from core.items import read_json, read_manifest, review_dir_for, write_json
 from publisher import __main__ as cli
+from qa import __main__ as qa_cli
 from publisher.client import EtsyAPIError
 from publisher.fake import FakeEtsyClient, FakeEtsySession
 from publisher.publish import (
@@ -31,8 +34,11 @@ def ops(session) -> list[str]:
 
 def test_publish_creates_draft_uploads_in_order_and_records(item, client, session, settings, review_dir):
     rec = publish_draft(item, client=client, settings=settings, review_dir=review_dir)
-    assert ops(session) == ["getMe", "getShop", "createDraftListing", "uploadListingImage",
-                            "uploadListingImage", "uploadListingFile"]
+    # Our shop's drafts and active listings are read first, so a lost publish.json (a fresh
+    # CI checkout) cannot lead to a second draft of the same listing.
+    assert ops(session) == ["getMe", "getShop", "getListingsByShop", "getListingsByShop", "createDraftListing",
+                            "uploadListingImage", "uploadListingImage", "uploadListingFile"]
+    assert [r["params"].get("state") for r in session.calls("getListingsByShop")] == ["draft", None]
     saved = read_json(item / "publish.json")
     assert saved == rec
     assert {k: saved[k] for k in ("schema", "item_id", "shop_id", "state", "dry_run", "complete")} == {
@@ -217,10 +223,59 @@ def test_non_usd_shop_is_refused_before_create(item, settings, review_dir):
 
 
 def test_default_review_dir_is_next_to_items(item, client, settings):
+    assert review_dir_for(item, settings) == item.parent.resolve() / "review"
     (item.parent / "review").mkdir()
     write_json(item.parent / "review" / f"{ITEM_ID}.json", {"status": "rejected"})
     with pytest.raises(PublishGateError, match="rejected"):
         publish_draft(item, client=client, settings=settings)
+
+
+def test_symlinked_item_dir_still_finds_its_rejection(tmp_path, settings, client, session):
+    """QA queues next to the real folder (core.items.review_dir_for resolves the item dir)."""
+    real = make_item(tmp_path / "real", settings)
+    write_json(tmp_path / "real" / "review" / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "rejected"})
+    (tmp_path / "link").mkdir()
+    (tmp_path / "link" / ITEM_ID).symlink_to(real, target_is_directory=True)
+    for d in (real, tmp_path / "link" / ITEM_ID):
+        with pytest.raises(PublishGateError, match="rejected in the review queue"):
+            check_ready(d, settings=settings, dry_run=True)
+        with pytest.raises(PublishGateError, match="rejected"):
+            publish_draft(d, client=client, settings=settings)
+    assert "createDraftListing" not in ops(session)
+
+
+def _hint(err: pytest.ExceptionInfo) -> list[str]:
+    """The `python -m qa ...` command a gate message prints, as qa CLI arguments."""
+    cmd = re.search(r"`python -m qa (review approve [^`]+)`", str(err.value)).group(1)
+    return shlex.split(cmd)
+
+
+def test_approve_hint_reaches_the_review_entry(tmp_path, out_root, settings, review_dir):
+    """The printed command must work as printed, also for --out and dry-run folders."""
+    d = make_item(out_root, settings, manifest={"needs_review": True})
+    write_json(review_dir / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "pending"})
+    with pytest.raises(PublishGateError, match="needs review") as err:
+        check_ready(d, settings=settings)  # default queue: <out>/review
+    assert "--out" in _hint(err)
+    assert qa_cli.main(_hint(err)) == 0
+    assert read_json(review_dir / f"{ITEM_ID}.json")["status"] == "approved"
+    assert check_ready(d, settings=settings).item_id == ITEM_ID
+
+    other = tmp_path / "elsewhere"  # a queue passed explicitly is named explicitly
+    write_json(other / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "pending"})
+    with pytest.raises(PublishGateError, match="needs review") as err:
+        check_ready(d, settings=settings, review_dir=other)
+    assert "--review-dir" in _hint(err) and qa_cli.main(_hint(err)) == 0
+    assert read_json(other / f"{ITEM_ID}.json")["status"] == "approved"
+
+
+def test_approve_hint_is_plain_for_the_configured_output_dir(out_root, settings, tmp_path):
+    s = copy.deepcopy(settings)
+    s["paths"]["output_dir"], s["paths"]["review_dir"] = str(out_root), str(tmp_path / "queue")
+    d = make_item(out_root, s, manifest={"needs_review": True})
+    with pytest.raises(PublishGateError, match="needs review") as err:
+        check_ready(d, settings=s)
+    assert _hint(err) == ["review", "approve", ITEM_ID]
 
 
 # --- dry runs -------------------------------------------------------------------------
@@ -287,6 +342,57 @@ def test_placeholder_shop_name_blocks_real_drafts(out_root, settings, client, se
     with pytest.raises(PublishGateError, match="placeholder"):  # a preview tells the truth too
         publish_draft(d, dry_run=True, settings=s, review_dir=review_dir)
     assert session.requests == []
+
+
+@pytest.mark.parametrize("ai_assisted", [True, False])
+def test_copy_written_with_the_placeholder_name_is_refused_after_the_name_is_set(
+        out_root, settings, client, session, review_dir, ai_assisted):
+    """The name was fixed after listing: the old copy still says YOUR_SHOP_NAME."""
+    s = copy.deepcopy(settings)
+    s["shops"][0]["name"] = "YOUR_SHOP_NAME"
+    d = make_item(out_root, s, manifest={"ai_assisted": ai_assisted, "niche": "activity_sheets"})
+    with pytest.raises(PublishGateError, match="placeholder shop name YOUR_SHOP_NAME") as err:
+        publish_draft(d, client=client, settings=settings, review_dir=review_dir)
+    assert f"python -m listing --item {ITEM_ID} --out " in str(err.value)  # works on 'listed' items
+    assert "AI disclosure" in str(err.value)  # and the disclosure no longer names the shop
+    assert session.requests == []
+
+
+@pytest.mark.parametrize("where", ["title", "alt_texts"])
+def test_placeholder_name_anywhere_in_the_copy_is_refused(out_root, settings, client, session,
+                                                          review_dir, where):
+    value = "Mazes by your_shop_name" if where == "title" else ["mockup 1 by YOUR_SHOP_NAME", "mockup 2"]
+    d = make_item(out_root, settings, listing={where: value})
+    _gate(d, client, session, settings, review_dir, "placeholder shop name")
+
+
+def test_ai_written_copy_needs_the_disclosure_on_procedural_items(out_root, settings, client, session,
+                                                                  review_dir):
+    """Activity sheets are not AI-assisted designs, but their copy is AI-written."""
+    plain = "Twenty dinosaur mazes for kids."
+    d = make_item(out_root, settings, manifest={"ai_assisted": False, "niche": "activity_sheets"},
+                  listing={"description": plain})  # disclosure cut, ai_disclosure_included still true
+    _gate(d, client, session, settings, review_dir, "lacks the AI disclosure")
+    s = copy.deepcopy(settings)
+    s["listing"]["always_disclose_ai"] = False
+    _gate(d, client, session, s, review_dir, "lacks the AI disclosure")  # the listing says it disclosed
+    write_json(d / "listing.json", {**read_json(d / "listing.json"), "ai_disclosure_included": False})
+    _gate(d, client, session, s, review_dir, "lacks the AI disclosure")  # the text model wrote it
+    write_json(d / "listing.json", {**read_json(d / "listing.json"), "model": None,
+                                    "writer": {"kind": "model", "dry_run": False}})
+    _gate(d, client, session, s, review_dir, "lacks the AI disclosure")
+    write_json(d / "listing.json", {**read_json(d / "listing.json"),
+                                    "writer": {"kind": "template", "dry_run": False}})
+    assert check_ready(d, settings=s, review_dir=review_dir).item_id == ITEM_ID  # no AI anywhere
+    with pytest.raises(PublishGateError, match="lacks the AI disclosure"):  # default setting: always
+        check_ready(d, settings=settings, review_dir=review_dir)
+
+
+def test_disclosure_for_another_shop_name_is_refused(out_root, settings, client, session, review_dir):
+    s = copy.deepcopy(settings)
+    s["shops"][0]["name"] = "Old Name"
+    d = make_item(out_root, s, manifest={"ai_assisted": False})
+    _gate(d, client, session, settings, review_dir, "AI disclosure .*'Test Shop'.*python -m listing --item")
 
 
 def test_simulated_item_without_taxonomy_still_runs(out_root, settings, review_dir):
@@ -440,7 +546,7 @@ def test_run_all_uses_one_client_per_shop(out_root, settings, review_dir, monkey
     s["shops"].append({**s["shops"][0], "id": "second", "name": "Second Shop"})
     make_item(out_root, s, "a-item")
     make_item(out_root, s, "b-item", listing=_second_shop_listing(), manifest={"shop_id": "second"})
-    make_item(out_root, s, "c-item")
+    make_item(out_root, s, "c-item", listing={"title": "Farm Animal Coloring Pages for Kids, 30 Printable Pages"})
     sessions = {"main": FakeEtsySession(SHOP_ID), "second": FakeEtsySession(SHOP_ID + 1)}
     made = []
 
@@ -513,3 +619,69 @@ def test_cli_discard(item, settings, settings_file, out_root, capsys):
     assert "Forgot dry-run draft 900000009" in capsys.readouterr().out
     assert not (item / "publish.json").exists()
     assert cli.main(["--settings", settings_file, "discard", "--item", ITEM_ID, "--out", str(out_root)]) == 1
+
+
+# --- integration fixes: dedupe across checkouts, gate errors, digests, limits -------
+
+def test_existing_own_listing_with_the_same_title_is_not_drafted_again(item, client, session, settings,
+                                                                     review_dir):
+    """A fresh CI checkout has no publish.json from the earlier run; our shop's own drafts
+    and active listings stop a second draft of the same listing."""
+    publish_draft(item, client=client, settings=settings, review_dir=review_dir)
+    (item / "publish.json").unlink()  # the earlier run's record is gone (another checkout)
+    fresh = FakeEtsyClient(shop_id=SHOP_ID, settings=settings, session=session)
+    with pytest.raises(PublishError, match="already has draft listing .* Shop Manager"):
+        publish_draft(item, client=fresh, settings=settings, review_dir=review_dir)
+    assert len(session.calls("createDraftListing")) == 1
+    lid = next(x["listing_id"] for x in session.listings.values() if x["state"] == "draft")
+    session.listings[lid]["state"] = "active"  # the user activated it: still the same listing
+    with pytest.raises(PublishError, match="already has active listing"):
+        publish_draft(item, client=FakeEtsyClient(shop_id=SHOP_ID, settings=settings, session=session),
+                      settings=settings, review_dir=review_dir)
+    assert len(session.calls("createDraftListing")) == 1
+
+
+def test_gate_error_lists_problems_and_review_waits_are_review_pending(out_root, settings, review_dir):
+    d = make_item(out_root, settings, manifest={"needs_review": True})
+    with pytest.raises(publisher.ReviewPending) as err:
+        check_ready(d, settings=settings, review_dir=review_dir)
+    assert len(err.value.problems) == 1 and "needs review" in err.value.problems[0]
+    assert "needs review" in publisher.review_wait(d, settings=settings, review_dir=review_dir)
+    lst = read_json(d / "listing.json")
+    write_json(d / "listing.json", {**lst, "taxonomy_id": None})
+    s = copy.deepcopy(settings)
+    s["listing"]["taxonomy_ids"] = {}
+    with pytest.raises(PublishGateError) as err:  # another problem too: not just a review wait
+        check_ready(d, settings=s, review_dir=review_dir)
+    assert not isinstance(err.value, publisher.ReviewPending) and len(err.value.problems) == 2
+    write_json(review_dir / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "rejected"})
+    assert publisher.review_wait(d, settings=settings, review_dir=review_dir) == "rejected in the review queue"
+    with pytest.raises(PublishGateError) as err:
+        check_ready(d, settings=settings, review_dir=review_dir)
+    assert not isinstance(err.value, publisher.ReviewPending)  # a rejection is final
+
+
+def test_approval_must_cover_the_content_qa_checked(out_root, settings, review_dir):
+    d = make_item(out_root, settings, manifest={"needs_review": True}, qa={"content_digest": "new"})
+    write_json(review_dir / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "approved", "content_digest": "old"})
+    with pytest.raises(publisher.ReviewPending, match="content_digest differs"):
+        check_ready(d, settings=settings, review_dir=review_dir)
+    write_json(review_dir / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "approved", "content_digest": "new"})
+    assert check_ready(d, settings=settings, review_dir=review_dir).item_id == ITEM_ID
+    assert publisher.review_wait(d, settings=settings, review_dir=review_dir) is None
+
+
+def test_title_and_tag_limits_come_from_listing_settings_capped_at_etsy(out_root, settings, review_dir):
+    d = make_item(out_root, settings)
+    s = copy.deepcopy(settings)
+    s["listing"].update({"title_max_chars": 20, "tags_count": 5, "tag_max_chars": 12})
+    with pytest.raises(PublishGateError) as err:
+        check_ready(d, settings=s, review_dir=review_dir)
+    text = str(err.value)
+    assert "title must be 1-20 characters" in text and "tags must be at most 5" in text
+    assert "must be 1-12 characters" in text
+    s["listing"].update({"title_max_chars": 500, "tags_count": 40, "tag_max_chars": 99})  # looser than Etsy
+    lst = read_json(d / "listing.json")
+    write_json(d / "listing.json", {**lst, "title": "x" * 141})
+    with pytest.raises(PublishGateError, match="title must be 1-140 characters"):
+        check_ready(d, settings=s, review_dir=review_dir)

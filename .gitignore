@@ -1,6 +1,15 @@
 # Secrets
 .env
+.env.*
+!.env.example
+# Etsy OAuth tokens: the default file, per-shop files (name each shop's ETSY_TOKEN_FILE_*
+# so it contains "etsy_tokens") and the temp file TokenStore writes before renaming.
 .etsy_tokens.json
+*etsy_tokens*
+*_tokens*.json
+*.tmp
+# TLS key/cert for the `python -m publisher auth --cert/--key` localhost listener
+*.pem
 
 # Python
 .venv/

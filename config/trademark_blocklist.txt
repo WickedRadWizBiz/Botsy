@@ -240,3 +240,12 @@ Jenga
 ?Teachers Pay Teachers
 ?Google Classroom
 
+
+# --- Added 2026-10-15 (audit): spellings and parts of names that slipped past matching ---
+Seuss
+K-Pop Demon Hunters
+Coco Melon
+Disneyland
+Disney World
+Grinchmas
+Mc Donald's

@@ -6,6 +6,7 @@ import time
 import pytest
 import requests
 
+from publisher import auth
 from publisher.auth import AuthRequired, MemoryTokenStore, TokenStore
 from publisher.client import EtsyAPIError, EtsyClient, RateLimited, retry_after_seconds
 from publisher.fake import FakeEtsyClient, FakeEtsySession
@@ -413,3 +414,26 @@ def test_corrupt_token_file_asks_for_auth(tmp_path):
     path.write_text("{oops", encoding="utf-8")
     with pytest.raises(AuthRequired, match="unreadable"):
         TokenStore(path).load()
+
+
+def test_refresh_issued_is_kept_for_the_same_token_and_reset_on_rotation(settings, session, caplog):
+    store = MemoryTokenStore({"access_token": "1.old", "refresh_token": "1.r-old", "expires_at": 0,
+                              "refresh_issued": "2026-07-01"})
+    c = FakeEtsyClient(shop_id=SHOP_ID, settings=settings, session=session, token_store=store,
+                       clock=lambda: 1792022400.0)  # 2026-10-15 UTC: 106 days after issue
+    with caplog.at_level("WARNING", logger="publisher.client"):
+        c.get_me()
+    assert "issued 106 days ago (2026-07-01) and has expired" in caplog.text
+    # The fake rotates the refresh token, so the new one counts from today.
+    assert store.tokens["refresh_issued"] == "2026-10-15"
+    same = auth.carry_refresh_issued({"refresh_token": "1.r", "obtained": "2026-10-15T00:00:00+00:00"},
+                                     {"refresh_token": "1.r", "refresh_issued": "2026-08-01"})
+    assert same["refresh_issued"] == "2026-08-01"
+    assert auth.refresh_age_warning({"refresh_issued": "2026-08-01"}, now=1792022400.0) is None  # 75 days
+    assert "expires at 90 days" in auth.refresh_age_warning({"refresh_issued": "2026-07-20"}, now=1792022400.0)
+    assert auth.refresh_token_age_days({"refresh_issued": "bad"}) is None
+
+
+def test_env_seed_carries_ETSY_REFRESH_TOKEN_ISSUED(tmp_path):
+    store = TokenStore(tmp_path / "t.json", env_refresh_token="1.env", env_refresh_issued="2026-09-01")
+    assert store.load()["refresh_issued"] == "2026-09-01"

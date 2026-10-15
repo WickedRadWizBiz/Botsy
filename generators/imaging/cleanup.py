@@ -207,7 +207,8 @@ _REMBG_SESSIONS: dict[str, object] = {}
 
 
 def remove_background_rembg(img: Image.Image, model: str = REMBG_MODEL) -> Image.Image:
-    """rembg (lazy import). Downloads the model to ~/.u2net on first use."""
+    """rembg (lazy import). Downloads the model on first use to $REMBG_HOME/models/<name>
+    (default ~/.rembg; rembg >= 2.0.80, the requirements floor; U2NET_HOME still wins when set)."""
     try:
         from rembg import new_session, remove
     except ImportError as exc:

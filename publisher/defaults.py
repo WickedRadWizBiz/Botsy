@@ -5,6 +5,7 @@ Etsy facts behind these values were checked on 2026-10-15 against the Open API v
 """
 from __future__ import annotations
 
+from core import etsy
 from core.config import load_settings, section
 
 DEFAULTS = {
@@ -16,10 +17,10 @@ DEFAULTS = {
     # `python -m publisher discard` on drafts this tool created; drop it to forbid deletes.
     "scopes": ["listings_r", "listings_w", "listings_d", "shops_r"],
     "currency": "USD",            # listing.json prices are USD; a shop in another currency is refused
-    "max_files": 5,               # Etsy: up to 5 digital files per listing, 20 MB each
-    "max_file_bytes": 20_000_000,  # (Help Center; same reading as qa DEFAULTS)
+    "max_files": etsy.MAX_FILES,            # Etsy: up to 5 digital files per listing, 20 MB each
+    "max_file_bytes": etsy.MAX_FILE_BYTES,  # (Help Center; core/etsy.py, shared with qa)
     "max_images": 20,             # spec: image_ids "can include up to 20 images"
-    "alt_text_max_chars": 500,    # spec: uploadListingImage alt_text "Max length 500 characters"
+    "alt_text_max_chars": etsy.ALT_TEXT_MAX_CHARS,  # spec: uploadListingImage alt_text "Max length 500 characters"
     # Etsy's price range is USD 0.20-50,000 and a listing holds at most 999 units (Etsy
     # seller docs as quoted by integrators; the spec only says "positive non-zero").
     "min_price_usd": 0.20,

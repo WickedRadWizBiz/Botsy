@@ -29,6 +29,7 @@ from generators.activity_sheets.layout import (
 )
 from generators.activity_sheets.shapes import SHAPES_BY_NAME, Shape, rank_shapes
 from generators.activity_sheets.word_search import clean_word_list
+from generators.shared import as_list
 
 log = logging.getLogger(__name__)
 
@@ -80,13 +81,6 @@ def rng_for(item_id: str, *parts) -> random.Random:
     """Independent, reproducible random stream per item and page."""
     key = "|".join([item_id, *map(str, parts)])
     return random.Random(int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big"))
-
-
-def as_list(value) -> list:
-    """A brief field that should be a list; a lone string counts as one item (not its letters)."""
-    if value is None:
-        return []
-    return [value] if isinstance(value, str) else list(value)
 
 
 def resolve_kinds(brief: dict, settings: dict) -> list[str]:

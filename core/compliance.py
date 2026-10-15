@@ -3,8 +3,9 @@
 Blocklist format (config/trademark_blocklist.txt): one term per line, `#` comments,
 `?term` = flag for human review instead of hard block. Matching is case- and
 accent-insensitive, on whole words, and tolerant of joined or hyphenated forms
-("Paw Patrol" also matches "pawpatrol" and "paw-patrol") and of a plural or
-possessive "s" ("Minion's", "Barbies").
+("Paw Patrol" also matches "pawpatrol" and "paw-patrol"), of a full stop after a word
+("Dr. Seuss"), of a plural or possessive "s" ("Minion's", "Barbies"), and of the
+Unicode tricks normalize() undoes (™ signs, zero-width characters, look-alike letters).
 """
 from __future__ import annotations
 
@@ -24,20 +25,50 @@ URL_RE = re.compile(
 )
 
 
+# Trademark signs become a space: NFKD would spell ™ / ℠ out and glue them to the
+# word ("Pokémon™" -> "pokemontm"), which then no longer matches "Pokemon".
+_MARKS = str.maketrans({c: " " for c in "™℠©®"})
+_APOSTROPHES = str.maketrans({c: "'" for c in "‘’ʼ′`"})
+# Latin look-alikes from Cyrillic and Greek, so "Pаw Patrol" with a Cyrillic "а" still
+# matches. Applied before lowercasing: Greek "Η" reads as "H" but its lowercase "η" as "n".
+_CONFUSABLES = str.maketrans(dict(zip(
+    "АВЕКМНОРСТУХІЈЅ" "авекмнорстухіјѕԁӏɡ"
+    "ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ" "αβεηικμνορτυχ",
+    "ABEKMHOPCTYXIJS" "abekmhopctyxijsdlg"
+    "ABEZHIKMNOPTYX" "abenikmvoptux",
+    strict=True)))
+_HSPACE_RE = re.compile(r"[^\S\n]+")  # runs of whitespace other than newlines
+
+
 def normalize(text: str) -> str:
-    """Lowercase, strip accents (Pokémon -> pokemon), unify apostrophes."""
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    return text.replace("’", "'").lower()
+    """Lowercase, strip accents (Pokémon -> pokemon), unify apostrophes and dashes.
+
+    Also: ™ ℠ © ® become a space, invisible format characters (zero-width spaces and
+    joiners, soft hyphens, BOM) are dropped, every Unicode dash and the minus sign become
+    "-", Cyrillic/Greek look-alike letters become Latin, and runs of spaces or tabs
+    become one space. Each step only lets more spellings match the blocklist.
+    """
+    text = unicodedata.normalize("NFKD", text.translate(_MARKS))
+    out = []
+    for c in text:
+        if unicodedata.combining(c):
+            continue
+        cat = unicodedata.category(c)
+        if cat == "Cf":
+            continue
+        out.append("-" if cat == "Pd" or c == "−" else c)
+    text = "".join(out).translate(_APOSTROPHES).translate(_CONFUSABLES).lower()
+    return _HSPACE_RE.sub(" ", text)
 
 
 def _term_pattern(term: str) -> re.Pattern:
     tokens = [t for t in re.split(r"[^a-z0-9]+", normalize(term)) if t]
     if not tokens:
         raise ValueError(f"blocklist term has no letters or digits: {term!r}")
-    # Between words allow only spaces, hyphens, underscores, apostrophes or "&", never
-    # commas, full stops or newlines, so "wooden toy, story time" is not "Toy Story".
-    body = r"[ \t\-_'&]{0,3}".join(re.escape(t) for t in tokens)
+    # Between words allow an optional full stop right after the word ("Dr. Seuss",
+    # "Hello.Kitty"), then only spaces, hyphens, underscores, apostrophes or "&", never
+    # commas or newlines, so "wooden toy, story time" is not "Toy Story".
+    body = r"\.?[ \t\-_'&]{0,3}".join(re.escape(t) for t in tokens)
     return re.compile(rf"(?<![a-z0-9]){body}(?:'?s|es)?(?![a-z0-9])")
 
 

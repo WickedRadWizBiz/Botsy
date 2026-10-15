@@ -2,9 +2,11 @@
 
 Gates run before anything is sent (PublishGateError lists every reason):
 QA passed; listing.json present, not written in dry-run mode, blocklist-clean (title,
-tags, description, alt texts and the photo and file names) and carrying the AI
-disclosure when the item is AI-assisted; items needing review are `approved` in the
-review queue (a `rejected` entry always blocks); taxonomy_id set; photos and files
+tags, description, alt texts and the photo and file names), free of the placeholder shop
+name and carrying the AI disclosure for the current shop name (required whenever the item
+is AI-assisted, the copy was written by the text model, or listing.always_disclose_ai is
+on, the default); items needing review are `approved` in the review queue (a `rejected`
+entry always blocks); taxonomy_id set; photos and files
 present inside the item folder and within Etsy's limits; title and tags within Etsy's
 character rules; price and quantity within Etsy's range; the client is for the item's shop.
 
@@ -27,22 +29,26 @@ import hashlib
 import json
 import logging
 import math
-import re
-import unicodedata
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core import etsy
 from core.compliance import Blocklist, has_ai_disclosure
-from core.config import get_shop, load_settings, resolve, section, today
+from core.config import PLACEHOLDER_SHOP_NAMES, get_shop, is_placeholder_shop_name, load_settings, section, today
 from core.items import (
     iter_item_dirs,
     output_root,
     read_json,
     read_manifest,
+    repo_relative,
+    review_dir_for,
+    review_entry_path,
     set_status,
+    valid_item_id,
     write_json,
 )
-from publisher.client import EtsyAPIError, EtsyClient
+from publisher.client import EtsyAPIError, EtsyClient, title_key
 from publisher.defaults import load_cfg
 from publisher.fake import DRY_RUN_TAXONOMY_ID, FakeEtsyClient
 
@@ -54,13 +60,19 @@ WHO_MADE = ("i_did", "someone_else", "collective")  # Open API v3 spec enums
 WHEN_MADE = ("made_to_order", "2020_2026", "2010_2019", "2007_2009", "before_2007", "2000_2006",
              "1990s", "1980s", "1970s", "1960s", "1950s", "1940s", "1930s", "1920s", "1910s",
              "1900s", "1800s", "1700s", "before_1700")
-MARKS = set("™©®")
-PLACEHOLDER_SHOP_NAMES = ("", "YOUR_SHOP_NAME")  # config/settings.yaml ships with the placeholder
-ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class PublishGateError(RuntimeError):
-    """The item is not ready, or not allowed, to become a draft. Nothing was sent."""
+    """The item is not ready, or not allowed, to become a draft. Nothing was sent.
+    `problems` lists every reason (the message joins them)."""
+
+    def __init__(self, message: str, problems: list[str] | None = None):
+        super().__init__(message)
+        self.problems = list(problems) if problems else [message]
+
+
+class ReviewPending(PublishGateError):
+    """The only reason the item is not drafted: it waits for `python -m qa review approve`."""
 
 
 class PublishError(RuntimeError):
@@ -80,20 +92,25 @@ class Plan:
 
 # --- gates ------------------------------------------------------------------------
 
-def _title_problems(title: str) -> list[str]:
-    """Etsy: letters, numbers, punctuation, math symbols, spaces, ™©®; %, :, & and + once each."""
-    bad = sorted({c for c in title if c not in MARKS and unicodedata.category(c)[0] not in "LP"
-                  and unicodedata.category(c) not in ("Nd", "Sm", "Zs")})
-    out = [f"title has characters Etsy rejects: {''.join(bad)!r}"] if bad else []
-    out += [f"title uses {c!r} more than once" for c in "%:&+" if title.count(c) > 1]
-    return out
+# Etsy's character rules for titles and tags, the same ones the listing stage applies.
+_title_problems = etsy.title_char_problems
+_tag_problems = etsy.tag_char_problems
 
 
-def _tag_problems(tag: str) -> list[str]:
-    """Etsy: letters, numbers, spaces, -, ' and ™©® only (so no commas)."""
-    bad = sorted({c for c in tag if c not in MARKS and c not in "-'" and unicodedata.category(c)[0] != "L"
-                  and unicodedata.category(c) not in ("Nd", "Zs")})
-    return [f"tag {tag!r} has characters Etsy rejects: {''.join(bad)!r}"] if bad else []
+def _text_limits(settings: dict) -> tuple[int, int, int]:
+    """(title chars, tag count, tag chars): settings `listing:` (what the listing stage wrote
+    to), capped at Etsy's own limits so a looser setting never passes copy Etsy rejects."""
+    cfg = section(settings, "listing", {})
+
+    def limit(key: str, etsy_max: int) -> int:
+        try:
+            value = int(cfg.get(key) or etsy_max)
+        except (TypeError, ValueError):
+            value = etsy_max
+        return max(1, min(value, etsy_max))
+
+    return (limit("title_max_chars", etsy.TITLE_MAX_CHARS), limit("tags_count", etsy.TAGS_MAX),
+            limit("tag_max_chars", etsy.TAG_MAX_CHARS))
 
 
 def _inside(item_dir: Path, rel: str) -> Path | None:
@@ -102,12 +119,21 @@ def _inside(item_dir: Path, rel: str) -> Path | None:
     return p if p.is_relative_to(item_dir.resolve()) else None
 
 
-def default_review_dir(item_dir: Path, settings: dict) -> Path:
-    """Same rule as the QA stage: settings paths.review_dir for items in the configured
-    output dir, otherwise a review/ folder next to the item (dry runs, tests)."""
-    if item_dir.resolve().parent == output_root(settings).resolve():
-        return resolve(settings["paths"]["review_dir"])
-    return item_dir.parent / "review"
+def _with_out(cmd: str, item_dir: Path, settings: dict) -> str:
+    """`cmd` plus `--out <folder>` when the item is not in the configured output dir, so
+    the printed command finds it (dry runs and --out runs keep their items elsewhere)."""
+    parent = item_dir.resolve().parent
+    if parent == output_root(settings).resolve():
+        return cmd
+    return f"{cmd} --out {shlex.quote(repo_relative(parent))}"
+
+
+def _approve_hint(item_id: str, item_dir: Path, review_dir: Path, settings: dict) -> str:
+    """The `qa review approve` command that reaches the review entry this gate read."""
+    cmd = f"python -m qa review approve {item_id}"
+    if review_dir.resolve() == review_dir_for(item_dir, settings).resolve():
+        return _with_out(cmd, item_dir, settings)
+    return f"{cmd} --review-dir {shlex.quote(repo_relative(review_dir))}"
 
 
 def _load(path: Path, item_id: str) -> dict:
@@ -145,6 +171,61 @@ def _form(value) -> str:
     return str(value)
 
 
+def _listing_check(listing: dict, blocklist: Blocklist):
+    """Blocklist result over everything sent to Etsy: title, tags, description, alt texts
+    and the photo and file names (buyers see the download's name)."""
+    names = [Path(str(rel)).name for rel in [*(listing.get("image_paths") or []), *(listing.get("file_paths") or [])]]
+    return blocklist.check_obj({"title": (listing.get("title") or "").strip(),
+                                "tags": [str(t).strip() for t in listing.get("tags") or []],
+                                "description": (listing.get("description") or "").strip(),
+                                "alt_texts": list(listing.get("alt_texts") or []), "file_names": names})
+
+
+def _review_gate(item_id: str, item_dir: Path, manifest: dict, listing: dict, qa_report: dict | None,
+                 flagged, settings: dict, review_dir) -> tuple[str | None, bool]:
+    """(problem, waiting) from the review queue. `waiting` is True when an approval would
+    clear the problem; a rejection is final. An approval covers only the content QA
+    checked when it was queued: when qa_report.json's content_digest differs from the
+    entry's, the item waits for a new approval (QA reruns reopen such entries too)."""
+    review_dir = Path(review_dir) if review_dir else review_dir_for(item_dir, settings)
+    entry_path = review_entry_path(item_id, review_dir)
+    entry = _load(entry_path, item_id) if entry_path.exists() else {}
+    status = entry.get("status")
+    needs_review = bool(manifest.get("needs_review") or listing.get("needs_review")
+                        or (qa_report or {}).get("needs_review") or entry.get("needs_review")
+                        or flagged or (listing.get("compliance") or {}).get("flagged"))
+    if status == "rejected":
+        return "rejected in the review queue", False
+    hint = f"`{_approve_hint(item_id, item_dir, review_dir, settings)}`"
+    if needs_review and status != "approved":
+        return f"needs review (review status: {status or 'no entry'}); approve with {hint}", True
+    digest = (qa_report or {}).get("content_digest")
+    if needs_review and digest and entry.get("content_digest") != digest:
+        rerun = _with_out(f"python -m qa --item {item_dir.resolve().name}", item_dir, settings)
+        return (f"the approval was given for other files or photos than QA last checked (content_digest "
+                f"differs); rerun `{rerun}` and approve again with {hint}"), True
+    return None, False
+
+
+def review_wait(item_dir: str | Path, *, settings: dict | None = None,
+                review_dir: str | Path | None = None) -> str | None:
+    """Why check_ready() would refuse this item for review-queue reasons alone (waiting for
+    an approval, or rejected), else None. The pipeline asks this before publishing, so it
+    uses the publisher's own rule. Raises PublishGateError for an unreadable item file."""
+    item_dir = Path(item_dir)
+    settings = settings or load_settings()
+    manifest = _load(item_dir / "manifest.json", item_dir.name)
+    item_id = str(manifest.get("item_id") or item_dir.name)
+    if not valid_item_id(item_id):
+        raise PublishGateError(f"invalid item id {item_id!r} in {item_dir / 'manifest.json'}")
+    listing = _load(item_dir / "listing.json", item_id) if (item_dir / "listing.json").exists() else {}
+    qa_report = _load(item_dir / "qa_report.json", item_id) if (item_dir / "qa_report.json").exists() else None
+    blocklist = Blocklist.load(section(settings, "compliance", {}).get("trademark_blocklist"))
+    problem, _ = _review_gate(item_id, item_dir, manifest, listing, qa_report,
+                              _listing_check(listing, blocklist).flagged, settings, review_dir)
+    return problem
+
+
 def check_ready(item_dir: str | Path, *, settings: dict | None = None,
                 review_dir: str | Path | None = None, dry_run: bool = False) -> Plan:
     """Run every gate and build the createDraftListing fields. Raises PublishGateError.
@@ -157,7 +238,7 @@ def check_ready(item_dir: str | Path, *, settings: dict | None = None,
     cfg = load_cfg(settings)
     manifest = _load(item_dir / "manifest.json", item_dir.name)
     item_id = str(manifest.get("item_id") or item_dir.name)
-    if not ITEM_ID_RE.match(item_id) or ".." in item_id:  # it names the review entry file
+    if not valid_item_id(item_id):  # it names the review entry file
         raise PublishGateError(f"invalid item id {item_id!r} in {item_dir / 'manifest.json'}")
     generated_dry = bool((manifest.get("generator") or {}).get("dry_run"))
     simulated = dry_run and generated_dry
@@ -176,10 +257,10 @@ def check_ready(item_dir: str | Path, *, settings: dict | None = None,
 
     listing_path = item_dir / "listing.json"
     if not listing_path.exists():
-        raise PublishGateError(f"{item_id}: listing.json missing; run the listing stage. "
-                               + "; ".join(problems))
+        problems.insert(0, "listing.json missing; run the listing stage")
+        raise PublishGateError(f"{item_id}: " + "; ".join(problems), problems)
     listing = _load(listing_path, item_id)
-    # The listing stage records its dry-run mode under writer.dry_run.
+    # The listing stage records its dry-run mode twice: top-level dry_run and writer.dry_run.
     if (listing.get("dry_run") or (listing.get("writer") or {}).get("dry_run")) and not simulated:
         problems.append("listing.json was written in dry-run mode (template text)")
     shop_key = listing.get("shop_id") or manifest.get("shop_id")
@@ -189,14 +270,25 @@ def check_ready(item_dir: str | Path, *, settings: dict | None = None,
         shop = get_shop(settings, shop_key)
     except KeyError as e:
         raise PublishGateError(f"{item_id}: {e.args[0]}") from None
-    if shop.get("name", "").strip() in PLACEHOLDER_SHOP_NAMES and not simulated:
+    shop_name = str(shop.get("name") or "").strip()
+    # listing.json holds the shop name it was written with (in the disclosure), so a name
+    # fixed after listing needs the copy rewritten. `python -m listing --item` rewrites a
+    # 'listed' item; the default run only lists qa_passed ones.
+    relist = _with_out(f"python -m listing --item {item_dir.resolve().name}", item_dir, settings)
+    if is_placeholder_shop_name(shop) and not simulated:
         problems.append("shop name in config/settings.yaml is still the placeholder (the AI "
-                        "disclosure would show it); set it and rerun the listing stage")
+                        f"disclosure would show it); set it, then re-list with `{relist}`")
 
     title = (listing.get("title") or "").strip()
     description = (listing.get("description") or "").strip()
     tags = [str(t).strip() for t in listing.get("tags") or []]
     alt_texts = list(listing.get("alt_texts") or [])
+    if not simulated:  # the copy may predate a fixed shop name
+        texts = [t.casefold() for t in (title, description, *tags, *map(str, alt_texts))]
+        shown = [p for p in PLACEHOLDER_SHOP_NAMES if p and any(p.casefold() in t for t in texts)]
+        if shown:
+            problems.append(f"listing text still shows the placeholder shop name {', '.join(shown)}; "
+                            f"set the name in config/settings.yaml, then re-list with `{relist}`")
 
     images = [str(x) for x in listing.get("image_paths") or []]
     files = [str(x) for x in listing.get("file_paths") or []]
@@ -204,28 +296,25 @@ def check_ready(item_dir: str | Path, *, settings: dict | None = None,
     comp = section(settings, "compliance", {})
     blocklist = Blocklist.load(comp.get("trademark_blocklist"))
     # File names are sent to Etsy too; buyers see the download's name.
-    found = blocklist.check_obj({"title": title, "tags": tags, "description": description,
-                                 "alt_texts": alt_texts,
-                                 "file_names": [Path(rel).name for rel in images + files]})
+    found = _listing_check(listing, blocklist)
     blocked = sorted(set(found.blocked) | set((listing.get("compliance") or {}).get("blocked") or []))
     if blocked:
         problems.append(f"blocked trademark terms: {', '.join(blocked)}")
-    if manifest.get("ai_assisted", True) and not has_ai_disclosure(
-            description, shop.get("name", ""), comp.get("ai_disclosure")):
-        problems.append("AI-assisted item but the description lacks the text of config/ai_disclosure.txt")
+    # The copy is AI-written even when the designs are procedural (activity sheets), so the
+    # listing stage discloses on every listing by default; the gate follows the same rule
+    # and never relies on the listing's own claim alone.
+    writer = listing.get("writer") or {}
+    must_disclose = bool(manifest.get("ai_assisted", True) or listing.get("ai_disclosure_included")
+                         or writer.get("kind") == "model" or listing.get("model")
+                         or section(settings, "listing", {}).get("always_disclose_ai", True))
+    if must_disclose and not has_ai_disclosure(description, shop_name, comp.get("ai_disclosure")):
+        problems.append(f"the description lacks the AI disclosure (config/ai_disclosure.txt with shop "
+                        f"name {shop_name!r}); re-list with `{relist}`")
 
-    review_dir = Path(review_dir) if review_dir else default_review_dir(item_dir, settings)
-    entry_path = review_dir / f"{item_id}.json"
-    entry = _load(entry_path, item_id) if entry_path.exists() else {}
-    review_status = entry.get("status")
-    needs_review = bool(manifest.get("needs_review") or listing.get("needs_review")
-                        or (qa_report or {}).get("needs_review") or entry.get("needs_review")
-                        or found.flagged or (listing.get("compliance") or {}).get("flagged"))
-    if review_status == "rejected":
-        problems.append("rejected in the review queue")
-    elif needs_review and review_status != "approved":
-        problems.append(f"needs review (review status: {review_status or 'no entry'}); approve with "
-                        f"`python -m qa review approve {item_id}`")
+    review_problem, waiting = _review_gate(item_id, item_dir, manifest, listing, qa_report, found.flagged,
+                                           settings, review_dir)
+    if review_problem:
+        problems.append(review_problem)
 
     taxonomy_id = listing.get("taxonomy_id") or \
         (section(settings, "listing", {}).get("taxonomy_ids") or {}).get(manifest.get("niche"))
@@ -240,16 +329,17 @@ def check_ready(item_dir: str | Path, *, settings: dict | None = None,
 
     if listing.get("type", "download") != "download":
         problems.append(f"type is {listing.get('type')!r}; this shop only sells digital downloads")
-    if not title or len(title) > 140:
-        problems.append(f"title must be 1-140 characters (has {len(title)})")
+    max_title, max_tags, max_tag = _text_limits(settings)
+    if not title or len(title) > max_title:
+        problems.append(f"title must be 1-{max_title} characters (has {len(title)})")
     problems += _title_problems(title)
     if not description:
         problems.append("description is empty")
-    if len(tags) > 13 or len({t.lower() for t in tags}) != len(tags):
-        problems.append("tags must be at most 13 and unique")
+    if len(tags) > max_tags or len({t.lower() for t in tags}) != len(tags):
+        problems.append(f"tags must be at most {max_tags} and unique")
     for t in tags:
-        if not t or len(t) > 20:
-            problems.append(f"tag {t!r} must be 1-20 characters")
+        if not t or len(t) > max_tag:
+            problems.append(f"tag {t!r} must be 1-{max_tag} characters")
         problems += _tag_problems(t)
     try:
         raw_price = listing.get("price_usd")
@@ -280,7 +370,8 @@ def check_ready(item_dir: str | Path, *, settings: dict | None = None,
             problems.append(f"{rel} is {p.stat().st_size:,} bytes; Etsy allows {cfg['max_file_bytes']:,}")
 
     if problems:
-        raise PublishGateError(f"{item_id}: " + "; ".join(problems))
+        cls = ReviewPending if waiting and problems == [review_problem] else PublishGateError
+        raise cls(f"{item_id}: " + "; ".join(problems), problems)
 
     if len(alt_texts) != len(images):
         warnings.append(f"{len(alt_texts)} alt texts for {len(images)} photos")
@@ -374,6 +465,13 @@ def publish_draft(item_dir: str | Path, *, client: EtsyClient | None = None, dry
 
     discard_hint = f"run `python -m publisher discard --item {plan.item_id}` to start over"
     if record is None:
+        same = client.own_listing_titles().get(title_key(plan.fields["title"]))
+        if same:
+            raise PublishError(
+                f"{plan.item_id}: our shop already has {same['state']} listing {same['listing_id']} with the "
+                f"title {plan.fields['title']!r}. An earlier run whose publish.json is not here (for example "
+                "another CI checkout) probably drafted this item already. Check Shop Manager; delete that "
+                "listing or re-list this item with a different title, then rerun")
         try:
             resp = client.create_draft_listing(plan.fields)
         except EtsyAPIError as e:

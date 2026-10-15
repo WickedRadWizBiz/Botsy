@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 
 import qa
-from core.items import read_manifest, set_status, write_json, write_manifest
+from core.items import clear_downstream, read_manifest, set_status, write_json, write_manifest
 from qa import mockups, review
 from qa.__main__ import main
 
@@ -136,3 +136,61 @@ def test_cli_review_commands_find_the_entries_qa_wrote(tmp_path, settings, monke
     capsys.readouterr()
     assert main(["review", "list"]) == 0
     assert d.name in capsys.readouterr().out
+
+
+def test_regenerated_content_reopens_an_approval(tmp_path, settings):
+    """An approval covers the files and listing photos the person looked at. When the item is
+    regenerated with new art but QA finds no new reason (the flag came from the listing copy),
+    the approval must not carry over to pictures nobody reviewed."""
+    rdir = tmp_path / "review"
+    d = coloring_item(tmp_path / "out")
+    first = qa.run(d, settings=settings, review_dir=rdir)
+    entry = review.read_entry(d.name, rdir)
+    entry["reasons"].append("listing copy has review terms: Wicked")  # what listing/review.py adds
+    entry["needs_review"] = True
+    write_json(rdir / f"{d.name}.json", entry)
+    review.approve(d.name, rdir, note="reviewed")
+
+    again = qa.run(d, settings=settings, review_dir=rdir)  # plain recheck: same content
+    assert again["content_digest"] == first["content_digest"]
+    assert review.read_entry(d.name, rdir)["status"] == "approved"
+
+    clear_downstream(d)
+    coloring_item(tmp_path / "out", line_pt=4.0)  # the image model returned different art
+    report = qa.run(d, settings=settings, review_dir=rdir)
+    assert report["passed"] and not report["needs_review"]
+    assert report["content_digest"] != first["content_digest"]
+    entry = review.read_entry(d.name, rdir)
+    assert entry["status"] == "pending" and entry["previous_status"] == "approved" and entry["reopened"]
+    assert entry["needs_review"] and "listing copy has review terms: Wicked" in entry["reasons"]
+    assert entry["mockups"] == report["mockups"] and entry["content_digest"] == report["content_digest"]
+
+    review.approve(d.name, rdir, note="new art is fine")
+    qa.run(d, settings=settings, review_dir=rdir)
+    assert review.read_entry(d.name, rdir)["status"] == "approved"
+
+
+def test_approval_without_a_content_digest_is_reopened(tmp_path, settings):
+    """An approval that does not record what it covered (written before digests, or by hand)
+    cannot be matched to the current files, so QA asks again."""
+    rdir = tmp_path / "review"
+    d = coloring_item(tmp_path / "out")
+    write_json(rdir / f"{d.name}.json", {"item_id": d.name, "niche": "coloring_pages", "status": "approved",
+                                         "needs_review": True, "reasons": [], "mockups": []})
+    qa.run(d, settings=settings, review_dir=rdir, mockups=False)
+    entry = review.read_entry(d.name, rdir)
+    assert entry["status"] == "pending" and entry["previous_status"] == "approved"
+
+
+def test_cli_exits_1_when_an_item_fails(tmp_path, settings, monkeypatch, capsys):
+    """Like the listing and publisher CLIs, so CI shows a failed item."""
+    monkeypatch.setattr("qa.__main__.load_settings", lambda path=None: settings)
+    out = tmp_path / "out"
+    good = coloring_item(out, "item-a")
+    bad = coloring_item(out, "item-b")
+    pdf = bad / "files/farm-animals-us_letter.pdf"
+    pdf.write_bytes(pdf.read_bytes()[:200])  # truncated download
+    assert main(["--out", str(out), "--item", good.name, "--no-mockups"]) == 0
+    assert main(["--out", str(out), "--item", bad.name, "--no-mockups"]) == 1
+    assert main(["--out", str(out), "--no-mockups"]) == 1  # run_all
+    assert "FAIL  item-b" in capsys.readouterr().out

@@ -33,11 +33,19 @@ def base_settings() -> dict:
     return load_settings()
 
 
+def pinned(base: dict) -> dict:
+    """A copy of `base` with the values the user fills in during setup (shop name, default
+    prices, taxonomy ids) set to fixed test values, so the tests stay green after setup."""
+    s = copy.deepcopy(base)
+    s["shops"][0]["name"] = "Test Shop"
+    s["shops"][0]["default_price_usd"] = {"stickers": 3.5, "coloring_pages": 4.0, "activity_sheets": 4.0}
+    s.setdefault("listing", {})["taxonomy_ids"] = {"stickers": None, "coloring_pages": None, "activity_sheets": None}
+    return s
+
+
 @pytest.fixture
 def settings(base_settings) -> dict:
-    s = copy.deepcopy(base_settings)
-    s["shops"][0]["name"] = "Test Shop"
-    return s
+    return pinned(base_settings)
 
 
 def make_item(root: Path, *, niche: str = "coloring_pages", item_id: str = ITEM_ID, ai_assisted: bool = True,

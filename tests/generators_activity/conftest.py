@@ -53,7 +53,7 @@ def pack_dir(tmp_path_factory, settings):
         "brief_id": "activity_sheets-2026-10-15-02", "niche": "activity_sheets", "theme": "under the sea",
         "audience": "kids 4-8", "keywords": ["ocean activity pages"], "page_count": 9, "price_usd": 4.0,
         "page_sizes": ["us_letter", "a4"], "activity_types": ["maze", "word_search", "tracing", "dot_to_dot"],
-        "needs_review": False,
+        "evidence": {"listing_count": 12, "score": 0.6}, "needs_review": False,
     }
     out = tmp_path_factory.mktemp("out")
     [d] = generate(brief, brief_file="data/briefs/activity_sheets-2026-10-15.json", out_root=out,

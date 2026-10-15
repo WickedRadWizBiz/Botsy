@@ -33,7 +33,9 @@ def test_clean_coloring_item_passes(tmp_path, settings):
 
     entry = read_json(tmp_path / "review" / f"{d.name}.json")
     assert entry == {"item_id": d.name, "niche": "coloring_pages", "status": "pending", "needs_review": False,
-                     "reasons": [], "qa_reasons": [], "mockups": report["mockups"], "queued": report["checked"]}
+                     "reasons": [], "qa_reasons": [], "mockups": report["mockups"], "queued": report["checked"],
+                     "content_digest": report["content_digest"]}
+    assert len(report["content_digest"]) == 64
 
 
 @pytest.mark.slow

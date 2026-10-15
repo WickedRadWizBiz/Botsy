@@ -38,11 +38,12 @@ from core.render import pdf_info, render_pdf_pages
 from generators.imaging import cleanup
 from generators.imaging.client import FakeImageClient, ImageClient
 from generators.imaging.common import (
-    base_manifest, build_dir, check_budget, check_file_count, commit, file_name, generate_batch, image_params,
-    oversize_reasons, page_sizes_for, resolve_client, start_item,
+    base_manifest, build_dir, check_budget, check_file_count, commit, generate_batch, image_params,
+    oversize_reasons, resolve_client, start_item,
 )
 from generators.imaging.pdf import sticker_sheet_pdf
 from generators.imaging.prompts import plan_images
+from generators.shared import file_name, page_sizes_for
 
 __all__ = ["DEFAULTS", "NICHE", "generate"]
 
@@ -85,7 +86,8 @@ def generate(brief: dict, *, brief_file: str | Path | None = None, shop_id: str 
     cfg = section(settings, NICHE, DEFAULTS)
     vec = section(settings.get("vectorize", {}), NICHE, {"background_removal": "rembg"})
     img_cfg = section(settings, "imaging", {"fake_long_side_px": 1200})
-    ctx = start_item(brief, NICHE, settings, shop_id=shop_id, out_root=out_root, date=date)
+    ctx = start_item(brief, NICHE, settings, shop_id=shop_id, out_root=out_root, date=date,
+                     brief_file=brief_file, dry_run=dry_run)
     if ctx.skip:
         return [ctx.dir]
 

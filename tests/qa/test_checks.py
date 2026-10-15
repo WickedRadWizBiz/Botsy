@@ -29,6 +29,7 @@ def pdf_entry(rel="files/x-us_letter.pdf", pages=2):
 def test_etsy_limits_are_the_verified_values():
     assert qa.DEFAULTS["etsy_max_files"] == 5
     assert qa.DEFAULTS["etsy_max_file_bytes"] == 20_000_000
+    assert qa.DEFAULTS["etsy_max_file_name_chars"] == 70
 
 
 def test_manifest_schema_passes_for_complete_manifest(tmp_path, settings):
@@ -119,14 +120,32 @@ def test_etsy_file_count_and_size(tmp_path, settings):
         make_pdf(d / rel, pages=1)
         entries.append(pdf_entry(rel, 1))
     item = make_item(d, settings, files=entries)
-    count, size = check_etsy_limits(item)
+    count, size, name = check_etsy_limits(item)
     assert not count["passed"] and "6 digital files" in count["detail"]
-    assert size["passed"]
+    assert size["passed"] and name["passed"]
 
     item = make_item(d, settings, files=entries[:5])
     item.cfg["etsy_max_file_bytes"] = 500  # tiny limit instead of writing 20 MB files
-    count, size = check_etsy_limits(item)
+    count, size, _ = check_etsy_limits(item)
     assert count["passed"] and not size["passed"] and size["severity"] == "error"
+
+
+@pytest.mark.parametrize("name, ok", [
+    ("a" * 66 + ".pdf", True),                              # exactly 70
+    ("a" * 67 + ".pdf", False),                             # 71: Etsy refuses it
+    ("farm animals-us_letter.pdf", False),                  # space
+    ("farm-animals-\u00e9t\u00e9-us_letter.pdf", False),     # accented letters
+    ("farm-animals_v1.2-us_letter.pdf", True),
+])
+def test_etsy_file_name(tmp_path, settings, name, ok):
+    """Etsy file names cannot be changed after upload, so a bad one fails QA before drafting."""
+    d = tmp_path / "item-1"
+    rel = f"files/{name}"
+    make_pdf(d / rel, pages=1)
+    _, _, r = check_etsy_limits(make_item(d, settings, files=[pdf_entry(rel, 1)]))
+    assert r["passed"] is ok and r["severity"] == "error", r["detail"]
+    if not ok:
+        assert name in r["detail"]
 
 
 def test_compliance_blocked_term_is_error(tmp_path, settings, blocklist):

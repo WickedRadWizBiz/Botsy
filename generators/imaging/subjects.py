@@ -5,7 +5,10 @@ brief's theme and keywords. Order of the pool:
     1. curated subjects of every table entry the theme matches (round-robin across entries)
     2. generic scene templates filled with the theme ("a {t} picnic", ...)
     3. pose variants of the curated subjects ("a friendly cow, sleeping peacefully")
-Nothing repeats. All entries are generic nouns: no characters, brands or franchises, and
+Nothing repeats. A theme that names one kind of subject and no broader category ("sharks",
+"owls", "fire trucks") matches a mixed table, so only that table's subjects naming it stay
+in step 1; the templates come next and the table's other subjects come last, so a sharks
+pack is not filled with octopuses. Cats and dogs have tables of their own. All entries are generic nouns: no characters, brands or franchises, and
 tests check the whole table against config/trademark_blocklist.txt (which hard-blocks some
 everyday words such as "cars", "frozen" and "stitch", so the table avoids them).
 """
@@ -62,6 +65,19 @@ TABLE: dict[str, tuple[str, ...]] = {
         "a fox", "a bear", "a deer", "an owl on a branch", "a raccoon", "a hedgehog", "a squirrel",
         "a rabbit", "a badger", "a skunk", "a moose", "a beaver", "a chipmunk", "a mushroom house",
         "a woodpecker", "a wolf", "a porcupine", "a log cabin in the woods",
+    ),
+    "cats": (
+        "a kitten", "a cat with a ball of yarn", "a kitten in a box", "a sleeping cat curled up",
+        "a cat in a basket", "a cat stretching", "a kitten chasing a butterfly", "a cat on a windowsill",
+        "a cat with a fish", "a fluffy long-haired cat", "a kitten with a bow", "a cat napping in the sun",
+        "a mother cat with her kittens", "a cat peeking out of a paper bag", "a cat on a cushion",
+        "a kitten playing with a toy mouse",
+    ),
+    "dogs": (
+        "a puppy", "a dog with a ball", "a puppy in a basket", "a dog house", "a dog with a bone",
+        "a sleeping puppy", "a dog fetching a stick", "a puppy with a bow", "a dog wearing a sweater",
+        "a dog in a bubble bath", "a puppy chewing a slipper", "a dog catching a flying disc",
+        "a mother dog with her puppies", "a dog on a walk with a leash", "a fluffy dog", "a puppy in a teacup",
     ),
     "pets": (
         "a puppy", "a kitten", "a hamster", "a goldfish in a bowl", "a bunny", "a parrot", "a guinea pig",
@@ -184,7 +200,8 @@ TABLE: dict[str, tuple[str, ...]] = {
 # "animals" is dropped when the theme already names a kind of animal ("farm animals" ->
 # farm only), but kept beside a non-animal key ("spring animals" -> flowers + animals).
 GENERIC_KEYS = frozenset({"animals"})
-ANIMAL_KEYS = frozenset({"farm", "ocean", "dinosaurs", "jungle", "woodland", "pets", "bugs", "birds", "polar"})
+ANIMAL_KEYS = frozenset({"farm", "ocean", "dinosaurs", "jungle", "woodland", "pets", "cats", "dogs", "bugs",
+                         "birds", "polar"})
 
 # Single-word stems (see _stem) that point at a table key. Style adjectives ("kawaii",
 # "sweet", "cute") are deliberately absent: "kawaii animals" must not become a food pack.
@@ -199,7 +216,7 @@ ALIASES: dict[str, str] = {
     "construction": "construction", "digger": "construction", "excavator": "construction",
     "jungle": "jungle", "safari": "jungle", "zoo": "jungle", "rainforest": "jungle", "wild": "jungle",
     "woodland": "woodland", "forest": "woodland",
-    "pet": "pets", "dog": "pets", "puppy": "pets", "cat": "pets", "kitten": "pets", "kitty": "pets",
+    "pet": "pets", "dog": "dogs", "puppy": "dogs", "pup": "dogs", "cat": "cats", "kitten": "cats", "kitty": "cats",
     "bug": "bugs", "insect": "bugs", "butterfly": "bugs", "garden": "flowers",
     "bird": "birds", "owl": "birds",
     "polar": "polar", "arctic": "polar", "antarctic": "polar", "penguin": "polar", "winter": "polar",
@@ -218,6 +235,17 @@ ALIASES: dict[str, str] = {
     "music": "music", "musical": "music", "instrument": "music", "weather": "weather",
     "camping": "camping", "camp": "camping", "outdoor": "camping",
     "animal": "animals", "critter": "animals",
+}
+
+# Aliases that name one kind of subject inside a mixed table, with the words a subject must
+# contain to be about it. Used only when every alias in the theme is one of these.
+FOCUS: dict[str, tuple[str, ...]] = {
+    "cow": ("cow",), "pig": ("pig",), "fish": ("fish",), "whale": ("whale",), "shark": ("shark",),
+    "butterfly": ("butterfly",), "owl": ("owl",), "penguin": ("penguin",), "dragon": ("dragon",),
+    "fairy": ("fairy",), "astronaut": ("astronaut",), "rocket": ("rocket",), "planet": ("planet",),
+    "car": ("car",), "truck": ("truck",), "train": ("train",), "airplane": ("airplane",),
+    "plane": ("airplane", "plane"), "excavator": ("excavator",), "digger": ("excavator", "digger"),
+    "cupcake": ("cupcake",), "santa": ("santa",), "soccer": ("soccer",),
 }
 
 TEMPLATES: tuple[str, ...] = (
@@ -265,6 +293,25 @@ def singular_phrase(theme: str) -> str:
     return " ".join(words[:-1] + [_stem(words[-1])]) if words else theme
 
 
+def _alias_tokens(text: str) -> list[str]:
+    """The text's words that are aliases, in the form ALIASES knows them."""
+    out = []
+    for token in re.findall(r"[a-z]+", normalize(text)):
+        stem = _stem(token)
+        if stem in ALIASES or token in ALIASES:
+            out.append(stem if stem in ALIASES else token)
+    return out
+
+
+def focus_words(theme: str) -> set[str]:
+    """Words an on-theme subject must contain when the theme names only specific kinds of
+    subject ("sharks" -> {"shark"}); empty when it names a category ("ocean animals")."""
+    named = _alias_tokens(theme)
+    if not named or any(t not in FOCUS for t in named):
+        return set()
+    return {w for t in named for w in FOCUS[t]}
+
+
 def matched_keys(theme: str, keywords: list[str] | tuple[str, ...] = ()) -> list[str]:
     """Table keys for the theme (in word order); keywords count only if the theme matched nothing."""
     def keys_for(text: str) -> list[str]:
@@ -292,17 +339,12 @@ def subject_pool(theme: str, keywords: list[str] | tuple[str, ...] = ()) -> list
         for x in lists:
             if i < len(x) and x[i] not in curated:
                 curated.append(x[i])
+    focus = focus_words(theme)
+    on_theme = [s for s in curated if focus & {_stem(w) for w in re.findall(r"[a-z]+", s)}] if focus else curated
     adj = singular_phrase(theme.strip().lower())
-    pool = list(curated)
+    pool = list(on_theme)
     pool += [_article(t.format(t=adj)) for t in TEMPLATES]
-    bases = curated or [f"a cute {adj} character"]
+    bases = on_theme or [f"a cute {adj} character"]
     pool += [f"{b}, {pose}" for pose in POSES for b in bases]
+    pool += [s for s in curated if s not in on_theme]
     return list(dict.fromkeys(pool))
-
-
-def pick_subjects(theme: str, keywords: list[str] | tuple[str, ...], n: int) -> list[str]:
-    """The first n subjects of the pool; raises if the theme cannot fill n distinct subjects."""
-    pool = subject_pool(theme, keywords)
-    if n > len(pool):
-        raise ValueError(f"theme {theme!r} has only {len(pool)} distinct subjects; {n} were asked for")
-    return pool[:n]

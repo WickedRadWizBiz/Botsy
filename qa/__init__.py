@@ -9,22 +9,27 @@ section 3. Nothing here touches the network.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
 
+from core import etsy
 from core.compliance import Blocklist
 from core.config import load_settings, section, today
 from core.items import (
     iter_item_dirs,
     output_root,
     read_manifest,
+    review_dir_for,
     set_status,
     write_json,
 )
 from qa import review
 from qa.checks import (
     ERROR,
+    GROUPS,
     WARNING,
     Item,
     check_compliance,
@@ -43,8 +48,12 @@ DEFAULTS = {
     # (help.etsy.com/hc/en-us/articles/115015628347), checked 2026-10-15. The Open API v3
     # uploadListingFile spec states no limit of its own. 20 MB is read as 20,000,000 bytes,
     # the stricter of the two readings.
-    "etsy_max_files": 5,
-    "etsy_max_file_bytes": 20_000_000,
+    # The same page: file names up to 70 characters of letters, numbers, periods, underscores
+    # and hyphens, and a name cannot be changed after upload (checked by qa.checks).
+    # The values live in core/etsy.py, shared with the generators, listing and publisher.
+    "etsy_max_files": etsy.MAX_FILES,
+    "etsy_max_file_bytes": etsy.MAX_FILE_BYTES,
+    "etsy_max_file_name_chars": etsy.MAX_FILE_NAME_CHARS,
     "page_size_tolerance_pt": 1.0,
     "dpi_tolerance": 0.02,          # 2480 px across A4 is still "300 DPI"
     "blank_check_dpi": 36,
@@ -87,7 +96,7 @@ def run(item_dir: str | Path, *, settings: dict | None = None, review_dir: str |
     d = Path(item_dir)
     if not d.is_dir():
         raise FileNotFoundError(f"no item folder {d}")
-    rdir = Path(review_dir) if review_dir else review.default_dir(d, settings)
+    rdir = Path(review_dir) if review_dir else review_dir_for(d, settings)
 
     try:
         manifest = read_manifest(d)
@@ -118,6 +127,7 @@ def run(item_dir: str | Path, *, settings: dict | None = None, review_dir: str |
         shots = []
 
     report = _report(d.name, checks, shots)
+    report["content_digest"] = content_digest(item, shots) if report["passed"] else None
     write_json(d / "qa_report.json", report)
 
     status = manifest.get("status")
@@ -127,6 +137,31 @@ def run(item_dir: str | Path, *, settings: dict | None = None, review_dir: str |
         set_status(d, "qa_passed" if report["passed"] else "qa_failed")
     _update_queue(report, manifest, rdir)
     return report
+
+
+def content_digest(item: Item, shots: list[str]) -> str | None:
+    """sha256 over the paths and bytes of the item's files, previews, assets and listing
+    photos: what a person reviewing the item looks at. The review entry keeps it, so an
+    approval only stands for the content it covered. None if a file cannot be read."""
+    parts = []
+    try:
+        for group in GROUPS:
+            for e in item.entries(group):  # only paths check_paths approved
+                parts.append([group, e["path"], _sha256(item.path(e))])
+        for rel in shots:
+            parts.append(["mockups", rel, _sha256(item.dir / rel)])
+    except OSError as e:
+        log.warning("%s: content digest not computed: %s", item.dir.name, e)
+        return None
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _photos(d: Path) -> list[Path]:
@@ -230,6 +265,7 @@ def _report(item_id: str, checks: list[dict], shots: list[str]) -> dict:
         "checks": checks,
         "mockups": shots,
         "reasons": [f"{c['name']}: {c['detail']}" for c in warnings],
+        "content_digest": None,  # set by run() for a passing item
     }
 
 

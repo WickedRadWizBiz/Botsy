@@ -12,7 +12,6 @@ Own-shop and trend rows never count toward min_listings_per_pattern.
 from __future__ import annotations
 
 import csv
-import datetime
 import hashlib
 import logging
 import re
@@ -23,7 +22,7 @@ import pandas as pd
 
 from core.compliance import Blocklist, normalize
 from core.config import get_shop, load_settings, resolve, today
-from core.items import write_json
+from core.items import check_date, write_json
 from research import columns
 from research.aggregate import Row, Signal
 from research.briefs import build_doc
@@ -131,7 +130,13 @@ def load_market_file(path: Path, cfg: dict, niche_rules, known_niches) -> Market
     titles = {t for t in df["title"].astype(str).str.strip() if t}
     # Identifying columns end here: nothing below can see a shop, URL, id or image.
     df = df.drop(columns=[c for c in columns.IDENTIFYING if c in df])
-    return MarketFile(path.name, export.tool, export.shape, df, "competition" in export.mapping,
+    has_competition = "competition" in export.mapping
+    if export.shape == "keyword" and not has_competition:
+        log.warning("%s: keyword export has no competition (matching listings) column, so no "
+                    "row can show >= %d listings; none of its rows count. Export it with the "
+                    "competition column, or add a listing-level export.",
+                    path.name, cfg["min_listings_per_pattern"])
+    return MarketFile(path.name, export.tool, export.shape, df, has_competition,
                       shop_names, titles)
 
 
@@ -151,8 +156,8 @@ def rows_for_niche(files: list[MarketFile], niche: str, threshold: int,
             continue
         counted = 0
         for rec in sub.to_dict("records"):
-            if f.shape == "keyword" and f.has_competition:
-                comp = _num(rec, "competition")
+            if f.shape == "keyword":  # a search term stands for listings only via competition
+                comp = _num(rec, "competition")  # None when the export has no such column
                 if comp is None or comp < threshold:
                     continue
             counted += 1
@@ -182,9 +187,9 @@ def _source_entry(f: MarketFile, rows: int, counted: int, threshold: int) -> dic
     entry = {"tool": f.tool, "file": f.name, "shape": f.shape, "rows": rows, "counted_rows": counted}
     if f.shape == "keyword":
         entry["rule"] = (
-            f"keyword-level: a pattern needs >= {threshold} distinct keyword rows"
-            + (f", each with competition >= {threshold} listings" if f.has_competition
-               else " (no competition column)"))
+            f"keyword-level: a pattern needs >= {threshold} distinct keyword rows, each with "
+            f"competition >= {threshold} listings"
+            + ("" if f.has_competition else " (no competition column: no row counted)"))
     else:
         entry["rule"] = f"listing-level: a pattern needs >= {threshold} distinct listing rows"
     return entry
@@ -294,11 +299,7 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
         if niche not in known:
             raise ValueError(f"unknown niche {niche!r}; known: {', '.join(known)}")
         targets = [niche]
-    date = date or today()
-    # Python 3.11+ fromisoformat also takes "20261015" and "2026-W42-4"; names need YYYY-MM-DD.
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(date)):
-        raise ValueError(f"date must be YYYY-MM-DD, got {date!r}")
-    datetime.date.fromisoformat(date)  # ValueError on impossible dates (2026-02-30)
+    date = check_date(date or today())  # goes into the file name
     inputs = Path(inputs_dir) if inputs_dir else resolve(cfg["inputs_dir"])
     out_dir = Path(briefs_dir) if briefs_dir else resolve(cfg["briefs_dir"])
 

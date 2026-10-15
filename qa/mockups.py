@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from core.compliance import Blocklist
+from core.items import content_count as items_content_count
 from qa import draw
 from qa.checks import WARNING, Item, result
 from qa.lineart import iter_pdf_pages
@@ -198,23 +199,10 @@ def title_case(text: str) -> str:
 
 
 def content_count(m: dict, n_stickers: int) -> int | None:
-    """What the pack holds, for the "20 Coloring Pages" line. `n_stickers` is a fallback
-    only: the mockups load at most max_stickers images, not the whole pack."""
-    pack = m.get("pack") if isinstance(m.get("pack"), dict) else {}
-    for key in ("activity_pages", "content_pages", "pages", "stickers"):
-        if isinstance(pack.get(key), int) and pack[key] > 0:
-            return pack[key]
-    if m.get("niche") == "stickers":
-        def cut_outs(group: str) -> list:
-            return [e for e in m.get(group) or [] if isinstance(e, dict) and e.get("kind") == "png_transparent"]
-
-        n = len(cut_outs("assets") or cut_outs("files"))  # one set: assets, else the delivered files
-        zipped = [e.get("count") for e in m.get("files") or [] if isinstance(e, dict) and e.get("kind") == "zip"]
-        return n or next((c for c in zipped if isinstance(c, int) and c > 0), None) or n_stickers or None
-    for e in m.get("files") or []:
-        if isinstance(e, dict) and e.get("kind") == "pdf" and isinstance(e.get("pages"), int):
-            return e["pages"]
-    return None
+    """What the pack holds, for the "20 Coloring Pages" line (core.items.content_count, the
+    rule the listing copy uses). `n_stickers` is a fallback only: the mockups load at most
+    max_stickers images, not the whole pack."""
+    return items_content_count(m, n_stickers)
 
 
 def _texts(item: Item, sizes: list, n_stickers: int) -> dict:

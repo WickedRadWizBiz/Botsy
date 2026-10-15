@@ -8,6 +8,7 @@
 
 QA never calls a network service, so --dry-run is accepted but changes nothing: it runs the
 same in CI without secrets. --no-mockups skips the listing photos for a quick recheck.
+Exits 1 when any checked item fails QA, so CI shows it.
 """
 from __future__ import annotations
 
@@ -18,19 +19,21 @@ from pathlib import Path
 
 import qa
 from core.config import load_settings
-from core.items import output_root, review_root
+from core.items import review_dir_for_root, stage_out_root
 from qa import review
 
 
 def _review_dir(args, settings: dict) -> Path:
-    """Same rule as qa.review.default_dir, so `review` commands find the entries `qa` wrote:
-    settings paths.review_dir for the configured output dir, else <out>/review."""
+    """The folder `qa` queues into (core.items.review_dir_for_root), so `review` commands
+    find its entries: settings paths.review_dir for the configured output dir, else <out>/review."""
     if getattr(args, "review_dir", None):
         return Path(args.review_dir)
-    out = Path(args.out) if getattr(args, "out", None) else output_root(settings)
-    if out.resolve() == output_root(settings).resolve():
-        return review_root(settings)
-    return out / "review"
+    return review_dir_for_root(_out(args, settings), settings)
+
+
+def _out(args, settings: dict) -> Path:
+    """--out, else pipeline.dry_run_output_dir with --dry-run, else settings paths.output_dir."""
+    return stage_out_root(getattr(args, "out", None), settings, dry_run=bool(getattr(args, "dry_run", False)))
 
 
 def _item_dir(ref: str, out: Path) -> Path:
@@ -57,7 +60,7 @@ def _print_report(r: dict) -> None:
 
 
 def cmd_run(args, settings: dict) -> int:
-    out = Path(args.out) if args.out else output_root(settings)
+    out = _out(args, settings)
     review_dir = Path(args.review_dir) if args.review_dir else None
     if args.item:
         d = _item_dir(args.item, out)
@@ -74,7 +77,7 @@ def cmd_run(args, settings: dict) -> int:
     else:
         passed = sum(r["passed"] for r in reports)
         print(f"{passed}/{len(reports)} passed")
-    return 0
+    return 0 if all(r["passed"] for r in reports) else 1
 
 
 def cmd_review(args, settings: dict) -> int:
@@ -104,12 +107,14 @@ def cmd_review(args, settings: dict) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m qa", description="QA checks, mockups and the review queue.")
     p.add_argument("--item", help="item id (or item folder) to check; default: every item waiting for QA")
-    p.add_argument("--out", help="output root holding the item folders (default: settings paths.output_dir)")
+    p.add_argument("--out", help="output root holding the item folders (default: settings paths.output_dir, "
+                                 "or pipeline.dry_run_output_dir with --dry-run)")
     p.add_argument("--review-dir", help="review queue folder (default: settings paths.review_dir, or <out>/review)")
     p.add_argument("--settings", help="settings YAML (default: config/settings.yaml)")
     p.add_argument("--no-mockups", action="store_true", help="skip building listing photos")
     p.add_argument("--dry-run", action="store_true",
-                   help="accepted like the other stages; QA never uses the network, so it changes nothing")
+                   help="QA never uses the network; like the other stages, the default --out becomes "
+                        "pipeline.dry_run_output_dir")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command")
 
@@ -118,6 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--out", default=argparse.SUPPRESS)
     common.add_argument("--review-dir", default=argparse.SUPPRESS)
+    common.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS,
+                        help="default --out: pipeline.dry_run_output_dir (where dry runs queue)")
     rv = sub.add_parser("review", help="manage the human review queue")
     actions = rv.add_subparsers(dest="action", required=True)
     ls = actions.add_parser("list", parents=[common], help="show queue entries")

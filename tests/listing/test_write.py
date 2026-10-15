@@ -297,8 +297,9 @@ def test_price_fallback_and_taxonomy(tmp_path, settings):
         listing.write_listing(make_item(tmp_path / "out2"), dry_run=True, settings=settings)
 
 
-def test_placeholder_shop_name_is_a_warning(item, base_settings):
-    lst = listing.write_listing(item, dry_run=True, settings=base_settings)
+def test_placeholder_shop_name_is_a_warning(item, settings):
+    settings["shops"][0]["name"] = "YOUR_SHOP_NAME"
+    lst = listing.write_listing(item, dry_run=True, settings=settings)
     assert any("placeholder" in w for w in lst["warnings"])
 
 
@@ -363,3 +364,128 @@ def test_cli_dry_run(tmp_path, settings, capsys):
     assert main(["--out", str(out), "--item", "../escape", "--dry-run"]) == 2
     make_item(out, item_id="z-9", keywords=["minecraft coloring"])
     assert main(["--out", str(out), "--item", "z-9", "--dry-run", "--settings", str(settings_file)]) == 1
+
+
+# ------------------------------------------------------------------ dry runs on real items
+
+REAL_GEN = {"name": "coloring_pages", "model": "image-model-x", "dry_run": False}
+
+
+def test_dry_run_on_a_real_item_only_previews(tmp_path, settings):
+    d = make_item(tmp_path / "out", generator=REAL_GEN, keywords=["cinderella coloring pages"])
+    lst = listing.write_listing(d, dry_run=True, settings=settings)
+    assert lst["preview"] is True and lst["dry_run"] is True and lst["writer"]["kind"] == "template"
+    assert lst["needs_review"] is True  # the preview still runs every check
+    assert not (d / "listing.json").exists() and read_manifest(d)["status"] == "qa_passed"
+    assert not (tmp_path / "out" / "review").exists()  # no review entry for copy nobody will use
+    # a dry-run generated item still completes the simulated pipeline
+    sim = make_item(tmp_path / "sim")
+    assert "preview" not in listing.write_listing(sim, dry_run=True, settings=settings)
+    assert read_manifest(sim)["status"] == "listed" and (sim / "listing.json").exists()
+
+
+def test_dry_run_never_replaces_a_real_listing(tmp_path, settings):
+    d = make_item(tmp_path / "out", generator=REAL_GEN)
+    real = _write(d, settings, FakeClient(GOOD))
+    before = (d / "listing.json").read_bytes()
+    assert listing.run_all(tmp_path / "out", dry_run=True, settings=settings) == []  # listed: nothing to do
+    assert listing.write_listing(d, dry_run=True, settings=settings)["preview"] is True
+    assert (d / "listing.json").read_bytes() == before and read_json(d / "listing.json") == real
+    assert read_manifest(d)["status"] == "listed"
+
+
+def test_real_run_relists_a_real_item_stuck_with_dry_run_copy(tmp_path, settings):
+    out = tmp_path / "out"
+    stuck = make_item(out, item_id="a-1", generator=REAL_GEN, status="listed")
+    write_json(stuck / "listing.json", {"title": "T", "dry_run": True, "writer": {"kind": "template", "dry_run": True}})
+    old_style = make_item(out, item_id="b-2", generator=REAL_GEN, status="listed")  # only writer.dry_run set
+    write_json(old_style / "listing.json", {"title": "T", "writer": {"kind": "template", "dry_run": True}})
+    real = make_item(out, item_id="c-3", generator=REAL_GEN, status="listed")
+    write_json(real / "listing.json", {"title": "T", "shop_id": "main", "description": load_ai_disclosure("Test Shop"),
+                                       "dry_run": False, "writer": {"kind": "model", "dry_run": False}})
+    sim = make_item(out, item_id="d-4", status="listed")  # dry-run generated: its template copy is expected
+    write_json(sim / "listing.json", {"title": "T", "dry_run": True, "writer": {"kind": "template", "dry_run": True}})
+    assert [listing.needs_listing(d, settings=settings) for d in (stuck, old_style, real, sim)] == \
+        [True, True, False, False]
+    assert not listing.needs_listing(stuck, dry_run=True)  # a dry run would only preview it again
+    client = FakeClient(GOOD, GOOD)
+    results = listing.run_all(out, client=client, settings=settings)
+    assert [(r["item_id"], r["ok"]) for r in results] == [("a-1", True), ("b-2", True)] and len(client.calls) == 2
+    for d in (stuck, old_style):
+        lst = read_json(d / "listing.json")
+        assert lst["dry_run"] is False and lst["writer"]["kind"] == "model" and lst["title"] == GOOD["title"]
+    assert read_json(sim / "listing.json")["title"] == "T"
+
+
+def test_real_run_relists_copy_written_before_the_shop_name_was_set(tmp_path, settings):
+    """The publisher refuses copy whose disclosure names another shop or that shows the
+    placeholder; a real run re-lists it once the name is set, instead of leaving it stuck."""
+    out = tmp_path / "out"
+    old_name = make_item(out, item_id="a-1", generator=REAL_GEN, status="listed")
+    write_json(old_name / "listing.json", {"title": "T", "shop_id": "main", "description": load_ai_disclosure("Old Shop"),
+                                           "writer": {"kind": "model", "dry_run": False}})
+    placeholder = make_item(out, item_id="b-2", generator=REAL_GEN, status="listed")
+    write_json(placeholder / "listing.json", {"title": "T", "shop_id": "main",
+                                              "description": load_ai_disclosure("Test Shop") + " YOUR_SHOP_NAME",
+                                              "writer": {"kind": "model", "dry_run": False}})
+    assert listing.needs_listing(old_name, settings=settings) and listing.needs_listing(placeholder, settings=settings)
+    assert not listing.needs_listing(old_name, dry_run=True, settings=settings)
+    unset = json.loads(json.dumps(settings))
+    unset["shops"][0]["name"] = "YOUR_SHOP_NAME"  # re-listing now would only write the placeholder again
+    assert not listing.needs_listing(old_name, settings=unset) and not listing.needs_listing(placeholder, settings=unset)
+    client = FakeClient(GOOD, GOOD)
+    results = listing.run_all(out, client=client, settings=settings)
+    assert [r["ok"] for r in results] == [True, True] and len(client.calls) == 2
+    for d in (old_name, placeholder):
+        assert has_ai_disclosure(read_json(d / "listing.json")["description"], "Test Shop")
+        assert not listing.needs_listing(d, settings=settings)
+
+
+def test_cli_dry_run_on_a_real_item_says_preview(tmp_path, settings, capsys):
+    import yaml
+
+    out = tmp_path / "out"
+    d = make_item(out, generator=REAL_GEN)
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    assert main(["--out", str(out), "--dry-run", "--settings", str(settings_file)]) == 0
+    printed = capsys.readouterr().out
+    assert "preview (dry run on a real item; nothing written)" in printed and "1 preview only" in printed
+    assert not (d / "listing.json").exists() and read_manifest(d)["status"] == "qa_passed"
+
+
+# ------------------------------------------------------------------ review queue folder
+
+def _configured(tmp_path, settings):
+    """Settings whose configured output dir is tmp_path/out and review queue tmp_path/queue."""
+    import yaml
+
+    settings["paths"] = {**settings["paths"], "output_dir": str(tmp_path / "out"), "review_dir": str(tmp_path / "queue")}
+    f = tmp_path / "settings.yaml"
+    f.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    return f
+
+
+def test_cli_out_is_the_configured_output_dir_uses_the_configured_queue(tmp_path, settings):
+    settings_file = _configured(tmp_path, settings)
+    out, queue = tmp_path / "out", tmp_path / "queue"
+    make_item(out, keywords=["cinderella coloring pages"])
+    write_json(queue / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "niche": "coloring_pages", "status": "approved",
+                                           "needs_review": False, "reasons": [], "mockups": []})
+    make_item(out, item_id="r-1")
+    write_json(queue / "r-1.json", {"item_id": "r-1", "status": "rejected", "reasons": ["no"]})
+    assert main(["--out", str(out), "--dry-run", "--settings", str(settings_file)]) == 0
+    entry = read_json(queue / f"{ITEM_ID}.json")  # the queue QA and the publisher read
+    assert entry["status"] == "pending" and entry["previous_status"] == "approved"
+    assert any("Cinderella" in r for r in entry["reasons"])
+    assert not (out / "review").exists()
+    assert read_manifest(out / "r-1")["status"] == "qa_passed"  # rejection read from the same queue
+
+
+def test_cli_review_dir_option_still_wins(tmp_path, settings):
+    settings_file = _configured(tmp_path, settings)
+    out, other = tmp_path / "out", tmp_path / "other-queue"
+    make_item(out, keywords=["cinderella coloring pages"])
+    assert main(["--out", str(out), "--item", ITEM_ID, "--dry-run", "--review-dir", str(other),
+                 "--settings", str(settings_file)]) == 0
+    assert (other / f"{ITEM_ID}.json").exists() and not (tmp_path / "queue").exists()

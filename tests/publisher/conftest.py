@@ -26,6 +26,11 @@ def settings(base_settings) -> dict:
     s = copy.deepcopy(base_settings)
     s["shops"][0]["name"] = "Test Shop"  # the shipped placeholder name is refused for real drafts
     s["publisher"] = {"retries": 2}
+    # Pin what the user fills in or may switch in config/settings.yaml, so the tests do not
+    # depend on it: no taxonomy ids chosen yet, and the disclosure on every listing.
+    lst = s.setdefault("listing", {})
+    lst["taxonomy_ids"] = {niche: None for niche in ("stickers", "coloring_pages", "activity_sheets")}
+    lst["always_disclose_ai"] = True
     return s
 
 

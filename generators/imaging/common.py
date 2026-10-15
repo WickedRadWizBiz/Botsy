@@ -1,45 +1,40 @@
 """Plumbing shared by the image generators (coloring_pages, stickers).
 
-Each generator: check the brief, plan prompts (all blocklist-checked up front), check the
-image budget, generate one image per subject (a spare subject replaces one the model
-refuses), post-process into a scratch build folder, then swap the finished files in and
-write manifest.json (docs/CONTRACTS.md 2). Building aside means a rerun that fails half way
-(network, image cap, refusals) leaves the previous item exactly as it was.
+Each generator: check the brief (generators.shared.check_brief), plan prompts (all
+blocklist-checked up front), check the image budget, generate one image per subject (a spare
+subject replaces one the model refuses), post-process into a scratch build folder, then swap
+the finished files in and write manifest.json (docs/CONTRACTS.md 2). Building aside means a
+rerun that fails half way (network, image cap, refusals) leaves the previous item exactly as
+it was; a rerun that succeeds drops the old QA report, mockups and listing.
 """
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date as _date
 from pathlib import Path
 from typing import TypeVar
 
-from core.compliance import Blocklist, ComplianceResult, find_urls
-from core.config import ROOT, today
-from core.items import new_item_id, output_root, write_manifest
+from core.compliance import Blocklist, ComplianceResult
+from core.config import today
+from core.items import new_item_id, output_root
 from generators.imaging.client import (
     FakeImageClient, GeminiImageClient, ImageCapExceeded, ImageClient, ImageGenerationError, run_client,
 )
-from generators.imaging.prompts import PlannedImage, as_list, guard
+from generators.imaging.prompts import PlannedImage, guard, unlisted_style_clauses
+from generators.shared import (
+    ETSY_MAX_FILE_BYTES, ETSY_MAX_FILE_MB, ETSY_MAX_FILES, as_list, brief_price, check_brief, find_shop, item_date,
+    keep_existing, recorded_brief_file, swap_in,
+)
 
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Etsy digital listings: up to 5 files, 20 MB each, file names of at most 70 letters, digits,
-# periods, underscores or hyphens, not editable after upload (help.etsy.com, "How to Manage
-# Your Digital Listings"). QA reads 20 MB as 20,000,000 bytes, so we do too.
-ETSY_MAX_FILES = 5
-ETSY_MAX_FILE_MB = 20
-ETSY_MAX_NAME_CHARS = 70
-
 ITEM_SUBDIRS = ("files", "previews", "assets")
-BRIEF_TEXT_FIELDS = ("theme", "keywords", "audience", "style_notes")
 
 
 @dataclass
@@ -57,56 +52,28 @@ class ItemContext:
 
 
 def start_item(brief: dict, niche: str, settings: dict, *, shop_id: str = "main", out_root=None,
-               date: str | None = None) -> ItemContext:
-    """Validate the brief, refuse blocked terms and URLs, and compute the item's id and directory."""
-    if brief.get("niche", niche) != niche:
-        raise ValueError(f"brief niche {brief.get('niche')!r} is not {niche!r}")
-    theme = str(brief.get("theme") or "").strip()
-    if not theme:
-        raise ValueError("brief has no theme")
+               date: str | None = None, brief_file=None, dry_run: bool = False) -> ItemContext:
+    """Check the brief (generators.shared.check_brief) and compute the item's id and directory.
+
+    Raises ValueError for a brief that breaks a compliance rule and for a dry run that
+    would replace a real item; sets ctx.skip for an item that already has a real Etsy draft.
+    """
+    checked = check_brief(brief, niche, settings, brief_file)
     shop = find_shop(settings, shop_id)
-    blocklist = Blocklist.load(settings.get("compliance", {}).get("trademark_blocklist"))
-    texts = {k: brief.get(k) for k in BRIEF_TEXT_FIELDS}
-    check = blocklist.check_obj(texts)
-    if check.blocked:
-        raise ValueError(f"brief contains blocked terms {check.blocked}; not generating")
-    marked = (brief.get("compliance") or {}).get("blocked") or []
-    if marked:
-        raise ValueError(f"brief is marked with blocked terms {marked}; not generating")
-    urls = find_urls(texts)
-    if urls:
-        raise ValueError(f"brief contains URLs {urls[:3]}; briefs must not reference listings")
-    date = check_date(date or today())
-    item_id = new_item_id(date, niche, theme, salt=brief.get("brief_id") or "")
+    date = item_date(date or today())
+    item_id = new_item_id(date, niche, checked.theme, salt=brief.get("brief_id") or "")
     d = (Path(out_root) if out_root else output_root(settings)) / item_id
-    ctx = ItemContext(niche, theme, item_id, d, date, blocklist, check, shop)
-    if check.flagged:
-        ctx.review_reasons.append(f"brief mentions review terms {check.flagged}")
-    if brief.get("needs_review"):
-        ctx.review_reasons.append("brief marked needs_review by research")
-    if (d / "publish.json").exists():
-        log.warning("%s already has an Etsy draft; leaving its files untouched", item_id)
-        ctx.skip = True
+    ctx = ItemContext(niche, checked.theme, item_id, d, date, checked.blocklist, checked.check, shop,
+                      review_reasons=list(checked.review_reasons))
+    ctx.skip = keep_existing(d, item_id, dry_run)
+    unlisted = unlisted_style_clauses(brief.get("style_notes"))
+    if unlisted:
+        log.warning("%s: %d brief style_notes clause(s) are not on the prompt allowlist; left out of the "
+                    "prompts", item_id, len(unlisted))
+        ctx.review_reasons.append(f"{len(unlisted)} brief style_notes clause(s) are not on the prompt "
+                                  "allowlist (generators/imaging/prompts.py STYLE_CLAUSES) and were left out "
+                                  "of the prompts")
     return ctx
-
-
-def check_date(value: str) -> str:
-    """The item date becomes part of a folder name, so it must be a plain, real YYYY-MM-DD."""
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)):
-        raise ValueError(f"date {value!r} is not YYYY-MM-DD")
-    try:
-        _date.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError(f"date {value!r} is not a real date: {exc}") from None
-    return value
-
-
-def find_shop(settings: dict, shop_id: str) -> dict:
-    """The settings entry for shop_id. An unknown shop is an error, not a pack without a price."""
-    for shop in settings.get("shops") or []:
-        if shop.get("id") == shop_id:
-            return shop
-    raise ValueError(f"unknown shop id {shop_id!r}; known: {[s.get('id') for s in settings.get('shops') or []]}")
 
 
 @contextmanager
@@ -124,12 +91,9 @@ def build_dir(ctx: ItemContext) -> Iterator[Path]:
 
 
 def commit(build: Path, d: Path, manifest: dict) -> None:
-    """Swap the finished subfolders in (reruns leave no stale pages), then write the manifest."""
-    d.mkdir(parents=True, exist_ok=True)
-    for sub in ITEM_SUBDIRS:
-        shutil.rmtree(d / sub, ignore_errors=True)
-        (build / sub).replace(d / sub)
-    write_manifest(d, manifest)
+    """Swap the finished subfolders in (reruns leave no stale pages, QA report, mockups or
+    listing; generators.shared.swap_in), then write the manifest."""
+    swap_in(build, d, ITEM_SUBDIRS, manifest)
 
 
 def image_params(settings: dict, kind: str) -> tuple[str, str]:
@@ -191,16 +155,6 @@ def generate_batch(client: ImageClient, planned: list[PlannedImage], n: int, *, 
     return done, skipped
 
 
-def file_name(slug: str, suffix: str) -> str:
-    """'<slug><suffix>' that Etsy accepts as a digital file name: only letters, digits, '.',
-    '_' and '-', and at most 70 characters (the theme slug is shortened to fit)."""
-    suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", suffix)
-    room = ETSY_MAX_NAME_CHARS - len(suffix)
-    if room < 3:
-        raise ValueError(f"file name suffix {suffix!r} leaves no room for a name under {ETSY_MAX_NAME_CHARS} chars")
-    return (slug[:room].rstrip("-") or "item") + suffix
-
-
 def check_file_count(n: int) -> None:
     """Refuse up front (before any image is paid for) a pack Etsy could not accept."""
     if n > ETSY_MAX_FILES:
@@ -211,32 +165,13 @@ def oversize_reasons(d: Path, files: list[dict]) -> list[str]:
     """Review reasons for files above Etsy's per-file limit."""
     reasons = []
     for f in files:
-        mb = (d / f["path"]).stat().st_size / 1e6
-        if mb > ETSY_MAX_FILE_MB:
+        size = (d / f["path"]).stat().st_size
+        mb = size / 1e6
+        if size > ETSY_MAX_FILE_BYTES:
             reasons.append(f"{f['path']} is {mb:.1f} MB; Etsy allows {ETSY_MAX_FILE_MB} MB per file")
     if len(files) > ETSY_MAX_FILES:
         reasons.append(f"{len(files)} digital files; Etsy allows {ETSY_MAX_FILES} per listing")
     return reasons
-
-
-def page_sizes_for(brief: dict, settings: dict) -> list[str]:
-    """Brief's page sizes that settings know (default: all); only the first unless
-    print.deliver_both_sizes is true."""
-    known = list(settings["print"]["page_sizes"])
-    asked = [s for s in as_list(brief.get("page_sizes")) if s in known] or known
-    return asked if settings["print"].get("deliver_both_sizes", True) else asked[:1]
-
-
-def repo_relative(path: str | Path | None) -> str | None:
-    if path is None:
-        return None
-    p = Path(path)
-    if p.is_absolute():
-        try:
-            p = p.resolve().relative_to(ROOT)
-        except ValueError:
-            pass
-    return p.as_posix()
 
 
 def base_manifest(ctx: ItemContext, brief: dict, *, brief_file, shop_id: str, settings: dict,
@@ -245,18 +180,18 @@ def base_manifest(ctx: ItemContext, brief: dict, *, brief_file, shop_id: str, se
     reasons = list(ctx.review_reasons)
     if prompt_check.flagged:
         reasons.append(f"prompts mention review terms {prompt_check.flagged}")
-    price = brief.get("price_usd")
+    price = brief_price(brief, ctx.shop, ctx.niche, reasons)
     return {
         "schema": "manifest/v1",
         "item_id": ctx.item_id,
         "niche": ctx.niche,
         "shop_id": shop_id,
         "brief_id": brief.get("brief_id"),
-        "brief_file": repo_relative(brief_file),
+        "brief_file": recorded_brief_file(brief_file),
         "theme": ctx.theme,
         "keywords": as_list(brief.get("keywords")),
         "audience": brief.get("audience"),
-        "price_usd": price if price is not None else (ctx.shop.get("default_price_usd") or {}).get(ctx.niche),
+        "price_usd": price,
         "created": ctx.date,
         "ai_assisted": True,
         "needs_review": bool(reasons),

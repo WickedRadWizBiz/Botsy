@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -10,6 +11,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "config"
+# Dates end up in folder and file names. Python 3.11+ fromisoformat also accepts
+# "20261015" and the ISO week date "2026-W42-4", so the shape is checked first.
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# config/settings.yaml ships with this shop name; real drafts are refused until it is set.
+PLACEHOLDER_SHOP_NAMES = ("", "YOUR_SHOP_NAME")
 
 
 class MissingSecretError(RuntimeError):
@@ -52,6 +58,11 @@ def get_shop(settings: dict, shop_id: str | None = None) -> dict:
     raise KeyError(f"unknown shop id {shop_id!r}; known: {[s['id'] for s in shops]}")
 
 
+def is_placeholder_shop_name(shop: dict) -> bool:
+    """True while the shop's display name is still the shipped placeholder (or empty)."""
+    return str(shop.get("name") or "").strip() in PLACEHOLDER_SHOP_NAMES
+
+
 def load_env() -> None:
     """Load .env from the repo root into os.environ (existing variables win)."""
     from dotenv import load_dotenv
@@ -67,10 +78,21 @@ def require_env(name: str) -> str:
     return value
 
 
+def check_date(value) -> str:
+    """Return `value` if it is a real date written YYYY-MM-DD, else raise ValueError."""
+    if not isinstance(value, str) or not DATE_RE.fullmatch(value):
+        raise ValueError(f"date must be YYYY-MM-DD, got {value!r}")
+    try:
+        date.fromisoformat(value)
+    except ValueError as e:
+        raise ValueError(f"date {value!r} is not a real date: {e}") from None
+    return value
+
+
 def today() -> str:
     """ISO date for output names. PIPELINE_DATE overrides it for reproducible runs."""
     value = os.environ.get("PIPELINE_DATE") or date.today().isoformat()
-    date.fromisoformat(value)  # raises ValueError on anything that is not YYYY-MM-DD
-    if len(value) != 10:
-        raise ValueError(f"PIPELINE_DATE must be YYYY-MM-DD, got {value!r}")
-    return value
+    try:
+        return check_date(value)
+    except ValueError as e:
+        raise ValueError(f"PIPELINE_DATE: {e}") from None

@@ -28,12 +28,13 @@ def _write(item, settings, client, **kw):
 
 # ------------------------------------------------------------------ blocklist field boundaries
 
-def test_check_each_does_not_read_a_term_across_fields():
+def test_blocklist_does_not_read_a_term_across_fields():
+    # The listing stage passes each field (and each description line) to Blocklist.check
+    # as its own string; core checks each one on its own.
     bl = Blocklist.load()
-    assert bl.check("wooden toy", "story time").blocked == []  # core checks each string on its own
-    assert rules.check_each(bl, ["wooden toy", "story time"]).blocked == []
-    assert rules.check_each(bl, ["a toy story night"]).blocked == ["Toy Story"]  # within a field it still hits
-    assert rules.check_each(bl, ["", "  ", "Cinderella castle"]).flagged == ["Cinderella"]
+    assert bl.check("wooden toy", "story time").blocked == []
+    assert bl.check("a toy story night").blocked == ["Toy Story"]  # within a field it still hits
+    assert bl.check("", "  ", "Cinderella castle").flagged == ["Cinderella"]
 
 
 def test_adjacent_tags_that_spell_a_trademark_are_not_blocked(item, settings):
@@ -241,3 +242,49 @@ def test_cli_single_item_reports_unexpected_errors(tmp_path, settings, capsys):
     settings_file.write_text(yaml.safe_dump(settings), encoding="utf-8")
     assert main(["--out", str(out), "--item", ITEM_ID, "--dry-run", "--settings", str(settings_file)]) == 1
     assert "FAIL  " + ITEM_ID in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ setup errors and fixtures
+
+@pytest.fixture
+def no_api_key(monkeypatch):
+    import core.config
+
+    monkeypatch.setattr(core.config, "load_env", lambda: None)  # never read a real .env
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
+def test_missing_api_key_is_a_setup_error(no_api_key, monkeypatch):
+    from core.config import MissingSecretError
+
+    with pytest.raises(MissingSecretError, match="ANTHROPIC_API_KEY"):
+        listing.default_client()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert listing.default_client().api_key == "test-key"  # passed explicitly, no request made
+
+
+def test_cli_without_api_key_stops_before_any_item(no_api_key, tmp_path, settings, capsys, caplog):
+    import yaml
+
+    out = tmp_path / "out"
+    a, b = make_item(out, item_id="a-1"), make_item(out, item_id="b-2")
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    assert main(["--out", str(out), "--settings", str(settings_file)]) == 2
+    assert main(["--out", str(out), "--item", "a-1", "--settings", str(settings_file)]) == 2
+    captured = capsys.readouterr()
+    assert captured.err.count("ANTHROPIC_API_KEY is not set") == 2 and "FAIL" not in captured.out
+    assert "crashed" not in caplog.text and "Traceback" not in captured.err
+    for d in (a, b):
+        assert not (d / "listing.json").exists() and read_manifest(d)["status"] == "qa_passed"
+    assert main(["--out", str(out), "--dry-run", "--settings", str(settings_file)]) == 0  # dry run needs no key
+
+
+def test_settings_fixture_ignores_the_values_the_user_fills_in(base_settings):
+    from .conftest import pinned
+
+    filled = copy.deepcopy(base_settings)
+    filled["shops"][0]["name"] = "Maple Lane Prints"
+    filled["shops"][0]["default_price_usd"] = {"stickers": 2.75, "coloring_pages": 5.25, "activity_sheets": 6.0}
+    filled["listing"]["taxonomy_ids"] = {"stickers": 111, "coloring_pages": 222, "activity_sheets": 333}
+    assert pinned(filled) == pinned(base_settings)

@@ -13,14 +13,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import ssl
 import sys
 from pathlib import Path
 
 from core.config import ROOT, MissingSecretError, load_settings, require_env, resolve
 from core.items import item_dir as default_item_dir
-from core.items import output_root
+from core.items import output_root, stage_out_root, valid_item_id
 from publisher import auth as oauth
 from publisher import own_stats, taxonomy
 from publisher.client import EtsyAPIError, EtsyClient
@@ -35,14 +34,12 @@ from publisher.publish import (
 )
 from publisher.safety import SafetyViolation
 
-ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
 
 def _item_dir(item: str, out: str | None, settings: dict) -> Path:
     p = Path(item)
     if p.is_dir() and (p / "manifest.json").exists():
         return p
-    if not ITEM_ID_RE.match(item) or ".." in item:
+    if not valid_item_id(item):
         raise PublishGateError(f"invalid item id {item!r}")
     d = default_item_dir(item, Path(out) if out else output_root(settings))
     if not (d / "manifest.json").exists():
@@ -80,6 +77,9 @@ def cmd_auth(args, settings) -> int:
 
 
 def cmd_publish(args, settings) -> int:
+    # Like every stage CLI, a dry run defaults to pipeline.dry_run_output_dir; preview real
+    # items with an explicit --out (for example --out output).
+    args.out = str(stage_out_root(args.out, settings, dry_run=args.dry_run))
     if args.item:
         d = _item_dir(args.item, args.out, settings)
         try:
@@ -157,9 +157,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("publish", help="create Etsy drafts for listed items")
     p.add_argument("--item", help="item id (or item folder); default: every item with status 'listed'")
-    p.add_argument("--out", help="output root holding the item folders (default: settings paths.output_dir)")
+    p.add_argument("--out", help="output root holding the item folders (default: settings paths.output_dir, "
+                                 "or pipeline.dry_run_output_dir with --dry-run)")
     p.add_argument("--review-dir", help="review queue folder (default: settings paths.review_dir, or <out>/review)")
-    p.add_argument("--dry-run", action="store_true", help="fake Etsy client, no secrets; real items are only previewed")
+    p.add_argument("--dry-run", action="store_true",
+                   help="fake Etsy client, no secrets; real items (e.g. --out output) are only previewed")
 
     d = sub.add_parser("discard", help="delete this tool's draft for an item and forget it (start over)")
     d.add_argument("--item", required=True)

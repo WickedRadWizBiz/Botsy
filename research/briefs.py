@@ -9,8 +9,7 @@ from __future__ import annotations
 from research.aggregate import (Phrase, Row, Signal, Theme, collect_phrases, find_themes,
                                 keyword_clusters, page_count_patterns, phrase_order,
                                 price_band_patterns, select_distinct, tally)
-from core.compliance import iter_strings
-from research.guard import Guard, check_each
+from research.guard import Guard
 from research.text import TextRules, head
 
 ACTIVITY_TYPES = ("maze", "word_search", "tracing", "dot_to_dot")
@@ -127,7 +126,7 @@ def build_doc(niche: str, rows: list[Row], sources: list[dict], *, settings: dic
             "evidence": {"listing_count": len(theme.rows), "listing_rows": theme.listing_rows,
                          "keyword_rows": theme.keyword_rows, "score": theme.demand},
         }
-        result = check_each(guard.blocklist, iter_strings(brief))
+        result = guard.blocklist.check_obj(brief)
         if result.blocked:
             continue  # contract: a brief with any blocked term is dropped
         flagged = sorted(set(result.flagged) | set(theme.flagged))

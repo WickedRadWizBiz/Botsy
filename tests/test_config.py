@@ -52,3 +52,45 @@ def test_env_example_has_no_values_for_secrets():
             k, v = line.split("=", 1)
             if any(s in k for s in ("KEY", "SECRET", "KEYSTRING")):
                 assert v == "", f"{k} should be blank in .env.example"
+
+
+def test_gitignore_keeps_secrets_out_of_git():
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if not shutil.which("git") or not (ROOT / ".git").exists():
+        pytest.skip("needs a git checkout")
+    secret = [".env", ".env.local", ".env.production", ".etsy_tokens.json", "..etsy_tokens.json.tmp",
+              ".etsy_tokens_second.json", "etsy_tokens_second.json", "data/research_inputs/erank.csv"]
+    kept = [".env.example", "config/settings.yaml", "data/briefs/stickers-2026-10-15.json"]
+    def ignored(path):
+        return subprocess.run(["git", "check-ignore", "--no-index", "-q", path], cwd=ROOT).returncode == 0
+    assert [p for p in secret if not ignored(p)] == []
+    assert [p for p in kept if ignored(p)] == []
+
+
+def test_env_example_readme_references_exist():
+    import re
+
+    env = (ROOT / ".env.example").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    headings = [l.lstrip("#").strip() for l in readme.splitlines() if l.startswith("#")]
+    for ref in re.findall(r'README "([^"]+)"', env):
+        assert ref in headings, f".env.example points to README section {ref!r}"
+
+
+def test_weekly_workflow_scopes_secrets_and_inputs():
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "weekly.yml").read_text(encoding="utf-8"))
+    job = wf["jobs"]["batch"]
+    assert not any("secrets." in str(v) for v in (job.get("env") or {}).values()), "secrets in job-level env"
+    secret_steps = {s["name"] for s in job["steps"] if "secrets." in str(s.get("env"))}
+    assert secret_steps <= {"Run pipeline", "Save rotated Etsy refresh token"}
+    inputs = wf[True]["workflow_dispatch"]["inputs"]  # PyYAML reads the key `on` as True
+    assert inputs["niche"]["type"] == "choice" and inputs["max_items"]["type"] == "number"
+
+
+def test_brief_age_guard_is_below_the_weekly_cadence():
+    age = load_settings()["pipeline"]["max_brief_age_days"]
+    assert age is None or 0 <= age < 7

@@ -5,9 +5,10 @@ real listings.
 - Listing-level rows (one row per competitor listing) always count. A pattern
   needs >= T distinct listing rows.
 - Keyword-level rows (one row per search term, no listings) count only when the
-  export has no competition column, or the row's competition (number of listings
-  matching the term) is >= T; a row with unknown competition does not count. A
-  pattern needs >= T such distinct keyword rows.
+  row's competition (number of listings matching the term) is known and >= T. A row
+  with unknown competition does not count, and neither does any row of an export
+  with no competition column (it shows no listings at all). A pattern needs >= T
+  such distinct keyword rows.
 - The two kinds are not added together to reach T. `listing_count` reports all
   supporting rows (listing rows + counted keyword rows).
 - A row whose text names a hard-blocked term (a licensed-property listing) never

@@ -2,9 +2,14 @@
 
     write_listing(item_dir, *, client=None, dry_run=False, settings=None, review_dir=None) -> dict
     run_all(out_root=None, *, client=None, dry_run=False, settings=None, review_dir=None) -> list[dict]
+    needs_listing(item_dir, *, dry_run=False, settings=None) -> bool
 
 Writes <item>/listing.json (docs/CONTRACTS.md section 4) and sets the manifest status to
-"listed". The text model sees only our own product facts (listing/facts.py), never a
+"listed". A dry run on a real item (manifest generator.dry_run false) only previews, like
+the publisher: it builds and checks the template copy and returns it with `preview: true`
+but writes nothing, so template text can never take the place of a real listing.
+
+The text model sees only our own product facts (listing/facts.py), never a
 competitor's title, description or image. Its JSON draft, or in a dry run a template
 draft, always goes through the same Etsy rule check (listing/rules.py); a model draft that
 fails is sent back with the problems up to `max_retries` times, then repaired in code.
@@ -22,9 +27,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from core import etsy
 from core.compliance import Blocklist, find_urls, has_ai_disclosure, iter_strings, load_ai_disclosure
-from core.config import get_shop, load_env, load_settings, section, today
-from core.items import iter_item_dirs, output_root, read_json, read_manifest, set_status, write_json
+from core.config import (PLACEHOLDER_SHOP_NAMES, get_shop, is_placeholder_shop_name, load_settings, require_env,
+                         section, today)
+from core.items import (iter_item_dirs, output_root, read_json, read_manifest, review_dir_for, set_status,
+                        write_json)
 from listing import model, review, rules, template
 from listing.errors import ListingComplianceError, ListingError, ListingValidationError
 from listing.facts import gather, safe_rel
@@ -32,10 +40,10 @@ from listing.facts import gather, safe_rel
 log = logging.getLogger("listing")
 
 DEFAULTS = {
-    "title_max_chars": 140,         # Etsy Help Center; settings listing.title_max_chars
-    "tags_count": 13,
-    "tag_max_chars": 20,
-    "alt_text_max_chars": 500,      # Open API v3 uploadListingImage alt_text: "Max length 500 characters."
+    "title_max_chars": etsy.TITLE_MAX_CHARS,   # Etsy Help Center (core/etsy.py); settings listing.title_max_chars
+    "tags_count": etsy.TAGS_MAX,
+    "tag_max_chars": etsy.TAG_MAX_CHARS,
+    "alt_text_max_chars": etsy.ALT_TEXT_MAX_CHARS,  # Open API v3 uploadListingImage: "Max length 500 characters."
     "hook_max_chars": 300,
     "about_max_chars": 900,
     "suggested_uses": {"min": 3, "max": 6, "max_chars": 160},
@@ -78,7 +86,6 @@ DEFAULTS = {
 }
 
 LISTABLE_STATUSES = ("qa_passed", "listed")
-PLACEHOLDER_SHOP_NAME = "YOUR_SHOP_NAME"
 
 
 def write_listing(item_dir: str | Path, *, client=None, dry_run: bool = False, settings: dict | None = None,
@@ -86,9 +93,12 @@ def write_listing(item_dir: str | Path, *, client=None, dry_run: bool = False, s
     """Write listing.json for one QA-passed item and return it. Raises ListingError (or
     ListingComplianceError) when the item cannot be listed; nothing is written then.
 
+    A dry run on a real item is a preview: the listing is returned (with `preview: true`)
+    but listing.json, the status and the review queue are left alone.
+
     On a rerun that hits a blocked term (say the blocklist grew), the earlier listing.json
     is moved aside and the item goes back to qa_passed, so no stale copy stays ready for
-    the publisher."""
+    the publisher. This also happens in a preview: a refusal only ever tightens."""
     d = Path(item_dir)
     try:
         return _write_listing(d, client=client, dry_run=dry_run, settings=settings or load_settings(),
@@ -103,6 +113,7 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
     comp = settings.get("compliance") or {}
     manifest, report = _load_item(d)
     item_id = d.name
+    preview = bool(dry_run) and not _generated_dry(manifest)
     try:
         shop = get_shop(settings, manifest.get("shop_id"))
     except KeyError as e:
@@ -114,7 +125,7 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
     images = _image_paths(d, report)
     files = _file_paths(d, manifest)
     facts = gather(manifest, images, cfg, settings)
-    data_check = rules.check_each(blocklist, iter_strings(facts))
+    data_check = blocklist.check(*iter_strings(facts))
     if data_check.blocked:  # never send a trademark to the model or into a listing
         raise ListingComplianceError(f"{item_id}: item data has blocked terms: {', '.join(data_check.blocked)}",
                                      data_check.blocked)
@@ -163,7 +174,7 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
     # Description checked line by line: its lines are our fixed sections and single
     # model fields, and a term should not be read across a line break between them.
     final_texts = [draft["title"], *draft["tags"], *description.splitlines(), *draft["alt_texts"]]
-    found = rules.check_each(blocklist, final_texts)
+    found = blocklist.check(*final_texts)
     if found.blocked:
         raise ListingComplianceError(f"{item_id}: listing has blocked terms: {', '.join(found.blocked)}", found.blocked)
     if find_urls(final_texts):
@@ -182,7 +193,7 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
         reasons.append("QA warnings: " + "; ".join(report.get("reasons") or ["see qa_report.json"]))
 
     warnings = []
-    if shop.get("name", "").strip() in ("", PLACEHOLDER_SHOP_NAME):
+    if is_placeholder_shop_name(shop):
         warnings.append("shop name in config/settings.yaml is still the placeholder; the AI disclosure shows it")
     if taxonomy_id is None:
         warnings.append(f"listing.taxonomy_ids.{manifest.get('niche')} is not set; Etsy needs it to create a draft")
@@ -217,8 +228,12 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
         "writer": writer,
         "created": today(),
     }
+    if preview:  # dry run on a real item: never replace its listing with template text
+        listing["preview"] = True
+        log.info("previewed %s (dry run on a real item; nothing written): %s", item_id, listing["title"])
+        return listing
     if listing_reasons:  # queue first: a listing must never exist without its review flag
-        rdir = Path(review_dir) if review_dir else review.default_dir(d, settings)
+        rdir = Path(review_dir) if review_dir else review_dir_for(d, settings)
         try:
             review.flag(item_id, manifest.get("niche"), listing_reasons, images, rdir)
         except (OSError, ValueError) as e:  # unreadable entry may hold a decision: do not overwrite it
@@ -232,19 +247,16 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
 
 def run_all(out_root: str | Path | None = None, *, client=None, dry_run: bool = False,
             settings: dict | None = None, review_dir: str | Path | None = None) -> list[dict]:
-    """List every qa_passed item. One result per item: {item_id, ok, listing, error}.
-    Items rejected in the review queue are skipped (no API call spent on them)."""
+    """List every item that needs_listing(). One result per item: {item_id, ok, listing,
+    error}. Items rejected in the review queue are skipped (no API call spent on them).
+    Raises MissingSecretError up front when a real run has no ANTHROPIC_API_KEY."""
     settings = settings or load_settings()
     root = Path(out_root) if out_root else output_root(settings)
     results = []
     for d in iter_item_dirs(root):
-        try:
-            status = read_manifest(d).get("status")
-        except (OSError, ValueError, AttributeError):
-            status = None
-        if status != "qa_passed":
+        if not needs_listing(d, dry_run=dry_run, settings=settings):
             continue
-        rdir = Path(review_dir) if review_dir else review.default_dir(d, settings)
+        rdir = Path(review_dir) if review_dir else review_dir_for(d, settings)
         try:
             if review.read_status(d.name, rdir) == "rejected":
                 log.info("skipping %s: rejected in the review queue", d.name)
@@ -263,12 +275,60 @@ def run_all(out_root: str | Path | None = None, *, client=None, dry_run: bool = 
     return results
 
 
+def needs_listing(item_dir: str | Path, *, dry_run: bool = False, settings: dict | None = None) -> bool:
+    """True when the listing stage should (re)write this item: every qa_passed item and, in
+    a real run, a 'listed' real item whose listing.json the publisher would refuse as stale:
+    - it still holds dry-run template text (dry_run or writer.dry_run), or
+    - it no longer fits the current settings: the description lacks the AI disclosure for
+      the current shop name while one is required (the same rule as the publisher's gate),
+      or any text shows the placeholder shop name. Only once the shop name is set, since
+      re-listing before that would write the placeholder again.
+    Without this such items would be stuck at 'listed' in pipeline runs."""
+    d = Path(item_dir)
+    try:
+        manifest = read_manifest(d)
+        status = manifest.get("status")
+    except (OSError, ValueError, AttributeError):
+        return False
+    if status == "qa_passed":
+        return True
+    if status != "listed" or dry_run or _generated_dry(manifest):
+        return False
+    try:
+        lst = read_json(d / "listing.json")
+        if lst.get("dry_run") or (lst.get("writer") or {}).get("dry_run"):
+            return True
+        return _stale_copy(manifest, lst, settings or load_settings())
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False  # unreadable or missing: the publisher reports it
+
+
+def _stale_copy(manifest: dict, lst: dict, settings: dict) -> bool:
+    try:
+        shop = get_shop(settings, lst.get("shop_id") or manifest.get("shop_id"))
+    except KeyError:
+        return False  # the publisher reports the unknown shop
+    if is_placeholder_shop_name(shop):
+        return False
+    texts = [str(lst.get("title") or ""), str(lst.get("description") or ""),
+             *map(str, lst.get("tags") or []), *map(str, lst.get("alt_texts") or [])]
+    if any(p and p.casefold() in t.casefold() for p in PLACEHOLDER_SHOP_NAMES for t in texts):
+        return True
+    cfg = section(settings, "listing", DEFAULTS)
+    writer = lst.get("writer") or {}
+    must_disclose = bool(manifest.get("ai_assisted", True) or lst.get("ai_disclosure_included")
+                         or writer.get("kind") == "model" or lst.get("model") or cfg["always_disclose_ai"])
+    comp = settings.get("compliance") or {}
+    return must_disclose and not has_ai_disclosure(str(lst.get("description") or ""), str(shop.get("name")).strip(),
+                                                   comp.get("ai_disclosure"))
+
+
 def default_client():
-    """Anthropic client from .env (ANTHROPIC_API_KEY); only built when not a dry run."""
+    """Anthropic client from .env; only built when not a dry run. Raises MissingSecretError
+    when ANTHROPIC_API_KEY is not set (the SDK itself would only fail at the first request)."""
     import anthropic
 
-    load_env()
-    return anthropic.Anthropic()
+    return anthropic.Anthropic(api_key=require_env("ANTHROPIC_API_KEY"))
 
 
 # ------------------------------------------------------------------ helpers
@@ -288,6 +348,12 @@ def _load_item(d: Path) -> tuple[dict, dict]:
     if not isinstance(report, dict) or report.get("passed") is not True:
         raise ListingError(f"{d.name} has no passing qa_report.json; run QA first")
     return manifest, report
+
+
+def _generated_dry(manifest: dict) -> bool:
+    """The item was generated in dry-run mode (placeholder content). A missing flag counts
+    as real, so a dry run on it only previews."""
+    return bool((manifest.get("generator") or {}).get("dry_run"))
 
 
 def _withdraw_stale(d: Path) -> None:
@@ -371,4 +437,4 @@ def _taxonomy_id(cfg: dict, niche) -> int | None:
 
 
 __all__ = ["DEFAULTS", "ListingComplianceError", "ListingError", "ListingValidationError", "default_client",
-           "run_all", "write_listing"]
+           "needs_listing", "run_all", "write_listing"]

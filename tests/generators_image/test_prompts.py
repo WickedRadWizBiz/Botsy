@@ -24,7 +24,8 @@ def test_sticker_prompt_has_required_instructions(sticker_brief):
 
 def test_adult_audience_is_not_called_kids(coloring_brief):
     coloring_brief["audience"] = "adults who love relaxing patterns"
-    assert "coloring page for adults who love relaxing patterns" in coloring_prompt(coloring_brief, "a rose")
+    p = coloring_prompt(coloring_brief, "a rose")
+    assert "coloring page for adults" in p and "relaxing" not in p        # a fixed phrase, not brief text
 
 
 def test_style_notes_that_fight_the_pipeline_are_dropped():
@@ -66,7 +67,7 @@ def test_subjects_follow_theme_and_are_deterministic():
     pool = subjects.subject_pool("farm animals", ["barn animals"])
     assert pool[:3] == ["a friendly cow", "a happy pig in a mud puddle", "a chicken with her chicks"]
     assert pool == subjects.subject_pool("farm animals", ["barn animals"])
-    assert subjects.matched_keys("cute puppies") == ["pets"]
+    assert subjects.matched_keys("cute puppies") == ["dogs"]
     assert subjects.matched_keys("my theme", ["dinosaur coloring"]) == ["dinosaurs"]   # keywords as fallback
 
 
@@ -94,7 +95,7 @@ def test_blocked_terms_raise_before_any_call(field, value, coloring_brief, block
 
 
 def test_flagged_terms_are_reported(coloring_brief, blocklist):
-    brief = {**coloring_brief, "style_notes": "storybook feel like Peter Rabbit"}
+    brief = {**coloring_brief, "theme": "peter rabbit garden"}
     _, result = plan_images(brief, "coloring", 2, blocklist)
     assert result.flagged == ["Peter Rabbit"] and result.blocked == []
 
@@ -107,11 +108,12 @@ def test_guard_refuses_urls_and_blocked_terms(blocklist):
     assert guard("a cute cow sticker", blocklist).ok
 
 
-@pytest.mark.parametrize("audience", ["adults ages 18+", "teens and adults", "teens ages 13-17"])
-def test_grown_up_audiences_are_not_called_kids(audience, coloring_brief):
+@pytest.mark.parametrize("audience,phrase", [("adults ages 18+", "adults"), ("teens and adults", "teens and adults"),
+                                             ("teens ages 13-17", "teens")])
+def test_grown_up_audiences_are_not_called_kids(audience, phrase, coloring_brief):
     coloring_brief["audience"] = audience
     p = coloring_prompt(coloring_brief, "a rose")
-    assert f"coloring page for {audience}" in p and "for kids" not in p
+    assert f"coloring page for {phrase}," in p and "for kids" not in p
 
 
 def test_style_adjectives_do_not_pick_the_subjects():
@@ -119,7 +121,7 @@ def test_style_adjectives_do_not_pick_the_subjects():
     pool = subjects.subject_pool("kawaii animals")
     assert subjects.matched_keys("kawaii animals") == ["animals"]
     assert not set(pool[:16]) & set(subjects.TABLE["food"])
-    assert subjects.matched_keys("sweet puppies") == ["pets"]
+    assert subjects.matched_keys("sweet puppies") == ["dogs"]
     assert subjects.matched_keys("kawaii food") == ["food"]
     assert subjects.matched_keys("christmas sweets") == ["christmas", "sweets"]
 

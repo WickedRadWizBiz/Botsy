@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from core.compliance import Blocklist
+from core.config import load_settings
 
 DATE = "2026-10-15"
 EVERBEE = ["Product Name", "Shop Name", "Price", "Mo. Sales", "Reviews", "Favorites",
@@ -47,6 +48,32 @@ def keyword_rows(theme: str, n: int, competition="1,500", noun="coloring pages")
             "best", "mini"]
     return [[f"{mods[i]} {theme} {noun}".strip(), "1.2k", "300", "25%", competition, "N/A"]
             for i in range(n)]
+
+
+def pinned_settings() -> dict:
+    """config/settings.yaml with the shop, price and pack inputs the tests assert on pinned.
+
+    The real shop defaults are the user's to change; a test that checks a computed
+    price or page count must not break when they do.
+    """
+    s = load_settings()
+    s["shops"] = [{**s["shops"][0], "id": "main",
+                   "niches": ["stickers", "coloring_pages", "activity_sheets"],
+                   "default_price_usd": {"stickers": 3.50, "coloring_pages": 4.00,
+                                         "activity_sheets": 4.00}}]
+    for niche, opts in (("coloring_pages", [10, 20, 30]), ("activity_sheets", [10, 20, 30])):
+        s["niches"][niche]["pages_per_pack"] = opts
+    s["niches"]["activity_sheets"]["types"] = ["maze", "word_search", "tracing", "dot_to_dot"]
+    s["research"].update({
+        "price_clamp": {"min_factor": 0.75, "max_factor": 1.5, "step_usd": 0.25},
+        "pack_sizes": {"stickers": [6, 12, 20, 30, 50]},
+        "default_pack": {"stickers": 12, "coloring_pages": 20, "activity_sheets": 20},
+        "briefs_per_niche": 5,
+    })
+    s["print"]["page_sizes"] = {"us_letter": {"width_in": 8.5, "height_in": 11.0},
+                                "a4": {"width_in": 8.2677, "height_in": 11.6929}}
+    s["print"]["deliver_both_sizes"] = True
+    return s
 
 
 def load(path: Path) -> dict:

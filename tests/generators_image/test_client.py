@@ -106,7 +106,8 @@ def test_sdk_client_gets_api_key_from_env(monkeypatch):
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj")
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
     GeminiImageClient("m", api="vertex").generate("p", aspect_ratio="1:1", image_size="2K")
-    assert created["vertexai"] is True and created["project"] == "proj" and created["location"] == "global"
+    assert created["enterprise"] is True and "vertexai" not in created
+    assert created["project"] == "proj" and created["location"] == "global"
 
 
 def test_missing_key_raises_before_any_request(monkeypatch):

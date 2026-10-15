@@ -9,7 +9,8 @@ from research import NoInputsError, run
 from research.__main__ import main as cli_main
 from research.demo import write_demo_inputs
 
-from .conftest import DATE, ERANK_KW, EVERBEE, keyword_rows, listing_rows, load, write_csv
+from .conftest import (DATE, ERANK_KW, EVERBEE, keyword_rows, listing_rows, load,
+                       pinned_settings, write_csv)
 
 
 def _themes(doc):
@@ -18,6 +19,7 @@ def _themes(doc):
 
 def _run(inputs, out, **kw):
     kw.setdefault("date", DATE)
+    kw.setdefault("settings", pinned_settings())  # not the user's live shop prices
     return run(inputs_dir=inputs, briefs_dir=out, **kw)
 
 
@@ -38,10 +40,8 @@ def test_ten_listing_threshold(dirs):
 
 
 def test_threshold_setting_cannot_go_below_ten(dirs):
-    from core.config import load_settings
-
     inputs, out = dirs
-    settings = load_settings()
+    settings = pinned_settings()
     settings["research"]["min_listings_per_pattern"] = 3
     write_csv(inputs / "x.csv", EVERBEE, listing_rows("Hedgehog", 9))
     doc = load(_run(inputs, out, settings=settings)[0])
@@ -105,14 +105,22 @@ def test_keyword_level_rule_with_competition(dirs):
     assert cluster["label"] == "llama" and cluster["search_volume"] == 12000
 
 
-def test_keyword_level_rule_without_competition_column(dirs):
+def test_keyword_export_without_competition_column_counts_nothing(dirs, caplog):
+    # A search term with no competition (matching listings) shows no listings at all,
+    # so dropping the column must not get a theme past the 10-listing floor.
     inputs, out = dirs
-    headers = ["Keyword", "Searches"]
-    rows = [r[:2] for r in keyword_rows("llama", 10) + keyword_rows("sloth", 9)]
-    write_csv(inputs / "kw.csv", headers, rows)
-    doc = load(_run(inputs, out)[0])
-    assert set(_themes(doc)) == {"llama"}
-    assert "no competition column" in doc["sources"][0]["rule"]
+    write_csv(inputs / "erank-keywords.csv", ["Keywords", "Avg. Searches"],
+              [r[:2] for r in keyword_rows("axolotl", 10)])
+    with caplog.at_level("WARNING", logger="research.pipeline"):
+        assert _run(inputs, out, niche="coloring_pages") == []
+    assert "no competition" in caplog.text and not out.exists()
+    # Next to a listing export it still adds nothing, and its source says why.
+    write_csv(inputs / "everbee.csv", EVERBEE, listing_rows("Octopus", 10))
+    doc = load(_run(inputs, out, niche="coloring_pages")[0])
+    assert "axolotl" not in _themes(doc) and doc["listing_count"] == 10
+    assert all(b["evidence"]["keyword_rows"] == 0 for b in doc["briefs"])
+    src = next(s for s in doc["sources"] if s["shape"] == "keyword")
+    assert src["counted_rows"] == 0 and "no competition column" in src["rule"]
 
 
 def test_listing_and_keyword_rows_are_not_added_to_reach_threshold(dirs):
@@ -159,7 +167,7 @@ def test_brief_fields_follow_contract(dirs):
     b = doc["briefs"][0]
     assert b["brief_id"] == f"activity_sheets-{DATE}-01"
     assert b["page_count"] == 20               # 25 is equidistant from 20 and 30 -> smaller
-    assert b["price_usd"] == 6.0               # median 9.99 clamped to 1.5 x shop default 4.00
+    assert b["price_usd"] == 6.0               # median 9.99 clamped to 1.5 x pinned default 4.00
     assert b["page_sizes"] == ["us_letter", "a4"]
     assert b["activity_types"] == ["maze"]
     assert b["audience"] and b["style_notes"] and b["keywords"]
@@ -169,6 +177,16 @@ def test_brief_fields_follow_contract(dirs):
     assert b["evidence"]["listing_count"] == 12
     assert doc["patterns"]["page_counts"] == [{"bucket": "21-30", "listing_count": 12}]
     assert doc["patterns"]["price_bands"][0]["band"] == "8-12"
+
+
+@pytest.mark.parametrize("default, expected", [(4.00, 6.0), (5.00, 7.5), (8.00, 10.0)])
+def test_price_follows_the_shop_default_passed_in(dirs, default, expected):
+    inputs, out = dirs
+    write_csv(inputs / "x.csv", EVERBEE, listing_rows("Octopus", 12, price="$9.99"))
+    settings = pinned_settings()
+    settings["shops"][0]["default_price_usd"]["coloring_pages"] = default
+    doc = load(_run(inputs, out, niche="coloring_pages", settings=settings)[0])
+    assert doc["briefs"][0]["price_usd"] == expected   # median 9.99, clamp 0.75-1.5x, 0.25 steps
 
 
 def test_deterministic_output(tmp_path):

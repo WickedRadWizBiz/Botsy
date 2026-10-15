@@ -1,15 +1,21 @@
 # Weekly batch: newest committed briefs -> generate -> QA -> listing -> Etsy drafts.
 # Research CSV exports are licensed and stay on your machine (gitignored), so run
 # `python -m research` locally and commit the resulting data/briefs/*.json files.
+# README "GitHub Actions" and "Etsy drafts from GitHub Actions" describe the setup.
 #
 # Scheduled runs are dry runs unless the repo variable PIPELINE_LIVE is "true".
 # Drafts are created only when PIPELINE_PUBLISH is "true" (or the manual "publish" input).
+# A dry run with no committed briefs runs research on the synthetic data/samples instead.
+# Live runs skip brief files older than settings pipeline.max_brief_age_days (6), so each
+# committed brief file is drafted by one scheduled run, not again every Monday.
+# Only the Gemini API image route (models.image.api: gemini, GOOGLE_API_KEY) works here:
+# there is no Google Cloud credentials step for the Vertex route.
 # Everything generated is uploaded as a workflow artifact for review; nothing is committed.
 name: weekly-batch
 
 on:
   schedule:
-    - cron: "17 13 * * 1"   # Mondays 13:17 UTC
+    - cron: "17 13 * * 1"   # Mondays 13:17 UTC (schedules run only on the default branch)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -21,13 +27,14 @@ on:
         type: boolean
         default: false
       niche:
-        description: "Limit to one niche (blank = all of the shop's niches)"
-        type: string
-        default: ""
+        description: "Limit to one niche"
+        type: choice
+        options: [all, stickers, coloring_pages, activity_sheets]
+        default: all
       max_items:
         description: "Max items to generate"
-        type: string
-        default: "10"
+        type: number
+        default: 10
 
 permissions:
   contents: read
@@ -41,13 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
-      ETSY_API_KEYSTRING: ${{ secrets.ETSY_API_KEYSTRING }}
-      ETSY_SHARED_SECRET: ${{ secrets.ETSY_SHARED_SECRET }}
-      ETSY_SHOP_ID: ${{ secrets.ETSY_SHOP_ID }}
-      ETSY_REFRESH_TOKEN: ${{ secrets.ETSY_REFRESH_TOKEN }}
+      REMBG_HOME: /home/runner/.rembg   # rembg >= 2.0.80 keeps models in $REMBG_HOME/models/<name>
     steps:
       - uses: actions/checkout@v4
 
@@ -65,8 +66,8 @@ jobs:
       - name: Cache rembg model
         uses: actions/cache@v4
         with:
-          path: ~/.u2net
-          key: rembg-u2net-v1
+          path: /home/runner/.rembg
+          key: rembg-isnet-general-use-v1
 
       - name: Choose mode
         id: mode
@@ -79,29 +80,110 @@ jobs:
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then dry="$IN_DRY"; pub="$IN_PUBLISH";
           else if [ "$LIVE" = "true" ]; then dry=false; else dry=true; fi; pub="$PUBLISH"; fi
+          if [ "$dry" = "true" ]; then pub=false; fi
           stages="generate,qa,listing"
           if [ "$dry" = "true" ] || [ "$pub" = "true" ]; then stages="$stages,publish"; fi
-          flags="--stages $stages"
-          if [ "$dry" = "true" ]; then flags="$flags --dry-run"; fi
-          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          extra=""
+          if [ "$dry" = "true" ]; then
+            extra="--dry-run"
+            if ! compgen -G "data/briefs/*.json" > /dev/null; then
+              stages="research,$stages"; extra="$extra --inputs data/samples"
+              echo "::notice::No committed briefs in data/briefs; this dry run uses research on data/samples."
+            fi
+          else
+            api=$(python -c "import yaml; print(yaml.safe_load(open('config/settings.yaml'))['models']['image'].get('api', 'gemini'))")
+            if [ "$api" != "gemini" ]; then
+              echo "::error::models.image.api is '$api'; CI supports only the Gemini API route (GOOGLE_API_KEY). See README 'GitHub Actions'."
+              exit 1
+            fi
+          fi
+          echo "stages=$stages" >> "$GITHUB_OUTPUT"
+          echo "extra=$extra" >> "$GITHUB_OUTPUT"
+          echo "publish=$pub" >> "$GITHUB_OUTPUT"
           echo "Mode: dry_run=$dry publish=$pub stages=$stages"
+
+      - name: Check Etsy refresh token age
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          ISSUED: ${{ vars.ETSY_REFRESH_TOKEN_ISSUED }}
+        run: |
+          if [ -z "$ISSUED" ]; then
+            echo "::warning::Set the repo variable ETSY_REFRESH_TOKEN_ISSUED (YYYY-MM-DD) to get a warning before the Etsy refresh token expires (90 days)."
+            exit 0
+          fi
+          if ! issued_s=$(date -u -d "$ISSUED" +%s 2>/dev/null); then
+            echo "::warning::ETSY_REFRESH_TOKEN_ISSUED is '$ISSUED', not a date (YYYY-MM-DD)."
+            exit 0
+          fi
+          age=$(( ( $(date -u +%s) - issued_s ) / 86400 ))
+          if [ "$age" -ge 90 ]; then
+            echo "::error::ETSY_REFRESH_TOKEN was issued $age days ago and has expired; run \`python -m publisher auth\` locally and update the secret."
+          elif [ "$age" -ge 80 ]; then
+            echo "::warning::ETSY_REFRESH_TOKEN was issued $age days ago; it expires at 90 days. Re-run \`python -m publisher auth\` soon."
+          fi
 
       - name: Run pipeline
         env:
-          FLAGS: ${{ steps.mode.outputs.flags }}
+          STAGES: ${{ steps.mode.outputs.stages }}
+          EXTRA: ${{ steps.mode.outputs.extra }}
           NICHE: ${{ inputs.niche }}
-          MAX_ITEMS: ${{ inputs.max_items || '10' }}
+          MAX_ITEMS: ${{ inputs.max_items || 10 }}
           ETSY_TOKEN_FILE: ${{ runner.temp }}/etsy_tokens.json   # job-level env cannot use runner.*
+          # Secrets only in this step, not in pip install or third-party actions.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ETSY_API_KEYSTRING: ${{ secrets.ETSY_API_KEYSTRING }}
+          ETSY_SHARED_SECRET: ${{ secrets.ETSY_SHARED_SECRET }}
+          ETSY_SHOP_ID: ${{ secrets.ETSY_SHOP_ID }}
+          ETSY_REFRESH_TOKEN: ${{ secrets.ETSY_REFRESH_TOKEN }}
+          ETSY_REFRESH_TOKEN_ISSUED: ${{ vars.ETSY_REFRESH_TOKEN_ISSUED }}   # the publisher warns at 80 days
         run: |
-          extra=""
-          if [ -n "$NICHE" ]; then extra="--niche $NICHE"; fi
-          python -m pipeline run $FLAGS $extra --max-items "$MAX_ITEMS"
+          args=(--stages "$STAGES" --max-items "$MAX_ITEMS")
+          read -r -a more <<< "$EXTRA"
+          args+=("${more[@]}")
+          if [ -n "$NICHE" ] && [ "$NICHE" != "all" ]; then args+=(--niche "$NICHE"); fi
+          python -m pipeline run "${args[@]}"
+
+      # Etsy may rotate the refresh token on every refresh, which spends the stored secret.
+      # This writes the new one back. It needs SECRETS_WRITE_TOKEN: a fine-grained token for
+      # this repo with "Secrets" and "Variables" read/write (GITHUB_TOKEN cannot write secrets).
+      - name: Save rotated Etsy refresh token
+        if: always() && steps.mode.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_WRITE_TOKEN }}
+          OLD_TOKEN: ${{ secrets.ETSY_REFRESH_TOKEN }}
+          ETSY_TOKEN_FILE: ${{ runner.temp }}/etsy_tokens.json
+        run: |
+          if [ ! -f "$ETSY_TOKEN_FILE" ]; then echo "No token file; nothing refreshed."; exit 0; fi
+          new=$(jq -r '.refresh_token // empty' "$ETSY_TOKEN_FILE")
+          if [ -z "$new" ] || [ "$new" = "$OLD_TOKEN" ]; then echo "Refresh token unchanged."; exit 0; fi
+          echo "::add-mask::$new"
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Etsy returned a new refresh token, so ETSY_REFRESH_TOKEN is probably spent. Add the SECRETS_WRITE_TOKEN secret (README 'Etsy drafts from GitHub Actions'), or run \`python -m publisher auth\` locally and update ETSY_REFRESH_TOKEN."
+            exit 1
+          fi
+          printf '%s' "$new" | gh secret set ETSY_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY"
+          gh variable set ETSY_REFRESH_TOKEN_ISSUED --repo "$GITHUB_REPOSITORY" --body "$(date -u +%F)"
+          echo "Saved the rotated refresh token to the ETSY_REFRESH_TOKEN secret."
 
       - name: Upload outputs for review
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: batch-${{ github.run_id }}
-          path: output/
+          # assets/ holds intermediates (sticker PNGs are also inside the ZIPs); they go
+          # to a separate, short-lived artifact below.
+          path: |
+            output/
+            !output/**/assets/**
           retention-days: 14
           if-no-files-found: warn
+
+      - name: Upload intermediates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-${{ github.run_id }}-assets
+          path: output/**/assets/**
+          retention-days: 3
+          if-no-files-found: ignore

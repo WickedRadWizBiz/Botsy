@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if not paths:
-        print("research: no rows matched any niche; no briefs written.")
+        print("research: no counted rows for any niche (see warnings above); no briefs written.")
     for p in paths:
         if args.dry_run:
             print(f"would write {_show(p)}")

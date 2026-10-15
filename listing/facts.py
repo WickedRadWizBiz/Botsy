@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import PurePosixPath
 
+from core.items import content_count
+
 NICHES = {
     "coloring_pages": {"one": "coloring page", "many": "coloring pages", "tag": "coloring",
                        "product": "printable coloring pages"},
@@ -43,21 +45,6 @@ def safe_rel(path) -> str | None:
     if p.is_absolute() or ".." in p.parts:
         return None
     return p.as_posix()
-
-
-def content_count(manifest: dict) -> int | None:
-    """How many designs the buyer gets (pages or stickers), not counting cover pages."""
-    pack = manifest.get("pack") if isinstance(manifest.get("pack"), dict) else {}
-    for key in ("activity_pages", "content_pages", "pages", "stickers"):
-        if _count(pack.get(key)):
-            return pack[key]
-    zipped = sum(e["count"] for e in _zips(manifest))  # a big pack is split over several ZIP parts
-    if zipped and manifest.get("niche") == "stickers":
-        return zipped
-    for e in _entries(manifest, "files"):
-        if e.get("kind") == "pdf" and isinstance(e.get("pages"), int):
-            return e["pages"]
-    return None
 
 
 def page_size_label(key: str, cfg: dict, settings: dict) -> str:

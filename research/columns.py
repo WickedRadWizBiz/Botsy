@@ -34,7 +34,6 @@ NUMERIC = ("search_volume", "clicks", "ctr", "competition", "price", "sales",
 TEXT = ("keyword", "title", "tags", "category")
 IDENTIFYING = ("shop_name", "url", "listing_id", "image")
 CANONICAL = TEXT + NUMERIC + ("listing_age",) + IDENTIFYING
-LISTING_METRICS = ("price", "sales", "revenue", "favorites", "reviews", "views")
 
 # canonical column -> header spellings, best first. When two headers map to the
 # same column the earlier alias wins (monthly sales beat lifetime sales).
@@ -145,12 +144,6 @@ def _build_alias_index() -> dict[str, tuple[str, int]]:
 
 
 _ALIAS_INDEX = _build_alias_index()
-
-
-def alias_for(header) -> str | None:
-    """Canonical column for an exact (normalized) alias match, else None."""
-    hit = _ALIAS_INDEX.get(norm_header(header))
-    return hit[0] if hit else None
 
 
 def map_columns(headers: list[str], overrides: dict | None = None) -> dict[str, str]:

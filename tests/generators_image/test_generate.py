@@ -252,7 +252,7 @@ def test_cli_dry_run(tmp_path, capsys, monkeypatch, coloring_brief, sticker_brie
     coloring_brief["page_count"] = 1
     sticker_brief["page_count"] = 1
     brief_file = tmp_path / "briefs.json"
-    brief_file.write_text(json.dumps({"schema": "brief/v1", "shop_id": "main",
+    brief_file.write_text(json.dumps({"schema": "brief/v1", "shop_id": "main", "min_listings_per_pattern": 10,
                                       "briefs": [coloring_brief, sticker_brief,
                                                  {**coloring_brief, "brief_id": "x", "theme": "Pokemon"}]}))
     out = tmp_path / "out"

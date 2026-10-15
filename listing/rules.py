@@ -16,7 +16,8 @@ uploadListingImage):
   ™, ©, and ®. (regex: /[^\\p{L}\\p{Nd}\\p{Zs}\\-'™©®]/u)"
 - image alt_text: "Max length 500 characters."
 The 140-character title, 13 tags and 20 characters per tag come from the Etsy Help
-Center (settings `listing:`); the API spec does not state them.
+Center (settings `listing:`); the API spec does not state them. The character rules and
+limits are shared with the publisher's gates (core/etsy.py).
 
 Our own stricter rules on top: no ™ © ® at all (they imply brand claims), titles start
 with a letter or digit, tags are lowercase, and no copy claims hand drawing or "no AI".
@@ -27,11 +28,12 @@ import re
 import unicodedata
 from functools import lru_cache
 
-from core.compliance import URL_RE, Blocklist, ComplianceResult, find_urls, normalize
+from core.compliance import URL_RE, Blocklist, find_urls, normalize
+from core.etsy import MARKS, TITLE_ONCE_ONLY, tag_char_ok, title_char_ok  # noqa: F401 (re-exported)
 
-ONCE_ONLY = "%:&+"  # Etsy: each may appear at most once in a title
+ONCE_ONLY = TITLE_ONCE_ONLY  # Etsy: each may appear at most once in a title
 ONCE_ONLY_REPLACEMENTS = {"&": " and ", "+": " and ", ":": ",", "%": " percent"}
-ETSY_MARKS = "™©®"
+ETSY_MARKS = MARKS
 TEXT_FIELDS = ("hook", "about")
 DANGLING = {"a", "an", "and", "for", "in", "of", "on", "or", "the", "to", "with"}
 # Words a shopper rarely needs inside a tag; dropped first when a phrase is too long
@@ -44,16 +46,6 @@ class DraftShapeError(ValueError):
 
 
 # ------------------------------------------------------------------ characters
-
-def title_char_ok(ch: str) -> bool:
-    cat = unicodedata.category(ch)
-    return cat[0] in "LP" or cat in ("Nd", "Sm", "Zs") or ch in ETSY_MARKS
-
-
-def tag_char_ok(ch: str) -> bool:
-    cat = unicodedata.category(ch)
-    return cat[0] == "L" or cat in ("Nd", "Zs") or ch in "-'" or ch in ETSY_MARKS
-
 
 def _starts_ok(text: str) -> bool:
     cat = unicodedata.category(text[0]) if text else ""
@@ -89,20 +81,6 @@ def _phrase_checker(phrases: tuple[str, ...]) -> Blocklist:
     # Reuse the blocklist matcher: whole words, case/accent-insensitive, "hand-drawn"
     # also matches "hand drawn" and "handdrawn".
     return Blocklist(phrases)
-
-
-def check_each(blocklist: Blocklist, texts) -> ComplianceResult:
-    """Blocklist every text on its own and merge the results.
-
-    Blocklist.check(*texts) joins its arguments with newlines, and a multi-word term may
-    span them, so two separate tags "wooden toy" and "story time" read as "Toy Story" and
-    would hard-block a clean listing. Etsy shows each field (and each description line)
-    on its own, so that is the unit we check."""
-    result = ComplianceResult()
-    for text in texts:
-        if text and text.strip():
-            result = result.merge(blocklist.check(text))
-    return result
 
 
 def misleading(text: str, cfg: dict) -> list[str]:

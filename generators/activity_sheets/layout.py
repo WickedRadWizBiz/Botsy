@@ -20,7 +20,6 @@ DESCENT = 0.207
 
 INK = 0.0          # gray levels: 0 = black, 1 = white
 SOFT_INK = 0.35
-GUIDE = 0.55
 
 
 @dataclass(frozen=True)

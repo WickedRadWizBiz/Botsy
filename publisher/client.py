@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_shop, load_env, load_settings, require_env, resolve
-from publisher.auth import AuthRequired, TokenStore, tokens_from_response
+from publisher.auth import (AuthRequired, TokenStore, carry_refresh_issued, refresh_age_warning,
+                            tokens_from_response)
 from publisher.defaults import load_cfg
 from publisher.safety import Guard, Route, SafetyViolation
 
@@ -102,13 +103,15 @@ class EtsyClient:
         if token_store is None:
             file_env = shop.get("etsy_token_file_env", "ETSY_TOKEN_FILE")
             token_store = TokenStore(resolve(os.environ.get(file_env) or ".etsy_tokens.json"),
-                                     os.environ.get(shop.get("etsy_refresh_token_env", "ETSY_REFRESH_TOKEN")))
+                                     os.environ.get(shop.get("etsy_refresh_token_env", "ETSY_REFRESH_TOKEN")),
+                                     os.environ.get("ETSY_REFRESH_TOKEN_ISSUED"))
         self.tokens = token_store
         self._token: dict | None = None
         self._sleep, self._clock = sleep, clock
         self.verify_shop = verify_shop
         self._shop_verified = False
         self.shop_info: dict | None = None  # getShop result, cached by publish
+        self._own_titles: dict[str, dict] | None = None  # own_listing_titles() cache
 
     @property
     def shop_id(self) -> int | None:
@@ -180,6 +183,10 @@ class EtsyClient:
         if not tok:
             raise AuthRequired("no Etsy tokens: run `python -m publisher auth` "
                                "(or set ETSY_REFRESH_TOKEN in CI)")
+        if self._token is None:  # once per client
+            warning = refresh_age_warning(tok, self._clock())
+            if warning:
+                log.warning(warning)
         self._token = tok
         if not tok.get("access_token") or float(tok.get("expires_at") or 0) - self.cfg["token_skew_s"] <= self._clock():
             tok = self._refresh()
@@ -199,7 +206,7 @@ class EtsyClient:
                                    "after issue and may be single-use: run `python -m publisher auth` "
                                    "again (and update ETSY_REFRESH_TOKEN in CI)") from e
             raise
-        new = tokens_from_response(resp, self._clock())
+        new = carry_refresh_issued(tokens_from_response(resp, self._clock()), old)
         if new["refresh_token"] != old["refresh_token"] and old.get("source") == "env":
             log.warning("Etsy issued a new refresh token; it is saved to the token file only. If "
                         "the old one stops working, update the ETSY_REFRESH_TOKEN secret.")
@@ -211,7 +218,7 @@ class EtsyClient:
         resp = self.request("POST", self.cfg["token_url"], data={
             "grant_type": "authorization_code", "client_id": self.keystring,
             "redirect_uri": redirect_uri, "code": code, "code_verifier": verifier})
-        tok = tokens_from_response(resp, self._clock())
+        tok = carry_refresh_issued(tokens_from_response(resp, self._clock()), None)  # newly issued
         self.tokens.save(tok)
         self._token = tok
         return tok
@@ -236,7 +243,33 @@ class EtsyClient:
     def create_draft_listing(self, fields: dict) -> dict:
         resp = self.request("POST", f"/shops/{self.shop_id}/listings", data=fields)
         self.guard.own(resp["listing_id"])
+        if self._own_titles is not None and title_key(fields.get("title")):
+            self._own_titles[title_key(fields.get("title"))] = {"listing_id": int(resp["listing_id"]),
+                                                                "state": resp.get("state", "draft")}
         return resp
+
+    def own_listing_titles(self, max_pages: int = 50) -> dict[str, dict]:
+        """Our own shop's draft and active listings by title_key(title) ->
+        {listing_id, state}, read once per client (getListingsByShop on our ETSY_SHOP_ID,
+        which CLAUDE.md allows) and kept current by create_draft_listing. The publisher
+        checks it before creating a draft, so a run without the earlier publish.json (a
+        fresh CI checkout) does not draft the same listing twice."""
+        if self._own_titles is None:
+            found: dict[str, dict] = {}
+            page_size = 100  # spec maximum for `limit`
+            for state in ("draft", None):  # None: Etsy's default, active listings
+                for page in range(max_pages):
+                    resp = self.get_listings_by_shop(limit=page_size, offset=page * page_size, state=state) or {}
+                    results = resp.get("results") or []
+                    for x in results:
+                        key = title_key(x.get("title"))
+                        if key and str(x.get("listing_id", "")).isdigit():
+                            found.setdefault(key, {"listing_id": int(x["listing_id"]),
+                                                   "state": x.get("state") or state or "active"})
+                    if len(results) < page_size or (page + 1) * page_size >= int(resp.get("count") or 0):
+                        break
+            self._own_titles = found
+        return self._own_titles
 
     def upload_listing_image(self, listing_id: int, path: str | Path, *, rank: int,
                              alt_text: str | None = None) -> dict:
@@ -303,6 +336,7 @@ class EtsyClient:
         Returns False when the listing is already gone."""
         live = self.listing_state(listing_id)
         if live is None:
+            self._forget_title(listing_id)
             self.guard.disown(listing_id)
             return False
         if live.get("state") != "draft":
@@ -313,8 +347,14 @@ class EtsyClient:
         except EtsyAPIError as e:
             if e.status != 404:
                 raise
+        self._forget_title(listing_id)
         self.guard.disown(listing_id)
         return True
+
+    def _forget_title(self, listing_id: int) -> None:
+        if self._own_titles:
+            self._own_titles = {k: v for k, v in self._own_titles.items()
+                                if str(v["listing_id"]) != str(listing_id)}
 
     def get_seller_taxonomy_nodes(self) -> list[dict]:
         return (self.request("GET", "/seller-taxonomy/nodes") or {}).get("results", [])
@@ -327,6 +367,11 @@ class EtsyClient:
         if state:
             params["state"] = state
         return self.request("GET", f"/shops/{self.shop_id}/listings", params=params)
+
+
+def title_key(title) -> str:
+    """Comparison form of a listing title: case-insensitive, whitespace collapsed."""
+    return " ".join(str(title or "").casefold().split())
 
 
 def _mime(path: Path, default: str) -> str:

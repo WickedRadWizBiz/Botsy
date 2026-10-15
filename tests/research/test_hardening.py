@@ -1,4 +1,5 @@
 """Regression tests: messy files, brand/filler words, threshold edge cases, CLI safety."""
+import datetime
 import json
 import os
 import subprocess
@@ -12,7 +13,7 @@ from research import pipeline
 from research.__main__ import main as cli_main
 from research.columns import load_export
 from research.defaults import DEFAULTS
-from research.guard import check_each, extend_blocklist
+from research.guard import extend_blocklist
 from research.text import TextRules, pack_count
 
 from .conftest import DATE, ERANK_KW, EVERBEE, keyword_rows, listing_rows, load, write_csv
@@ -72,7 +73,8 @@ def test_shop_names_are_captured_from_unmapped_link_columns(tmp_path):
     assert e.shop_names == {"TidePoolPress"}
 
 
-@pytest.mark.parametrize("bad", ["20261015", "2026-W42-4", "2026-02-30", "15/10/2026"])
+@pytest.mark.parametrize("bad", ["20261015", "2026-W42-4", "2026-02-30", "15/10/2026",
+                                 "2026-10-15\n", datetime.date(2026, 10, 15)])
 def test_date_must_be_plain_iso(dirs, bad):
     inputs, out = dirs
     write_csv(inputs / "x.csv", EVERBEE, listing_rows("Octopus", 10))
@@ -154,7 +156,7 @@ def test_blocklist_terms_do_not_match_across_separate_strings(blocklist):
     doc = clean_doc()
     doc["briefs"][0]["keywords"] = ["ocean animals baby", "shark coloring pages"]
     validate_brief_doc(doc, [], [], blocklist=blocklist)   # no "Baby Shark" across strings
-    assert check_each(blocklist, ["cute baby", "shark"]).blocked == []
+    assert blocklist.check("cute baby", "shark").blocked == []
     doc["briefs"][0]["keywords"].append("baby shark coloring pages")
     with pytest.raises(BriefComplianceError, match="Baby Shark"):
         validate_brief_doc(doc, [], [], blocklist=blocklist)
