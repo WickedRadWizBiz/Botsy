@@ -66,7 +66,7 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
 
 ## 2. Item manifest: `output/<item_id>/manifest.json`
 
-Written by the generators: `generators.generate(brief, ...) -> list[Path]` returns item dirs.
+Written by the generators: `generators.generate(brief, brief_file=..., shop_id=..., out_root=..., date=..., dry_run=..., client=...) -> list[Path]` returns item dirs. `core.render` has `page_size_points()`, `pdf_info()` and `render_pdf_pages()` for PDF work.
 
 ```json
 {
