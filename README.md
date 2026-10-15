@@ -17,7 +17,7 @@ Also install `potrace` (system package) before Phase 2.
 | Folder | Role |
 |---|---|
 | `research/` | Parse licensed research exports in `data/research_inputs/` → aggregated briefs in `data/briefs/` |
-| `generators/` | Activity sheets (procedural), coloring pages and stickers (Google Imagen) |
+| `generators/` | Activity sheets (procedural), coloring pages and stickers (Gemini Nano Banana 2.1) |
 | `qa/` | Automated checks, then review queue in `output/review/` |
 | `listing/` | Title, 13 tags, description, alt text, AI disclosure |
 | `publisher/` | Etsy Open API v3, own shop, drafts only |

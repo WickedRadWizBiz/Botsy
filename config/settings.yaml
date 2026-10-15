@@ -31,8 +31,11 @@ models:
     model: claude-sonnet-4-5     # verify current model id before Phase 1
     max_tokens: 2000
   image:
-    provider: google_imagen
-    model: imagen-4.0-generate-001   # verify current model id before Phase 2
+    provider: google_gemini
+    model: gemini-nano-banana-2.1    # Nano Banana 2.1 (stable); Imagen 4 is deprecated
+    # called via client.models.generate_content (not generate_images)
+    image_size_coloring: "4K"     # 1K / 2K / 4K; needs ~2550x3300 px for Letter at 300 DPI
+    image_size_sticker: "2K"
     api: gemini                  # "gemini" (GOOGLE_API_KEY) or "vertex" (GOOGLE_CLOUD_PROJECT)
     aspect_ratio_coloring: "3:4"
     aspect_ratio_sticker: "1:1"

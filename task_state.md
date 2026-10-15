@@ -8,7 +8,7 @@ Phase 0 — finish by pushing the repo to GitHub. Then Phase 1 (research agent).
 Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample research CSV is in `data/research_inputs/`.
 
 ## Decisions made
-- Image API: Google Imagen (`imagen-4.0-generate-001`, Gemini API route). Verify model id before Phase 2.
+- Image API: Google Gemini `gemini-nano-banana-2.1` (Nano Banana 2.1, stable; Imagen 4 deprecated). Gemini API route via `generate_content`.
 - Shops: one shop (`main`) covering stickers, coloring pages, activity sheets. Shop name placeholder in settings.yaml.
 - Repo hosted on GitHub.
 
@@ -41,8 +41,8 @@ Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample r
 
 ### Phase 2 — Generators
 - [ ] Activity sheets (procedural): maze, word search, tracing, dot-to-dot → PDF
-- [ ] Coloring pages: Imagen → cleanup → vector → PDF
-- [ ] Stickers: Imagen → transparent PNGs + sheet (Imagen has no native transparency; plan background removal)
+- [ ] Coloring pages: Nano Banana 2.1 → cleanup → vector → PDF
+- [ ] Stickers: Nano Banana 2.1 → transparent PNGs + sheet (transparency not documented; plan background removal)
 
 ### Phase 3 — QA and mockups
 - [ ] Checks: 300 DPI, page size, line weight, file size within Etsy's digital-file limits (verify current limits)
@@ -64,6 +64,7 @@ Push to GitHub (waiting on repo name + auth). Then start Phase 1 once a sample r
 
 ## Completed
 - 2026-10-15: Phase 0 skeleton, config files, smoke tests (committed locally).
+- 2026-10-15: Switched image model to gemini-nano-banana-2.1.
 
 ## Deferred until reset
 (none)
