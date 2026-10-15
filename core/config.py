@@ -69,4 +69,8 @@ def require_env(name: str) -> str:
 
 def today() -> str:
     """ISO date for output names. PIPELINE_DATE overrides it for reproducible runs."""
-    return os.environ.get("PIPELINE_DATE") or date.today().isoformat()
+    value = os.environ.get("PIPELINE_DATE") or date.today().isoformat()
+    date.fromisoformat(value)  # raises ValueError on anything that is not YYYY-MM-DD
+    if len(value) != 10:
+        raise ValueError(f"PIPELINE_DATE must be YYYY-MM-DD, got {value!r}")
+    return value

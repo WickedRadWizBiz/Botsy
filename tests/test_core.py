@@ -91,3 +91,62 @@ def test_require_env_missing(monkeypatch):
     monkeypatch.delenv("ETSY_AGENTS_TEST_UNSET", raising=False)
     with pytest.raises(config.MissingSecretError):
         config.require_env("ETSY_AGENTS_TEST_UNSET")
+
+
+def test_blocklist_does_not_match_across_strings_or_list_items(bl):
+    assert bl.check("wooden toy", "story time").ok
+    assert bl.check("wooden toy, story time").ok
+    assert bl.check_obj({"tags": ["hello", "kitty cat"]}).ok
+    assert "Toy Story" in bl.check("toy - story party").blocked
+
+
+def test_find_urls_edge_cases():
+    assert compliance.find_urls("see etsy.me/abc")
+    assert compliance.find_urls("shop at example.co.uk")
+    assert compliance.find_urls("HTTPS://EXAMPLE.ORG")
+    assert not compliance.find_urls("Fun for kids.Shop now")
+
+
+def test_write_json_temp_file_not_globbed(tmp_path, monkeypatch):
+    seen = []
+    real_replace = items.os.replace
+
+    def spy(src, dst):
+        seen.append(sorted(p.name for p in tmp_path.glob("*.json")))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(items.os, "replace", spy)
+    items.write_json(tmp_path / "a.json", {"x": 1})
+    assert seen == [[]]
+
+
+@pytest.mark.parametrize("bad", ["../x", "2026-13-01", "20261015", "a/b", ""])
+def test_item_id_rejects_bad_dates(bad):
+    with pytest.raises(ValueError):
+        items.new_item_id(bad, "stickers", "frogs")
+
+
+def test_today_validates_override(monkeypatch):
+    monkeypatch.setenv("PIPELINE_DATE", "../../etc")
+    with pytest.raises(ValueError):
+        config.today()
+    monkeypatch.setenv("PIPELINE_DATE", "2026-10-15")
+    assert config.today() == "2026-10-15"
+
+
+def test_review_dir_for(tmp_path):
+    s = config.load_settings()
+    assert items.review_dir_for(items.output_root(s) / "x", s) == items.review_root(s)
+    assert items.review_dir_for(tmp_path / "x", s) == tmp_path / "review"
+
+
+def test_clear_downstream(tmp_path):
+    d = tmp_path / "item"
+    (d / "mockups").mkdir(parents=True)
+    for name in ("qa_report.json", "listing.json", "manifest.json"):
+        (d / name).write_text("{}")
+    items.clear_downstream(d)
+    assert sorted(p.name for p in d.iterdir()) == ["manifest.json"]
+    (d / "publish.json").write_text("{}")
+    with pytest.raises(RuntimeError):
+        items.clear_downstream(d)

@@ -16,7 +16,12 @@ from typing import Iterable, Iterator
 
 from core.config import CONFIG_DIR, resolve
 
-URL_RE = re.compile(r"(https?://|www\.)\S+|\b[\w-]+\.(com|net|org|co|io|shop|store)(/\S*)?\b", re.I)
+# Scheme or www. URLs in any case; bare domains only with a lowercase TLD, so a
+# missing space after a sentence ("for kids.Shop now") is not read as a domain.
+URL_RE = re.compile(
+    r"(?i:https?://|www\.)\S+"
+    r"|\b[\w-]{2,}\.(?:com|net|org|co|io|me|ly|gl|uk|de|ca|au|us|link|app|site|online|shop|store)\b(?:/\S*)?"
+)
 
 
 def normalize(text: str) -> str:
@@ -30,7 +35,9 @@ def _term_pattern(term: str) -> re.Pattern:
     tokens = [t for t in re.split(r"[^a-z0-9]+", normalize(term)) if t]
     if not tokens:
         raise ValueError(f"blocklist term has no letters or digits: {term!r}")
-    body = r"[\W_]*".join(re.escape(t) for t in tokens)
+    # Between words allow only spaces, hyphens, underscores, apostrophes or "&", never
+    # commas, full stops or newlines, so "wooden toy, story time" is not "Toy Story".
+    body = r"[ \t\-_'&]{0,3}".join(re.escape(t) for t in tokens)
     return re.compile(rf"(?<![a-z0-9]){body}(?:'?s|es)?(?![a-z0-9])")
 
 
@@ -78,11 +85,15 @@ class Blocklist:
         return cls(hard, review)
 
     def check(self, *texts: str) -> ComplianceResult:
-        """Check one or more strings. Returns the original blocklist spellings found."""
-        joined = normalize("\n".join(t for t in texts if t))
-        blocked = sorted({t for t, rx in self.hard if rx.search(joined)})
-        flagged = sorted({t for t, rx in self.review if rx.search(joined)})
-        return ComplianceResult(blocked, flagged)
+        """Check each string on its own. Returns the original blocklist spellings found."""
+        blocked, flagged = set(), set()
+        for text in texts:
+            if not text:
+                continue
+            norm = normalize(text)
+            blocked.update(t for t, rx in self.hard if rx.search(norm))
+            flagged.update(t for t, rx in self.review if rx.search(norm))
+        return ComplianceResult(sorted(blocked), sorted(flagged))
 
     def check_obj(self, obj) -> ComplianceResult:
         """Check every string inside a nested dict/list structure (keys included)."""
