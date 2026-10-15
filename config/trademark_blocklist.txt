@@ -180,3 +180,63 @@ Adidas
 ?Snow White
 ?Little Mermaid
 ?Steamboat Willie
+
+# --- Added 2026-10-15: franchises, characters and brands common in kids' printables ---
+Grinch
+Labubu
+Squishmallow
+Taylor Swift
+Swiftie
+Eras Tour
+Dr Seuss
+Cat in the Hat
+Elf on the Shelf
+Pete the Cat
+Very Hungry Caterpillar
+Lisa Frank
+Sailor Moon
+Naruto
+Demon Slayer
+Studio Ghibli
+Totoro
+Power Rangers
+TMNT
+Teletubbies
+Godzilla
+Tamagotchi
+Pac-Man
+Tetris
+Coca-Cola
+McDonald's
+Starbucks
+Stanley Cup
+Huggy Wuggy
+Poppy Playtime
+Skibidi
+Wordle
+KPop Demon Hunters
+Hungry Hungry Hippos
+Monopoly
+Jenga
+
+# --- Added 2026-10-15: review (common words or partial names) ---
+?Mario
+?Candy Land
+?Stanley
+?Wicked
+?Uno
+
+# --- Added 2026-10-15: app, platform and craft-tool brands (review) ---
+# Saying a file works with an app can be fair use, but let a person decide.
+?GoodNotes
+?Procreate
+?Cricut
+?Canva
+?Silhouette Cameo
+?Happy Planner
+?Erin Condren
+?Hobonichi
+?Boom Cards
+?Teachers Pay Teachers
+?Google Classroom
+

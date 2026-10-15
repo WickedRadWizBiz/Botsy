@@ -33,19 +33,10 @@ DEFAULTS: dict = {
                        "filofax", "moleskine", "passion planner", "plum paper", "recollections",
                        "zinnia", "noteshelf", "penly", "xodo", "avery", "glowforge", "scanncut",
                        "sizzix"],
-    # Stricter-only supplement to config/trademark_blocklist.txt for franchises common in
-    # these niches that the file does not list yet. Research treats them exactly like
-    # file terms (hard = cut and co-occurrence drop, review = needs_review). Move them
-    # into the blocklist file so later stages see them too, then empty these lists.
-    "extra_blocked_terms": ["Grinch", "Labubu", "Squishmallow", "Taylor Swift", "Swiftie",
-                            "Eras Tour", "Dr Seuss", "Cat in the Hat", "Elf on the Shelf",
-                            "Pete the Cat", "Very Hungry Caterpillar", "Lisa Frank", "Sailor Moon",
-                            "Naruto", "Demon Slayer", "Studio Ghibli", "Totoro", "Power Rangers",
-                            "TMNT", "Teletubbies", "Godzilla", "Tamagotchi", "Pac-Man", "Tetris",
-                            "Coca-Cola", "McDonald's", "Starbucks", "Stanley Cup", "Huggy Wuggy",
-                            "Poppy Playtime", "Skibidi", "Wordle", "KPop Demon Hunters",
-                            "Hungry Hungry Hippos", "Monopoly", "Jenga"],
-    "extra_review_terms": ["Mario", "Candy Land", "Stanley", "Wicked", "Uno"],
+    # Stricter-only supplement to config/trademark_blocklist.txt (hard, review). The
+    # former entries now live in the file so every stage sees them; add new ones there.
+    "extra_blocked_terms": [],
+    "extra_review_terms": [],
     "audience": {
         "stickers": "digital planner and journaling fans, teens and adults",
         "coloring_pages": "kids 4-8",
