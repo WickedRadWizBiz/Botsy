@@ -9,9 +9,9 @@ Characters (Open API v3 createDraftListing, checked 2026-10-15): a title holds o
 numbers, punctuation, math symbols, spaces and ™©®, with %, :, & and + at most once each;
 a tag holds only letters, numbers, spaces, -, ' and ™©®.
 
-Settings keys that repeat these (qa.etsy_max_files, qa.etsy_max_file_bytes,
-publisher.max_files, publisher.max_file_bytes, listing.title_max_chars, ...) still work;
-these constants are their defaults.
+The file limits are set only here (settings.yaml no longer repeats them). Listing-text
+keys in settings (listing.title_max_chars, ...) still work; these constants are their
+defaults.
 """
 from __future__ import annotations
 

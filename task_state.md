@@ -1,5 +1,5 @@
 # Task State
-_Last updated: 2026-10-15 (Phases 0–6 built, audited, committed and pushed; CI green)_
+_Last updated: 2026-10-16 (user answered decisions 1, 2, 5; Lightsail plan proposed)_
 
 ## Current objective
 Pipeline is code-complete. Waiting on the user's answers under "Open decisions" and the setup items under "Waiting on the user".
@@ -22,20 +22,24 @@ User: answer "Open decisions" (start with the hard-blocked common words), fill i
 - Blocklist: added ~36 franchise terms, 5 review terms, 11 app/platform brands as review terms (2026-10-15).
 
 ## Open decisions (ask the user)
-- Hard-blocked common words (Cars, Frozen, Stitch, Woody, Goofy, Trolls, Peanuts, Creeper, Highlights, Inside Out) reject generic themes like "race cars" or "cross stitch". Move some to `?review`? (Loosening needs the user's OK.)
-- Research uses competitor tags as brief keywords when 10+ distinct listings share them; those keywords reach the listing model. OK, or keyword-tool phrases only?
-- Add `min_shops_per_pattern` (10 listings from one shop currently satisfy the rule)?
-- Etsy refresh tokens may rotate, so publishing from CI may work for one run only. The weekly job now has a write-back step: create the `SECRETS_WRITE_TOKEN` fine-grained token (this repo, Secrets + Variables read/write) and set the repo variable `ETSY_REFRESH_TOKEN_ISSUED` (YYYY-MM-DD) for it, or keep publishing locally.
-- Keep the repo variable `PIPELINE_PUBLISH` off until the item above is set up.
-- `pipeline.max_brief_age_days: 6` now gates live runs: a niche's newest brief file older than 6 days fails the run (files named with `--brief` are exempt). Keep 6, change, or `null` to switch off?
-- Optional: a pinned constraints file for the weekly job's `pip install` (reproducible installs vs. picking up fixes)?
-- Research no longer counts rows of a keyword-level export without a competition (matching listings) column, so such files alone produce no briefs (a warning is logged). To keep them usable, approve an explicit opt-in setting first; their rows would then count as keyword evidence, not `listing_count`.
-- Etsy limits now live once in `core/etsy.py`. The duplicate settings keys (`qa.etsy_max_files`, `qa.etsy_max_file_bytes`, `publisher.max_files`, `publisher.max_file_bytes`) still work and default to it. Remove them from `settings.yaml`?
-- Optional: research could sign brief files (HMAC with a secret from `.env`) so generators and the pipeline refuse hand-edited briefs; without the licensed exports they cannot detect competitor shop names or verbatim titles in a committed brief. Worth adding?
-- Publisher dedupe across CI checkouts matches our own drafts/active listings by exact title (case/space-insensitive). A rerun whose listing copy got a different title is not caught. Enough, or also keep a brief_id → listing_id record outside the runner (e.g. the previous run's artifact)?
+- PROPOSED (awaiting go-ahead): host on AWS Lightsail, running 24/7. See "Lightsail plan" below.
+- `min_shops_per_pattern`: explained to the user 2026-10-16; recommended as part of the stricter "refined" research stage. Awaiting answer.
 - `listings_d` scope (lets `python -m publisher discard` delete our own failed drafts): keep or drop?
 - Primary listing photo: fanned-pages hero (current) or single-page close-up first?
 - Tracing font: Helvetica (current) or embed a school-style font (e.g. Andika, OFL)?
+- Optional: research could sign brief files (HMAC) so hand-edited briefs are refused.
+- Research skips keyword-level exports with no competition column (stricter); an opt-in setting could count them as keyword evidence.
+
+## Lightsail plan (proposed 2026-10-16, not built)
+- The user wants the pipeline on a Lightsail server running 24/7, doing market research continuously, with a stricter research bar after the first batch.
+- On a server the Etsy token file persists, so refresh-token rotation stops being a problem; the weekly GitHub Action becomes optional (CI tests stay).
+- Limit: competitor data can only come from licensed exports the user downloads (no official eRank/EverBee research API found 2026-10-16; scraping Etsy or using the Etsy API on other shops is forbidden). The server automates everything else: watch an inbox for new exports, pull our own shop stats daily (Etsy API, allowed), optional trend data, keep research history, re-score, gate candidates, generate, list, draft.
+- Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
+
+## Decisions made 2026-10-16
+- Hard-blocked common words stay hard-blocked (user: fine as is).
+- Competitor tags shared by 10+ listings may be used as brief keywords (user: OK).
+- Duplicate Etsy-limit settings keys removed; limits live only in `core/etsy.py`.
 
 ## Waiting on the user
 - [ ] Shop display name in `config/settings.yaml` (`YOUR_SHOP_NAME`; real drafts are blocked until set) and default prices.

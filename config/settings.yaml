@@ -214,13 +214,7 @@ stickers:
 # (floodfill suits the "plain solid white background" prompt and needs no model download).
 
 qa:
-  # Etsy digital-file limits for instant downloads: up to 5 files per listing, each at most 20 MB.
-  # Source: Etsy Help Center "How to Manage Your Digital Listings"
-  # (help.etsy.com/hc/en-us/articles/115015628347), re-checked 2026-10-15.
-  # 20 MB is read as 20,000,000 bytes (the stricter reading). The values are defined once in
-  # core/etsy.py (shared with the generators, listing and publisher); keep these equal to them.
-  etsy_max_files: 5
-  etsy_max_file_bytes: 20000000
+  # Etsy's digital-file limits (5 files, 20 MB each) live only in core/etsy.py.
   page_size_tolerance_pt: 1.0
   dpi_tolerance: 0.02            # 2480 px across A4 still counts as 300 DPI
   blank_check_dpi: 36
@@ -248,8 +242,6 @@ publisher:
   min_price_usd: 0.20          # Etsy's price range (USD 0.20 - 50,000)
   max_price_usd: 50000
   max_quantity: 999            # Etsy: at most 999 units per listing
-  max_files: 5                 # Etsy: up to 5 digital files per listing ...
-  max_file_bytes: 20000000     # ... each up to 20 MB (same reading as qa; both default to core/etsy.py)
   max_images: 20               # spec: a listing holds up to 20 images
   extra_fields: {}             # extra createDraftListing fields, e.g. {shop_section_id: 123, should_auto_renew: false}
   retries: 4                   # per request, for 429 / 5xx (never 5xx on createDraftListing or file uploads)
