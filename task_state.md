@@ -5,7 +5,10 @@ _Last updated: 2026-10-16 (phase 3 packs build + expansion research running)_
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Next: phase 3 themed packs + stationery + TTRPG niches + low-competition scoring (docs/PACKS.md).
 
 ## Next immediate action
-Two workflows running: `botsy-packs-build` (docs/PACKS.md) and `botsy-expansion-research` (Hermes overseer + StarNet-like control center, Fiverr-Botsy, ranked passive-income list). When they finish: verify and commit the packs build; report research and an architecture recommendation to the user.
+Two workflows running (restarted after a container restart on 2026-10-16):
+- packs build, run `wf_bbcab72a-afa`, script `botsy-packs-build-wf_54bb3bbf-a07.js` (spec docs/PACKS.md). Uncommitted partial work from the interrupted run is in research/ and generators/packs/; the new run picks it up.
+- expansion research, run `wf_5db68d9c-22f` (resumed; Hermes + Fiverr results cached, passive-income + synthesis rerunning).
+If the container restarts again: resume with Workflow(scriptPath=..., resumeFromRunId=...). When done: verify + commit packs build; report research + architecture recommendation to the user.
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
