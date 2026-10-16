@@ -1,6 +1,6 @@
 # Etsy print-on-demand (physical products) plan
 
-> **Decision 2026-10-16 (user): the most automated provider.** Printify first: Botsy creates complete products through the Printify API. After one supervised sticker test proves that API publishing reaches Etsy as a DRAFT, Botsy publishes through the API; otherwise Gelato's API (template based, documented to send Etsy drafts), then Printful's dashboard as the last resort. Printify only, kids' items included (user, 2026-10-16). Kids' items stay off (`pod.kids_enabled: false`) until the user has the CPSIA paperwork for each kids' product: a Children's Product Certificate, lab tests covering the printed ink, and a tracking-label solution.
+> **Decision 2026-10-16 (user): the most automated provider.** Printify first: Botsy creates complete products through the Printify API. After one supervised sticker test proves that API publishing reaches Etsy as a DRAFT, Botsy publishes through the API; otherwise Gelato's API (template based, documented to send Etsy drafts), then Printful's dashboard as the last resort. Printify only, kids' items included and running like everything else, with no switch (user, 2026-10-16). The user handles CPSIA paperwork. Still excluded: children's sleepwear, drawstring hoodies in kids' sizes, items with small parts. Kids' listings state the age range and kids' items are tagged in their manifests.
 _Researched 2026-10-16 from primary sources (links inline). Plan, not yet built. Decisions in task_state.md._
 
 ETSY PRINT-ON-DEMAND (POD) PLAN FOR BOTSY. All sources were read on 2026-10-16.
