@@ -1,17 +1,13 @@
 # Task State
-_Last updated: 2026-10-16 19:30 UTC (resumed after session limit)_
+_Last updated: 2026-10-16 20:05 UTC_
 
 ## Current objective
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Next: phase 3 themed packs + stationery + TTRPG niches + low-competition scoring (docs/PACKS.md).
 
 ## Next immediate action
-- 2026-10-16 ~17:00 UTC the account hit its session limit: pack build stopped after its 5 builders + 1 review; design workflow after its 3 researchers. Both RESUMED at 19:30 UTC (pack run `wf_bbcab72a-afa`, design run `wf_9c29118b-5aa`); cached agents replay, the rest reruns.
-- Design workflow running: run `wf_9c29118b-5aa` (script botsy-kdp-hermes-snn-design-wf_9c29118b-5aa.js): KDP top-seller research (stationery/productivity/niche log books), Hermes as active production director + supporter, SNN (SpikingJelly/BindsNET) roles. Report proposals to the user; save to docs/PROPOSAL_KDP_HERMES_SNN.md.
-- POD + KDP research running: run `wf_e468ebde-ec0` (script botsy-pod-kdp-research-wf_e468ebde-ec0.js). Then write docs/POD.md and docs/KDP.md specs and confirm priorities with the user (overseer vs POD vs KDP vs digital planners).
-Two workflows running (restarted after a container restart on 2026-10-16):
-- packs build, run `wf_bbcab72a-afa`, script `botsy-packs-build-wf_54bb3bbf-a07.js` (spec docs/PACKS.md). Uncommitted partial work from the interrupted run is in research/ and generators/packs/; the new run picks it up.
-- expansion research, run `wf_5db68d9c-22f` (resumed; Hermes + Fiverr results cached, passive-income + synthesis rerunning).
-If the container restarts again: resume with Workflow(scriptPath=..., resumeFromRunId=...). When done: verify + commit packs build; report research + architecture recommendation to the user.
+- Packs build (run `wf_bbcab72a-afa`, resumed 19:30 UTC) is in its review phase; integrate (settings merge, full suite, 5-niche e2e, docs) follows. When it finishes: run the full suite, check the 5-niche dry run, commit in logical commits, push, check CI. If the container restarts: Workflow(scriptPath=botsy-packs-build-wf_54bb3bbf-a07.js, resumeFromRunId=wf_bbcab72a-afa). ~60 uncommitted pack files are on disk until then.
+- KDP/Hermes/SNN design is DONE and committed (f377599): docs/KDP_RESEARCH.md, docs/OVERSEER.md, docs/SNN.md, docs/PROPOSAL_2026-10-16.md (build order + 33 decisions). Reported to the user 2026-10-16; waiting on their answers.
+- After packs: build order step 2 in docs/PROPOSAL_2026-10-16.md (BookBeam/EverBee/eRank policy entries, planner brands as review words), then fonts + watchdog + sensors.
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
@@ -44,7 +40,8 @@ If the container restarts again: resume with Workflow(scriptPath=..., resumeFrom
 - Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
 
 ## Decisions made 2026-10-16
-- (latest) User asks: KDP research must study kinds of top-selling stationery/productivity/niche log books (on top of themes); Hermes must actively direct production and support, not just report; find roles for an SNN (SpikingJelly, likely what "Jellyspike" meant, and/or BindsNET). Proposal pending.
+- (latest) KDP/Hermes/SNN proposal written (docs/PROPOSAL_2026-10-16.md). Repo found PUBLIC: KDP briefs git-ignored (data/briefs/kdp/); user asked to make the repo private or stop committing Etsy briefs.
+- User asks: KDP research must study kinds of top-selling stationery/productivity/niche log books (on top of themes); Hermes must actively direct production and support, not just report; find roles for an SNN (SpikingJelly, likely what "Jellyspike" meant, and/or BindsNET). Proposal pending.
 - (latest) POD: Printify ONLY, kids' items included with NO switch/gate (user, 2026-10-16: "there is no gate, have it all run seamlessly"); the user handles the CPSIA paperwork on their own. Kept: no children's sleepwear, no drawstring hoodies in kids' sizes, nothing with small parts (physical hazards with their own federal rules); kids' listings state the age range; each kids' item is tagged in its manifest so paperwork can be matched later.
 - (latest) POD provider (user: "whatever is most automated"): PRINTIFY first. Botsy creates the full product via the Printify API (art, blank, variants, prices, tags, description) with no dashboard work. One supervised test with the user: Botsy calls Printify publish for one sticker, then reads the Etsy listing state (read-only). If it lands as a DRAFT, Botsy publishes via API from then on (fully automated up to an Etsy draft). If it lands ACTIVE, the user deactivates it and we try Gelato's API (create product from a dashboard template; Gelato says its new products reach Etsy as drafts), with Printful's dashboard push as the last resort. Printful (user's existing account) is not API-automatable for Etsy.
 - (latest) User agrees with all other POD/KDP defaults; questions "no kids' physical products": kept off until Printful confirms in writing it provides a Children's Product Certificate and CPSIA tracking labels for its decorated kids' items (draft support question given to user). Digital kids' products and KDP kids' books unaffected.
@@ -72,6 +69,7 @@ If the container restarts again: resume with Workflow(scriptPath=..., resumeFrom
 - `research.min_shops_per_pattern: 3` (user): listing-backed themes, tags and patterns need 3+ different shops (hashed in memory, only the count is written). Applies from the first batch.
 
 ## Waiting on the user
+- [ ] Answer the proposal decisions (docs/PROPOSAL_2026-10-16.md), first: repo private?, Amazon-account risk of the BookBeam extension, BookBeam plan, Hermes design, SNN yes/no.
 - [ ] Shop display name in `config/settings.yaml` (`YOUR_SHOP_NAME`; real drafts are blocked until set) and default prices.
 - [ ] Register an Etsy developer app (personal use, own shop) with redirect `https://localhost:3003/callback`; run `python -m publisher auth`.
 - [ ] Taxonomy ids: `python -m publisher taxonomy --search sticker` (and coloring, activity) → `listing.taxonomy_ids` in settings.
