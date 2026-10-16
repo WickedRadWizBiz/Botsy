@@ -171,3 +171,113 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
   - registers the Scheduled Task "Botsy helper" (at logon, hidden), or the Startup shortcut;
   - offers a connection test.
 - `-Uninstall` removes the task (or shortcut).
+
+## 8. Research stages: discovery, then refined (user, 2026-10-16)
+
+- `research.stage`: `auto` (default), `discovery` or `refined`. With `auto`, the stage is `refined` once the shop has `research.stages.refined.after_drafts` (20) real Etsy drafts. A real draft is an item dir under the configured output dir whose `publish.json` has a `listing_id` and is not `dry_run`. The count comes from `core.items.count_drafts(out_root=None, settings=None) -> int`.
+- Thresholds:
+  - `discovery`: `min_listings: 10`, `min_shops: 3`. These are today's `research.min_listings_per_pattern` and `min_shops_per_pattern`. Those keys stay valid and act as the discovery values and as the floor.
+  - `refined`:
+    - `min_listings: 15` and `min_shops: 3`. They apply to brief support, patterns and tags.
+    - `min_weeks_seen: 3`: from `research.history.timeline`, the theme must appear in snapshots from at least 3 distinct ISO weeks, counting the current run.
+    - `demand_not_falling: true`: refused when the theme's `listing_rows` in the newest earlier snapshot exceeds the current count by more than `falling_tolerance` (0.10), or when its demand rank dropped by more than that tolerance.
+    - `own_shop_boost: 0.25` (discovery uses research's existing 0.1).
+  - The floor never drops below CLAUDE.md's 10 listings, and below 3 shops per the user's rule.
+- The refined history rules (weeks seen, falling) apply only to briefs. Patterns still use the listing and shop thresholds.
+- Each brief document records `"stage": "discovery" | "refined"` and the thresholds it used: `min_listings_per_pattern`, `min_shops_per_pattern`, plus for refined `min_weeks_seen`. Refined briefs carry `evidence.weeks_seen` and `evidence.trend`.
+- `research.run(..., stage=None)` resolves the stage when it is None. The service passes the resolved stage. The CLI flag is `--stage auto|discovery|refined`.
+- A refined run with history too short to qualify any theme writes briefs with an empty `briefs` list and a clear log line. The search list then tells the user which themes need more weeks.
+- The search list uses the active stage's thresholds in its progress text. In the refined stage it also shows weeks: "(seen 2 of 3 weeks)".
+
+## 9. Event journal: `core/events.py`
+
+- `emit(kind: str, **fields)` appends one JSON line to `data/events.jsonl`: `{"ts": ISO8601 UTC, "kind": ..., ...fields}`.
+  - The file rotates at 5 MB to `events-<n>.jsonl`, keeping 5.
+  - Writes are best effort: an emit failure is logged and never raises.
+- `read(since: datetime, until: datetime | None = None, kinds=None) -> list[dict]`.
+- Kinds the service emits:
+  - from ingest: `export_received` (tool, shape, rows) and `export_rejected` (name, reason);
+  - from research: `briefs_written` (niche, stage, count) and `stage_changed` (from, to, drafts);
+  - from the pipeline summary: `item_generated` (item_id, niche, theme), `qa_failed` (item_id, checks), `listing_written` (item_id, title), `draft_created` (item_id, listing_id, title) and `held_for_review` (item_id, reasons);
+  - `spend_warning` (month_to_date, cap, pct), `budget_reached` (month_to_date, cap) and `token_expiring` (days_left);
+  - `error` (where, message) and `search_list_written` (path).
+- Events hold only our own data: theme names, titles, ids, counts. No competitor identifiers and no secrets.
+
+## 10. Spending tracker: `core/spend.py`
+
+- The ledger is `data/spend/ledger.jsonl`, one line per paid call:
+  `{"ts", "month": "YYYY-MM", "provider": "anthropic" | "google", "model", "kind": "text" | "image", "stage", "item_id", "input_tokens", "output_tokens", "images", "cost_usd", "estimated": true}`.
+- `record(provider, model, kind, *, stage, item_id=None, input_tokens=0, output_tokens=0, images=0, settings=None) -> float` computes the cost from `spend.prices` (settings, with the date checked) and appends a line.
+- `month_to_date(settings=None, month=None) -> dict` returns the total plus breakdowns by provider, stage and item.
+- `check_budget(kind, settings=None)` raises `BudgetExceeded` when month-to-date spend is at or over `spend.monthly_cap_usd`.
+  - Stages call it BEFORE a paid call: the listing model call and each Gemini image.
+  - A cap of null or 0 means no cap.
+  - The pipeline turns `BudgetExceeded` into a clean item error. The service emits `budget_reached` once per month and skips paid stages until the month changes or the cap rises.
+- `spend.warn_at: 0.8` emits `spend_warning` once per month when crossed.
+- Prices go in settings with a comment saying where and when they were checked:
+  - Anthropic per million input and output tokens for `claude-opus-5-5` (verify with the claude-api skill);
+  - Gemini per image for `gemini-nano-banana-2.1` at each `image_size` (verify on Google's pricing page; if not verifiable, leave a clearly marked placeholder and say so).
+  - Costs are estimates (`"estimated": true`); the user's provider bills are authoritative.
+- Hooks:
+  - `listing/model.py` records `response.usage` input and output tokens after each real call.
+  - `generators/imaging/client.py` records one image per successful real `generate()`, plus token usage when the response has `usage_metadata`.
+  - Dry runs and fake clients never record.
+- CLI: `python -m service spend [--month YYYY-MM]` prints a plain table.
+
+## 11. Notifications (Discord) and overnight log
+
+- `service/notify.py`: `send(text, *, file=None, settings=None) -> bool` posts to the Discord webhook in env `DISCORD_WEBHOOK_URL` (a secret, in `.env`).
+  - Limits: 2000 characters of content (longer text is attached as a `.txt` file), timeout 10 s, one retry on 429 honoring `retry_after`.
+  - It never raises and returns False on any failure. It never logs the webhook URL.
+  - Disabled when the env var is unset or `notify.discord.enabled` is false.
+- `notify.discord.events` picks which event kinds post right away. Defaults:
+  - `draft_created`, summarized per tick as "3 new drafts are waiting in Etsy: <titles>";
+  - `held_for_review`, `export_rejected`, `budget_reached`, `spend_warning`, `token_expiring`, `stage_changed`, `error`;
+  - the weekly search list, posted with `search-list.txt` attached.
+- `notify.quiet_hours: ["22:00", "07:00"]` (server local time): non-urgent posts during quiet hours are held for the morning digest. Urgent kinds (`budget_reached`, `error`) always post.
+- `service/digest.py`, the overnight log:
+  - `build(since, until, settings) -> str` builds a plain-text summary of the window from the event journal plus the spend ledger.
+  - Sections:
+    - exports received and rejected;
+    - research (stage, briefs per niche);
+    - items made, QA failures, listings written;
+    - drafts created, with titles;
+    - waiting for your review, with the exact approve command;
+    - spend for the window and month to date versus the cap;
+    - errors and warnings;
+    - what runs next.
+  - Plain words, CRLF line endings.
+- `python -m service digest [--hours 24]` writes `outbox/daily-log.txt` and `outbox/daily-log-<date>.txt`, then posts the log to Discord (attached when long).
+- The systemd timer `botsy-digest.timer` runs it daily at 07:07 local time.
+- The Windows helper also fetches `outbox/daily-log.txt` into `Documents\Botsy\`. It does not auto-open it; only the search list opens.
+- `.env.example` gains `DISCORD_WEBHOOK_URL=` with a comment: Discord channel > Edit Channel > Integrations > Webhooks > New Webhook > Copy URL.
+
+## 12. Evidence window and weekly evidence (fixes "every theme is seen every week")
+
+- Each accepted export has a received date. It comes from the ingest name `<tool>-<YYYY-MM-DD>-<sha8>.csv`, else from the `.ingested.json` ledger, else from the file's mtime.
+- Briefs use only exports received within `research.window_days` (default 35) of the run date. Older exports stay on disk until `research.keep_days` (180), then the service deletes them.
+- Each history snapshot theme gains `fresh_rows`: its supporting rows from exports received in the snapshot's ISO week.
+  - `timeline().weeks_seen` counts the ISO weeks where `fresh_rows >= research.history.min_rows`. That is what "seen in 3+ weekly exports" means.
+  - `weeks_qualified` counts the weeks where the theme met the stage thresholds within that week's window.
+- The search list:
+  - lists a near miss only if it has rows from at least 2 shops, or counted keyword rows;
+  - moves a near miss down when its listing rows and shop count have not grown for 3 snapshots ("stalled");
+  - rechecks qualified themes with no fresh rows for `recheck_weeks`.
+
+## 13. Theme cooldown (no duplicate products)
+
+- Before generating, the pipeline skips a brief when the same shop and niche already has an item, under the configured output dir, with the same normalized theme.
+  - The theme is matched with `core.compliance.normalize` plus slug.
+  - The existing item must have been created within `pipeline.theme_cooldown_days` (default 60), or carry a real Etsy draft at any age.
+- `--regenerate` and a rejected review entry keep their current meaning.
+- Skips are reported in the run summary as `generate: skip (theme cooldown: <item_id>)`.
+
+## 14. Server-only settings and disk caps
+
+- `core.config.load_settings()` deep-merges `config/settings.local.yaml` (gitignored, optional) over `config/settings.yaml`. Server-only switches live there, for example `service.live: true`, so going live never needs a commit.
+- `setup.sh` never overwrites `settings.local.yaml`. The deploy README tells the user to edit it with nano.
+- Disk caps:
+  - `data/inbox_rejected/` keeps at most `service.rejected_max_mb` (200 MB) and `service.rejected_keep_days` (30), deleting the oldest first;
+  - accepted exports older than `research.keep_days` are deleted;
+  - `output/dry-run/` items older than `service.dry_run_keep_days` (14) are deleted.
+- Cleanup runs at the end of every tick and logs what it removed.

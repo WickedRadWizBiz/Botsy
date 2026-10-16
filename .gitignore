@@ -37,3 +37,6 @@ data/history/
 data/inbox_rejected/
 data/.service.lock
 data/research_inputs/.ingested.json
+
+# Server-only settings overrides (docs/SERVER.md section 14)
+config/settings.local.yaml
