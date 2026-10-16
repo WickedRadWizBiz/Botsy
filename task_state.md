@@ -73,7 +73,7 @@ If the container restarts again: resume with Workflow(scriptPath=..., resumeFrom
 - [ ] Taxonomy ids: `python -m publisher taxonomy --search sticker` (and coloring, activity) → `listing.taxonomy_ids` in settings.
 - [ ] One real eRank and one real EverBee export in `data/research_inputs/` to confirm column aliases.
 - [ ] One BookBeam export (coloring, activity, planner searches) to map its columns.
-- [ ] Ask Printful support about CPSIA documents for kids' items.
+- [ ] Ask the chosen printer (Printify first) about CPSIA documents for kids' items.
 - [ ] One live smoke test with `GOOGLE_API_KEY` (confirm the model accepts `generate_content` + `image_size: 4K`).
 - [ ] GitHub secrets for live runs: ANTHROPIC_API_KEY, GOOGLE_API_KEY, ETSY_API_KEYSTRING, ETSY_SHARED_SECRET, ETSY_SHOP_ID, ETSY_REFRESH_TOKEN.
 
