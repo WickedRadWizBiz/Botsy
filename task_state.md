@@ -1,5 +1,5 @@
 # Task State
-_Last updated: 2026-10-16 20:05 UTC_
+_Last updated: 2026-10-16 20:45 UTC_
 
 ## Current objective
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Next: phase 3 themed packs + stationery + TTRPG niches + low-competition scoring (docs/PACKS.md).
@@ -40,6 +40,7 @@ Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list
 - Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
 
 ## Decisions made 2026-10-16
+- (latest) User answers to the proposal (2026-10-16): (1) make the GitHub repo PRIVATE (user does it in GitHub settings); (2) accepts the Amazon-account risk of the BookBeam extension (record in platform_policies.yaml); (3) minimize upfront costs: review free/low-cost research options (BookBeam free tier etc.) before paying; (4) Hermes design approved (code per approval, batch codes ok) PLUS Hermes may scale up winning products ("more of this") when limits allow and Botsy has spare capacity; (5) weekly plan posts Sunday 8 pm US Eastern; user approves each plan for the first month, then automatic; (6) SNN included, role revisited: find ADJACENT things to make from trending sales, doing useful work from day one while gathering history and watching; (7) leave out medical log books; lifestyle journals/logs are fine (meditation, stress, exercise). Follow-up design running: workflow `wf_31245900-d0b` (script botsy-answers-design-wf_31245900-d0b.js).
 - (latest) KDP/Hermes/SNN proposal written (docs/PROPOSAL_2026-10-16.md). Repo found PUBLIC: KDP briefs git-ignored (data/briefs/kdp/); user asked to make the repo private or stop committing Etsy briefs.
 - User asks: KDP research must study kinds of top-selling stationery/productivity/niche log books (on top of themes); Hermes must actively direct production and support, not just report; find roles for an SNN (SpikingJelly, likely what "Jellyspike" meant, and/or BindsNET). Proposal pending.
 - (latest) POD: Printify ONLY, kids' items included with NO switch/gate (user, 2026-10-16: "there is no gate, have it all run seamlessly"); the user handles the CPSIA paperwork on their own. Kept: no children's sleepwear, no drawstring hoodies in kids' sizes, nothing with small parts (physical hazards with their own federal rules); kids' listings state the age range; each kids' item is tagged in its manifest so paperwork can be matched later.
@@ -69,7 +70,8 @@ Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list
 - `research.min_shops_per_pattern: 3` (user): listing-backed themes, tags and patterns need 3+ different shops (hashed in memory, only the count is written). Applies from the first batch.
 
 ## Waiting on the user
-- [ ] Answer the proposal decisions (docs/PROPOSAL_2026-10-16.md), first: repo private?, Amazon-account risk of the BookBeam extension, BookBeam plan, Hermes design, SNN yes/no.
+- [ ] Make the GitHub repo private (Settings > General > Danger Zone > Change visibility).
+- [ ] Remaining smaller proposal decisions (docs/PROPOSAL_2026-10-16.md); top 7 answered 2026-10-16.
 - [ ] Shop display name in `config/settings.yaml` (`YOUR_SHOP_NAME`; real drafts are blocked until set) and default prices.
 - [ ] Register an Etsy developer app (personal use, own shop) with redirect `https://localhost:3003/callback`; run `python -m publisher auth`.
 - [ ] Taxonomy ids: `python -m publisher taxonomy --search sticker` (and coloring, activity) → `listing.taxonomy_ids` in settings.
