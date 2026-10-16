@@ -1,5 +1,5 @@
 # Task State
-_Last updated: 2026-10-16 (building server service, search list, Windows helper; refined stage after 20 drafts)_
+_Last updated: 2026-10-16 (server build running; next: refined stage, Discord, spend tracker, overnight log)_
 
 ## Current objective
 Pipeline is code-complete. Waiting on the user's answers under "Open decisions" and the setup items under "Waiting on the user".
@@ -23,8 +23,6 @@ User: answer "Open decisions" (start with the hard-blocked common words), fill i
 
 ## Open decisions (ask the user)
 - PROPOSED (awaiting go-ahead): host on AWS Lightsail, running 24/7. See "Lightsail plan" below.
-- Stricter "refined" research stage starts after 20 drafts (user, 2026-10-16). Not built yet.
-- Still open from the Lightsail questions: (3) refined defaults (25+ listings, 3 shops, seen in 3+ weekly exports, demand not falling, own sales counted), (4) 4 GB Lightsail plan.
 - `listings_d` scope (lets `python -m publisher discard` delete our own failed drafts): keep or drop?
 - Primary listing photo: fanned-pages hero (current) or single-page close-up first?
 - Tracing font: Helvetica (current) or embed a school-style font (e.g. Andika, OFL)?
@@ -38,6 +36,8 @@ User: answer "Open decisions" (start with the hard-blocked common words), fill i
 - Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
 
 ## Decisions made 2026-10-16
+- Refined research stage (user): starts automatically after 20 real Etsy drafts. Needs 15+ listings from 3+ shops, theme seen in 3+ weekly exports, demand not falling, our own sales weighted in. Lightsail 4 GB plan OK.
+- Next build (user approved): Discord notifications (webhook), spending tracker with monthly cap, overnight log (daily digest to outbox + Discord). Ideas taken from androoAGI/starnet (MIT); StarNet itself is a general agent desktop app, not an Etsy pipeline.
 - Hard-blocked common words stay hard-blocked (user: fine as is).
 - Competitor tags shared by 10+ listings may be used as brief keywords (user: OK).
 - Duplicate Etsy-limit settings keys removed; limits live only in `core/etsy.py`.
