@@ -1,11 +1,11 @@
 # Task State
-_Last updated: 2026-10-16 (phase 2 committed and pushed; phase 3 packs/niches spec ready, awaiting user go-ahead)_
+_Last updated: 2026-10-16 (phase 3 packs build + expansion research running)_
 
 ## Current objective
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Next: phase 3 themed packs + stationery + TTRPG niches + low-competition scoring (docs/PACKS.md).
 
 ## Next immediate action
-Wait for the user to (a) confirm the fresh/derived pack ratio reading in docs/PACKS.md section 3 and (b) check /usage. Then launch the phase-3 build. Also ask the user for a monthly spending cap (default: none).
+Two workflows running: `botsy-packs-build` (docs/PACKS.md) and `botsy-expansion-research` (Hermes overseer + StarNet-like control center, Fiverr-Botsy, ranked passive-income list). When they finish: verify and commit the packs build; report research and an architecture recommendation to the user.
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
@@ -38,6 +38,9 @@ Wait for the user to (a) confirm the fresh/derived pack ratio reading in docs/PA
 - Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
 
 ## Decisions made 2026-10-16
+- Spending cap: $25/month default in settings.yaml (user). User wants to adjust it easily "in the UI" -> part of the control-center work.
+- Pack ratio confirmed via my recommendation (master fresh; 2 derived : 1 fresh for 5-packs; 5 derived : 1 fresh for 20-packs), plus listings state page overlap between packs.
+- Next big asks (user): a StarNet-like control center with a central "Hermes" AI overseeing specialist agents (Botsy = one specialist); a Fiverr digital-download version of Botsy; a ranked list of other bot/agent passive-income avenues. Research workflow running.
 - Themed packs (user): every theme -> 5-page pack, 20-page pack, plus the top sellers' pack size; each pack its own listing. Biggest pack = fresh master set; smaller packs are curated subsets, except every 3rd 5-pack and every 6th 20-pack get fresh pages (interpretation of "one fresh pack for every 2 five-page and 5 twenty-page packs"; confirm). Spec: docs/PACKS.md.
 - New niches (user): stationery (ADHD/productivity planners etc.) and tabletop RPG papers, in shop `main` for now. Prefer niche, low-competition themes (opportunity score).
 - RPG listings may name the game system ("for D&D 5e") as a compatibility reference with an unofficial/not-affiliated line (user). CLAUDE.md exception added; `!term` blocklist marker. No medical claims for ADHD stationery.
