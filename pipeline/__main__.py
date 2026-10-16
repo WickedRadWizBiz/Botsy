@@ -1,9 +1,15 @@
 """CLI: python -m pipeline run [--dry-run] ... | python -m pipeline status
 
 Exit status of `run`: 0 = every stage that ran succeeded (items waiting for review
-approval count as success), 1 = an item, brief or stage failed, 2 = setup error (missing
-secret, no Etsy tokens, safety layer). On GitHub Actions the summary also goes to the
-job's step summary, and setup errors become ::error:: annotations.
+approval count as success, and so does a run stopped by the monthly spending cap:
+spend.monthly_cap_usd is your own limit, and the summary says what waits), 1 = an item,
+brief or stage failed, 2 = setup error (missing secret, no Etsy tokens, safety layer, a
+settings file that cannot be read, a spending log that cannot be written).
+On GitHub Actions the summary also goes to the job's step summary, and setup errors
+become ::error:: annotations.
+
+Settings: config/settings.yaml with config/settings.local.yaml (optional, server-only)
+merged over it; --settings FILE reads only that file.
 """
 from __future__ import annotations
 
@@ -12,8 +18,13 @@ import logging
 import os
 import sys
 
+import yaml
+
 from core.config import check_date, get_shop, load_settings, today
 from pipeline.run import STAGES, exit_code, format_summary, run, status_table
+
+SETTINGS_HELP = ("settings YAML, read on its own (default: config/settings.yaml with "
+                 "config/settings.local.yaml merged over it when that file exists)")
 
 
 def _github_report(summary: dict, text: str) -> None:
@@ -51,23 +62,33 @@ def main(argv=None) -> int:
     r.add_argument("--max-items", type=int, help="cap on briefs turned into items this run, reused items "
                                                  "included (without the generate stage: on items listed)")
     r.add_argument("--regenerate", action="store_true",
-                   help="rebuild items that already exist for a brief (new images, new API spend); "
-                        "items with an Etsy draft or rejected in review are never rebuilt")
+                   help="rebuild items that already exist for a brief (new images, new API spend) and "
+                        "lift the theme cooldown (pipeline.theme_cooldown_days); items with an Etsy draft "
+                        "or rejected in review are never rebuilt, and a theme with an Etsy draft is never "
+                        "made again")
     r.add_argument("--date", help="override the run date (YYYY-MM-DD)")
-    r.add_argument("--settings", help="settings YAML (default: config/settings.yaml)")
+    r.add_argument("--settings", help=SETTINGS_HELP)
     r.add_argument("-v", "--verbose", action="store_true")
 
     s = sub.add_parser("status", help="list items and where each one is")
     s.add_argument("--out", help="items dir (default: output/)")
-    s.add_argument("--settings", help="settings YAML (default: config/settings.yaml)")
+    s.add_argument("--settings", help=SETTINGS_HELP)
 
     a = ap.parse_args(argv)
-    settings = load_settings(a.settings) if a.settings else load_settings()
+    # Before the settings are read, so the line naming a merged settings.local.yaml shows.
+    logging.basicConfig(level=logging.DEBUG if getattr(a, "verbose", False) else logging.INFO,
+                        format="%(levelname)s %(name)s: %(message)s")
+    try:  # a broken settings file (e.g. config/settings.local.yaml) is a setup problem: exit 2
+        settings = load_settings(a.settings) if a.settings else load_settings()
+        if not isinstance(settings, dict):
+            raise ValueError("the file is not a YAML mapping")
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        print(f"pipeline: cannot read the settings: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
     if a.cmd == "status":
         print(status_table(a.out, settings=settings))
         return 0
 
-    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     stages = tuple(x.strip() for x in a.stages.split(",") if x.strip())
     unknown = set(stages) - set(STAGES)
     if unknown or not stages:

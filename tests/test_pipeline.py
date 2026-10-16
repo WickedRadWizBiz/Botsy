@@ -14,6 +14,7 @@ import pytest
 
 from core import items
 from core.compliance import find_urls
+from core.config import load_settings
 from pipeline import run as prun
 from research.demo import write_demo_inputs
 
@@ -30,9 +31,18 @@ FAKE_SECRETS = {
 SECRET_NAME_RE = re.compile(r"KEY|SECRET|TOKEN|PASSWORD", re.I)
 
 
+def _settings() -> dict:
+    """The repo's settings with the research stage pinned: with research.stage: auto, a
+    checkout whose output/ holds 20+ real Etsy drafts would research in the refined stage
+    (and read data/history)."""
+    settings = load_settings()
+    settings["research"]["stage"] = "discovery"
+    return settings
+
+
 def _run(tmp_path: Path) -> dict:
     return prun.run(dry_run=True, inputs_dir=tmp_path / "inputs", briefs_dir=tmp_path / "briefs",
-                    out_root=tmp_path / "out", max_items=3, date=DATE)
+                    out_root=tmp_path / "out", max_items=3, date=DATE, settings=_settings())
 
 
 def _secret_values() -> set[str]:

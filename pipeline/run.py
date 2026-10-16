@@ -11,6 +11,20 @@ run date) is reused at its current status instead of being generated and paid fo
 `regenerate=True` rebuilds it in its own folder. Items with an Etsy draft or rejected in
 the review queue are never rebuilt.
 
+Theme cooldown (docs/SERVER.md section 13): a brief with no item of its own is skipped when
+the same shop and niche already has an item in this run's output folder with the same
+theme (core.compliance.normalize plus slug) made within pipeline.theme_cooldown_days (60),
+or one with a real Etsy draft at any age. `regenerate=True` lifts the 60 days but never a
+real draft, so no second product of a theme already on Etsy is made. A skip is recorded
+under the id the brief would have made: `generate: skip (theme cooldown: <item_id>)`.
+
+Spending cap (docs/SERVER.md section 10): when the generators or the listing stage raise
+core.spend.BudgetExceeded, that item gets a plain error, summary["budget_reached"] is
+set, and no new paid work (images, listing copy) starts for the rest of the run. QA and
+drafts of items that are already listed go on: they cost nothing. A spending log that
+cannot be written (core.spend.LedgerUnavailable: every paid call is refused) is a setup
+problem instead: that stage stops, like a missing secret.
+
 The run summary goes to <out_root>/runs/run-<date>-<HHMMSS>.json so the GitHub Action can
 upload it with the items. exit_code(summary) gives the CLI's exit status.
 """
@@ -24,7 +38,7 @@ from pathlib import Path
 
 from core import items
 from core.briefs import BriefComplianceError, validate_brief_doc
-from core.compliance import Blocklist
+from core.compliance import Blocklist, normalize
 from core.config import MissingSecretError, check_date, get_shop, load_settings, resolve, section, today
 
 log = logging.getLogger("pipeline")
@@ -37,10 +51,51 @@ DEFAULTS = {
     # (from the date in its name), so a weekly schedule on a fresh checkout never drafts
     # the same briefs twice. null turns the check off. Files named with --brief are exempt.
     "max_brief_age_days": 6,
+    # A brief is skipped when the shop and niche already have an item with the same theme
+    # made within this many days, or one with a real Etsy draft at any age (docs/SERVER.md
+    # section 13). null or 0 = only real drafts block. --regenerate lifts the days only.
+    "theme_cooldown_days": 60,
 }
 BRIEF_FILE_RE = re.compile(r"^(?P<niche>[a-z_]+)-(?P<date>\d{4}-\d{2}-\d{2})\.json$")
 # Most advanced first: which existing item stands for a brief when several do.
 _STATUS_RANK = {"drafted": 4, "listed": 3, "qa_passed": 2, "generated": 1, "qa_failed": 0}
+# Item records stopped by the monthly spending cap carry "budget": true (see exit_code).
+BUDGET_GENERATE = ("not made: the monthly spending cap is reached (settings spend.monthly_cap_usd); "
+                   "it is made in a later run, next month or once the cap is raised")
+BUDGET_LISTING = ("not listed: the monthly spending cap is reached (settings spend.monthly_cap_usd); "
+                  "it is listed in a later run, next month or once the cap is raised")
+
+
+class _NoBudgetCheck(RuntimeError):
+    """Stands in for core.spend.BudgetExceeded / LedgerUnavailable when core.spend is
+    missing; never raised."""
+
+
+def _budget_exceeded() -> type[Exception]:
+    """core.spend.BudgetExceeded, imported when a run starts (the class is defined there)."""
+    try:
+        from core.spend import BudgetExceeded
+    except ImportError:
+        return _NoBudgetCheck
+    return BudgetExceeded
+
+
+def _ledger_unavailable() -> type[Exception]:
+    """core.spend.LedgerUnavailable: a cap is set but spending cannot be written down, so
+    every paid call this process makes is refused. A setup problem: the stage stops."""
+    try:
+        from core.spend import LedgerUnavailable
+    except ImportError:
+        return _NoBudgetCheck
+    return LedgerUnavailable
+
+
+def theme_key(theme) -> str:
+    """The form two themes are matched in for the cooldown: core.compliance.normalize,
+    then a slug ("Farm Animals!" and "farm-animals" give "farm-animals"; apostrophes are
+    dropped, so "Cat's Pajamas" matches "cats pajamas"). Not cut short, unlike item ids,
+    so two long themes never match on a shared start."""
+    return "-".join(re.findall(r"[a-z0-9]+", normalize(str(theme or "")).replace("'", "")))
 
 
 def latest_briefs(briefs_dir: Path, niches: list[str]) -> list[Path]:
@@ -53,11 +108,20 @@ def latest_briefs(briefs_dir: Path, niches: list[str]) -> list[Path]:
     return [p for _, p in sorted(newest.values(), key=lambda t: t[1].name)]
 
 
-def _record(summary: dict, item_id: str, stage: str, ok: bool, detail: str = "", skipped: bool = False) -> None:
+def _record(summary: dict, item_id: str, stage: str, ok: bool, detail: str = "", skipped: bool = False,
+            **extra) -> None:
     rec = {"ok": ok, "detail": detail}
     if skipped:
         rec["skipped"] = True
+    rec.update(extra)
     summary["items"].setdefault(item_id, {})[stage] = rec
+
+
+def _budget_stop(summary: dict, e: Exception) -> None:
+    """The monthly cap is reached: no new paid work for the rest of this run."""
+    if not summary["budget_reached"]:
+        log.warning("monthly spending cap reached (%s); no new paid work this run", e)
+    summary["budget_reached"] = True
 
 
 def _manifest(d: Path) -> dict | None:
@@ -155,7 +219,7 @@ def run(
     summary = {"date": date, "shop_id": shop["id"], "dry_run": dry_run, "stages": list(stages),
                "started": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
                "briefs": [], "items": {}, "errors": [], "setup_errors": [], "notes": [],
-               "awaiting_review": {}}
+               "awaiting_review": {}, "budget_reached": False}
 
     # 1. research: CSV exports -> brief files. The exports are licensed and stay local,
     # so in CI this stage is usually not run and the committed briefs are used.
@@ -169,7 +233,8 @@ def run(
     if "generate" in stages:
         targets = _generate(summary, brief_files=brief_files, briefs_dir=briefs_dir, niches=niches,
                             shop=shop, out_root=out_root, date=date, dry_run=dry_run, settings=settings,
-                            cap=cap, max_age=cfg.get("max_brief_age_days"), regenerate=regenerate)
+                            cap=cap, max_age=cfg.get("max_brief_age_days"), regenerate=regenerate,
+                            cooldown_days=_cooldown_days(cfg, summary))
     elif {"qa", "listing", "publish"} & set(stages):
         targets = _existing(summary, out_root, niche=niche, shop_id=shop["id"] if shop_id else None,
                             qa_runs="qa" in stages)
@@ -259,18 +324,82 @@ def _load_brief_queue(summary: dict, bf: Path, blocklist: Blocklist) -> list[tup
     return [(bf, b) for b in doc.get("briefs") or [] if isinstance(b, dict)]
 
 
-def _index_existing(out_root: Path) -> dict[tuple, tuple[Path, dict]]:
+def _index_existing(existing: list[tuple[Path, dict]]) -> dict[tuple, tuple[Path, dict]]:
     """(shop_id, brief_id) -> the most advanced existing item made from that brief."""
     found: dict[tuple, tuple[Path, dict]] = {}
-    for d in items.iter_item_dirs(out_root):
-        m = _manifest(d)
-        if not m or not m.get("brief_id"):
+    for d, m in existing:
+        if not m.get("brief_id"):
             continue
         key = (m.get("shop_id"), m["brief_id"])
         old = found.get(key)
         if old is None or _STATUS_RANK.get(m.get("status"), -1) >= _STATUS_RANK.get(old[1].get("status"), -1):
             found[key] = (d, m)
     return found
+
+
+def _cooldown_days(cfg: dict, summary: dict | None = None) -> int:
+    """pipeline.theme_cooldown_days; null or 0 = only real drafts block. A value that is
+    not a number of days uses the default (60) with a note: a typo must neither stop the
+    run nor let duplicates through."""
+    value = cfg.get("theme_cooldown_days")
+    if value is None or value == "":
+        return 0
+    try:
+        if isinstance(value, bool):
+            raise ValueError(value)
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        days = DEFAULTS["theme_cooldown_days"]
+        if summary is not None:
+            summary["notes"].append(f"settings pipeline.theme_cooldown_days is not a number of days; "
+                                    f"used {days} days")
+        return days
+
+
+def _index_themes(existing: list[tuple[Path, dict]], shop_id: str) -> dict[tuple, list[tuple[Path, dict]]]:
+    """(niche, theme_key) -> the shop's existing items with that theme."""
+    found: dict[tuple, list[tuple[Path, dict]]] = {}
+    for d, m in existing:
+        _add_theme(found, d, m, shop_id)
+    return found
+
+
+def _add_theme(index: dict, d: Path, m: dict, shop_id: str) -> None:
+    key = (m.get("niche"), theme_key(m.get("theme")))
+    if m.get("shop_id") == shop_id and key[1]:
+        index.setdefault(key, []).append((d, m))
+
+
+def _created(d: Path, m: dict) -> _dt.date | None:
+    """When an item was made: manifest `created`, else the date its id starts with, else
+    the manifest's modification time."""
+    for value in (m.get("created"), d.name[:10]):
+        try:
+            return _dt.date.fromisoformat(check_date(value))
+        except ValueError:
+            continue
+    try:
+        return _dt.date.fromtimestamp((d / "manifest.json").stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _cooldown_block(brief: dict, themes: dict, *, date: str, days: int, regenerate: bool) -> Path | None:
+    """The existing item that keeps this brief from being made (docs/SERVER.md section
+    13), or None. A real Etsy draft blocks at any age and even with --regenerate; any
+    other item blocks while it is younger than `days` (an undated one counts as young)."""
+    same = themes.get((brief.get("niche"), theme_key(brief.get("theme"))), [])
+    for d, _ in same:
+        if _has_real_draft(d):
+            return d
+    if regenerate or not days:
+        return None
+    run_day = _dt.date.fromisoformat(date)
+    for d, m in sorted(same, key=lambda t: t[0].name, reverse=True):
+        made = _created(d, m)
+        if made is None or (run_day - made).days < days:
+            return d
+    return None
 
 
 def _item_date(d: Path, manifest: dict, brief: dict, run_date: str) -> str:
@@ -286,8 +415,10 @@ def _item_date(d: Path, manifest: dict, brief: dict, run_date: str) -> str:
 
 
 def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path, date, dry_run, settings,
-              cap, max_age, regenerate) -> list[Path]:
+              cap, max_age, regenerate, cooldown_days: int = 0) -> list[Path]:
     import generators
+
+    budget_error, ledger_error = _budget_exceeded(), _ledger_unavailable()
 
     files = _pick_brief_files(summary, brief_files=brief_files, briefs_dir=briefs_dir, niches=niches,
                               date=date, dry_run=dry_run, max_age=max_age)
@@ -299,15 +430,18 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
     if files and not order and not summary["errors"]:
         summary["errors"].append("the brief files hold no briefs; nothing to generate")
 
-    existing = _index_existing(out_root)
+    found = [(d, m) for d in items.iter_item_dirs(out_root) if (m := _manifest(d)) is not None]
+    existing = _index_existing(found)
+    themes = _index_themes(found, shop["id"])
     targets: list[Path] = []
-    taken = not_taken = 0  # reused items count too, so a rerun retries instead of spending more
+    taken = not_taken = cooled = held = 0  # reused items count too, so a rerun retries instead of spending more
     for bf, brief in order:
         if taken >= cap:
             not_taken += 1
             continue
         bid = brief.get("brief_id")
         prior = existing.get((shop["id"], bid)) if bid else None
+        d = None
         if prior is None:
             try:
                 d = items.item_dir(items.new_item_id(date, str(brief.get("niche", "")),
@@ -316,6 +450,13 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
                 d = None  # the generator reports the bad brief
             m = _manifest(d) if d else None
             prior = (d, m) if m else None
+        if prior is None and d is not None:
+            blocker = _cooldown_block(brief, themes, date=date, days=cooldown_days, regenerate=regenerate)
+            if blocker is not None:
+                _record(summary, d.name, "generate", True, f"theme cooldown: {blocker.name}", skipped=True,
+                        cooldown=blocker.name)
+                cooled += 1
+                continue
         gen_date = date
         if prior is not None:
             d, m = prior
@@ -333,12 +474,20 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
                 taken += 1
                 continue
             gen_date = _item_date(d, m, brief, date)
+        if summary["budget_reached"]:  # no new paid work; reused items above still go on
+            held += 1
+            continue
         try:
             dirs = generators.generate(brief, brief_file=items.repo_relative(bf), shop_id=shop["id"],
                                        out_root=out_root, date=gen_date, dry_run=dry_run, settings=settings)
-        except MissingSecretError as e:
+        except (MissingSecretError, ledger_error) as e:
             summary["setup_errors"].append(f"generate: {e}; no further briefs were generated")
             break
+        except budget_error as e:
+            _budget_stop(summary, e)
+            _record(summary, d.name if d is not None else str(bid or bf.name), "generate", False,
+                    BUDGET_GENERATE, budget=True)
+            continue
         except generators.ImageCapExceeded as e:
             summary["errors"].append(f"generate[{bid}]: {e}; the remaining briefs were not generated")
             break
@@ -351,8 +500,17 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
             if d not in targets:
                 targets.append(d)
                 _record(summary, d.name, "generate", True, "generated")
+                m = _manifest(d)
+                if m is not None:  # a later brief with the same theme waits too
+                    _add_theme(themes, d, m, shop["id"])
     if not_taken:
         summary["notes"].append(f"max_items={cap}: {not_taken} brief(s) not used this run")
+    if held:
+        summary["notes"].append(f"monthly spending cap reached: {held} more brief(s) not made this run")
+    if cooled:
+        why = (f"made in the last {cooldown_days} days or already has an Etsy draft" if cooldown_days and
+               not regenerate else "already has an Etsy draft")
+        summary["notes"].append(f"theme cooldown: {cooled} brief(s) skipped because the same theme was {why}")
     return targets
 
 
@@ -393,7 +551,8 @@ def _qa(summary: dict, targets: list[Path], settings: dict) -> None:
 def _listing(summary: dict, targets: list[Path], settings: dict, *, dry_run: bool, budget: int | None) -> None:
     import listing
 
-    capped = 0
+    budget_error, ledger_error = _budget_exceeded(), _ledger_unavailable()
+    capped = held = 0
     for d in targets:
         # qa_passed items, and in a real run 'listed' real items whose copy the publisher
         # would refuse as stale (dry-run template text, or an old shop name / disclosure).
@@ -402,6 +561,9 @@ def _listing(summary: dict, targets: list[Path], settings: dict, *, dry_run: boo
         if _review_entry(d, settings).get("status") == "rejected":  # no model call spent on it
             summary["awaiting_review"][d.name] = "rejected in the review queue"
             _record(summary, d.name, "listing", True, "rejected in the review queue; not listed", skipped=True)
+            continue
+        if summary["budget_reached"] and not dry_run:  # the model call is paid; template copy is not
+            held += 1
             continue
         if budget is not None:
             if budget <= 0:
@@ -415,14 +577,19 @@ def _listing(summary: dict, targets: list[Path], settings: dict, *, dry_run: boo
                         f"{lst.get('title', '')}", skipped=True)
             else:
                 _record(summary, d.name, "listing", True, lst.get("title", ""))
-        except MissingSecretError as e:
+        except (MissingSecretError, ledger_error) as e:
             summary["setup_errors"].append(f"listing: {e}")
             _record(summary, d.name, "listing", False, f"{type(e).__name__}: {e}")
             break
+        except budget_error as e:
+            _budget_stop(summary, e)
+            _record(summary, d.name, "listing", False, BUDGET_LISTING, budget=True)
         except Exception as e:
             _record(summary, d.name, "listing", False, f"{type(e).__name__}: {e}")
     if capped:
         summary["notes"].append(f"--max-items: {capped} item(s) not listed this run")
+    if held:
+        summary["notes"].append(f"monthly spending cap reached: {held} more item(s) not listed this run")
 
 
 def _publish(summary: dict, targets: list[Path], settings: dict, *, dry_run: bool) -> None:
@@ -464,25 +631,37 @@ def _publish(summary: dict, targets: list[Path], settings: dict, *, dry_run: boo
 def exit_code(summary: dict) -> int:
     """0 = every stage that ran succeeded (items waiting for review count as success),
     1 = an item, brief or stage failed, 2 = setup error (missing secret, Etsy auth, safety
-    layer), the same codes as `python -m publisher`."""
+    layer), the same codes as `python -m publisher`.
+
+    Reaching the monthly spending cap (summary["budget_reached"]) is not a failure: the
+    cap is the user's own limit and the run stopped cleanly, so its item records
+    ("budget": true) count as 0. Any other failure in the same run still gives 1."""
     if summary.get("setup_errors"):
         return 2
     if summary.get("errors"):
         return 1
-    if any(not rec["ok"] for st in summary["items"].values() for rec in st.values()):
+    if any(not rec["ok"] and not rec.get("budget") for st in summary["items"].values() for rec in st.values()):
         return 1
     return 0
+
+
+def _cell(rec: dict) -> str:
+    """"wait" is an item the monthly spending cap stopped: a later run makes or lists it."""
+    return "skip" if rec.get("skipped") else "ok" if rec["ok"] else "wait" if rec.get("budget") else "FAIL"
 
 
 def format_summary(summary: dict) -> str:
     lines = [f"run {summary['date']} shop={summary['shop_id']} dry_run={summary['dry_run']}",
              f"briefs: {', '.join(summary['briefs']) or '(none)'}"]
     for item_id, stages in summary["items"].items():
-        cells = [f"{st}={'skip' if rec.get('skipped') else 'ok' if rec['ok'] else 'FAIL'}"
-                 for st, rec in stages.items() if st != "generate" or not rec["ok"] or rec.get("skipped")]
+        cells = [f"{st}={_cell(rec)}" for st, rec in stages.items()
+                 if st != "generate" or not rec["ok"] or rec.get("skipped")]
         lines.append(f"  {item_id}: {' '.join(cells) or 'generated'}")
-        lines += [f"      {st}: {rec['detail']}" for st, rec in stages.items()
-                  if (not rec["ok"] or rec.get("skipped")) and rec["detail"]]
+        lines += [f"      {st}: skip ({rec['detail']})" if rec.get("cooldown") else f"      {st}: {rec['detail']}"
+                  for st, rec in stages.items() if (not rec["ok"] or rec.get("skipped")) and rec["detail"]]
+    if summary.get("budget_reached"):
+        lines.append("! monthly spending cap reached: no new images or listing copy were started after that "
+                     "(settings spend.monthly_cap_usd); the rest waits for next month or a higher cap")
     lines += [f"! setup: {e}" for e in summary.get("setup_errors", [])]
     lines += [f"! {e}" for e in summary["errors"]]
     lines += [f"- {e}" for e in summary.get("notes", [])]

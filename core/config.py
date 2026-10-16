@@ -1,7 +1,25 @@
-"""Settings, paths and environment loading shared by every stage."""
+"""Settings, paths and environment loading shared by every stage.
+
+Server-only settings (docs/SERVER.md section 14): `load_settings()` with no path deep-merges
+config/settings.local.yaml (gitignored, optional) over config/settings.yaml, so a switch
+such as `service.live: true` never needs a commit. An explicit path loads just that file.
+BOTSY_IGNORE_LOCAL_SETTINGS=1 turns the merge off (the test suite sets it, so a
+developer's or the server's local file never changes test results).
+
+A local file may never loosen a compliance rule (CLAUDE.md). After the merge, values it
+set below a floor are raised to the floor with a warning: research needs at least 10
+listings and 3 shops per pattern (also in research.stages.<stage>), and
+compliance.publisher_mode stays draft_only. Its other `compliance:` values (blocklist and
+AI disclosure files) and `listing.always_disclose_ai: false` are not used.
+
+A section or list replaced by a single value (`service: true`) is a setup error
+(ValueError), like a file that is not valid YAML. A `monthly_cap_usd` typed outside
+`spend:` is used as the spending cap, with a warning, so a cap never silently does nothing.
+"""
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import re
 from datetime import date
@@ -9,13 +27,24 @@ from pathlib import Path
 
 import yaml
 
+log = logging.getLogger("core.config")
+
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "config"
+SETTINGS_NAME = "settings.yaml"
+LOCAL_SETTINGS_NAME = "settings.local.yaml"
+IGNORE_LOCAL_ENV = "BOTSY_IGNORE_LOCAL_SETTINGS"
+# Floors a local settings file may not go below (core.briefs.HARD_FLOOR: CLAUDE.md's 10
+# listings; research.defaults.SHOP_FLOOR: the user's 3 shops). Kept here because
+# core.briefs and research import this module.
+LISTINGS_FLOOR = 10
+SHOPS_FLOOR = 3
 # Dates end up in folder and file names. Python 3.11+ fromisoformat also accepts
 # "20261015" and the ISO week date "2026-W42-4", so the shape is checked first.
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # config/settings.yaml ships with this shop name; real drafts are refused until it is set.
 PLACEHOLDER_SHOP_NAMES = ("", "YOUR_SHOP_NAME")
+_logged: set[str] = set()   # log lines already written by this process (each is logged once)
 
 
 class MissingSecretError(RuntimeError):
@@ -23,9 +52,167 @@ class MissingSecretError(RuntimeError):
 
 
 def load_settings(path: str | Path | None = None) -> dict:
-    """Load config/settings.yaml (or another YAML file). Returns a fresh dict every call."""
-    p = Path(path) if path else CONFIG_DIR / "settings.yaml"
-    return yaml.safe_load(p.read_text(encoding="utf-8"))
+    """Load config/settings.yaml (or another YAML file). Returns a fresh dict every call.
+
+    With no `path`, config/settings.local.yaml is deep-merged over it when that file
+    exists and BOTSY_IGNORE_LOCAL_SETTINGS is not set (see the module docstring). A local
+    file that is not valid YAML, or not a mapping, raises ValueError: a broken server
+    switch is a setup problem, never silently skipped."""
+    if path:
+        return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    settings = yaml.safe_load((CONFIG_DIR / SETTINGS_NAME).read_text(encoding="utf-8"))
+    local_path = local_settings_path()
+    if local_path is None or not isinstance(settings, dict):
+        return settings
+    local = _read_local(local_path)
+    base_compliance = copy.deepcopy(settings.get("compliance") or {})
+    _merge_local(settings, local, local_path)
+    _keep_floors(settings, local, local_path, base_compliance)
+    _misplaced_cap(settings, local, local_path)
+    _log_once(f"merged {local_path}", logging.INFO, "settings: using %s over %s", local_path, SETTINGS_NAME)
+    return settings
+
+
+def local_settings_path() -> Path | None:
+    """config/settings.local.yaml when it exists and the merge is not switched off."""
+    if os.environ.get(IGNORE_LOCAL_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    p = CONFIG_DIR / LOCAL_SETTINGS_NAME
+    return p if p.is_file() else None
+
+
+def _yaml_problem(e: yaml.YAMLError) -> str:
+    """Where and what, without the quoted lines PyYAML adds (they would copy the file's
+    text into logs and status messages)."""
+    mark = getattr(e, "problem_mark", None)
+    problem = getattr(e, "problem", None) or type(e).__name__
+    return f"line {mark.line + 1}, column {mark.column + 1}: {problem}" if mark is not None else str(problem)
+
+
+def _read_local(path: Path) -> dict:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path} is not valid YAML; fix it or remove it ({_yaml_problem(e)})") from None
+    if data is None:  # an empty file, or only comments
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must hold settings as `name: value` lines (a YAML mapping)")
+    return data
+
+
+def _merge_local(base: dict, override: dict, source: Path | None = None, top: bool = True) -> dict:
+    """deep_merge, except that an empty section (`service:` with nothing under it, a
+    common slip when lines are commented out) keeps the section instead of wiping it, and
+    a top-level section (`service:`, `compliance:`, `shops:` ...) replaced by a single
+    value (`service: true`) is a setup error (ValueError), not a silently broken section.
+    The value itself is not quoted in the message."""
+    for k, v in override.items():
+        old = base.get(k)
+        if v is None and (isinstance(old, dict) or (top and isinstance(old, list))):
+            continue
+        if top and isinstance(old, dict) and not isinstance(v, dict):
+            raise ValueError(f"{source or LOCAL_SETTINGS_NAME}: `{k}:` must have its settings on the "
+                             "indented lines under it, not a value on the same line; fix that line or remove it")
+        if top and isinstance(old, list) and not isinstance(v, list):
+            raise ValueError(f"{source or LOCAL_SETTINGS_NAME}: `{k}:` must be a list (indented lines "
+                             "starting with `-`); fix that line or remove it")
+        if isinstance(v, dict) and isinstance(old, dict):
+            _merge_local(old, v, source, top=False)
+        else:
+            base[k] = copy.deepcopy(v)
+    return base
+
+
+def _at_least(value, floor: int) -> bool:
+    """True for a number (or number written as text) at or above `floor`. None (= the
+    module default) is accepted: every default is at or above its floor."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    try:
+        return float(value) >= floor
+    except (TypeError, ValueError):
+        return False
+
+
+def _keep_floors(settings: dict, local: dict, source: Path, base_compliance: dict) -> None:
+    """Undo what the local file did below a compliance floor (CLAUDE.md), with a warning."""
+    def warn(key: str, value, kept) -> None:
+        _log_once(f"floor {source} {key} {value!r}", logging.WARNING,
+                  "settings: %s may not set %s to %r (compliance rule); using %r instead",
+                  source.name, key, value, kept)
+
+    def sub(d, key) -> dict:
+        v = d.get(key) if isinstance(d, dict) else None
+        return v if isinstance(v, dict) else {}
+
+    research, research_local = sub(settings, "research"), sub(local, "research")
+    for key, floor in (("min_listings_per_pattern", LISTINGS_FLOOR), ("min_shops_per_pattern", SHOPS_FLOOR)):
+        if key in research_local and not _at_least(research.get(key), floor):
+            warn(f"research.{key}", research.get(key), floor)
+            research[key] = floor
+    for stage, given in sub(research_local, "stages").items():
+        if not isinstance(given, dict):
+            continue
+        merged = sub(sub(research, "stages"), stage)
+        for key, floor in (("min_listings", LISTINGS_FLOOR), ("min_shops", SHOPS_FLOOR)):
+            if key in given and not _at_least(merged.get(key), floor):
+                warn(f"research.stages.{stage}.{key}", merged.get(key), floor)
+                merged[key] = floor
+
+    comp_local = sub(local, "compliance")
+    if comp_local:
+        comp = settings["compliance"] if isinstance(settings.get("compliance"), dict) else {}
+        settings["compliance"] = comp
+        for key in comp_local:
+            kept = "draft_only" if key == "publisher_mode" else base_compliance.get(key)
+            if comp.get(key) != kept:
+                warn(f"compliance.{key}", comp.get(key), kept)
+                if kept is None:
+                    comp.pop(key, None)
+                else:
+                    comp[key] = kept
+    if sub(local, "listing").get("always_disclose_ai", True) is not True:
+        listing = sub(settings, "listing")
+        if listing:
+            warn("listing.always_disclose_ai", listing.get("always_disclose_ai"), True)
+            listing["always_disclose_ai"] = True
+
+
+def _misplaced_cap(settings: dict, local: dict, source: Path) -> None:
+    """`monthly_cap_usd` belongs under `spend:`. The server file's template has `# spend:`
+    commented out above the cap line, so un-commenting only the cap line puts it under
+    `service:`, where nothing reads it. A cap the user typed must never silently do
+    nothing: one found at the top level or in another section is used as
+    spend.monthly_cap_usd (with a warning), unless the local file also sets that key."""
+    found = [("monthly_cap_usd", local["monthly_cap_usd"])] if "monthly_cap_usd" in local else []
+    found += [(f"{name}.monthly_cap_usd", sec["monthly_cap_usd"]) for name, sec in local.items()
+              if name != "spend" and isinstance(sec, dict) and "monthly_cap_usd" in sec]
+    found = [(key, value) for key, value in found if value is not None]
+    if not found:
+        return
+    spend_local = local.get("spend")
+    if isinstance(spend_local, dict) and spend_local.get("monthly_cap_usd") is not None:
+        for key, value in found:
+            _log_once(f"cap {source} {key}", logging.WARNING,
+                      "settings: %s sets %s, which is not read; spend.monthly_cap_usd (%r) is the cap",
+                      source.name, key, spend_local["monthly_cap_usd"])
+        return
+    key, value = found[0]
+    if not isinstance(settings.get("spend"), dict):
+        settings["spend"] = {}
+    settings["spend"]["monthly_cap_usd"] = value
+    _log_once(f"cap {source} {key} {value!r}", logging.WARNING,
+              "settings: %s sets %s; it belongs under `spend:`, and is used as spend.monthly_cap_usd (%r)",
+              source.name, key, value)
+
+
+def _log_once(key: str, level: int, msg: str, *args) -> None:
+    if key not in _logged:
+        _logged.add(key)
+        log.log(level, msg, *args)
 
 
 def section(settings: dict, name: str, defaults: dict | None = None) -> dict:
