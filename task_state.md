@@ -41,6 +41,11 @@ If the container restarts again: resume with Workflow(scriptPath=..., resumeFrom
 - Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
 
 ## Decisions made 2026-10-16
+- Overseer (user approved the recommended plan, docs/EXPANSION.md section 1): Nous Research Hermes Agent on the Lightsail server, own `hermes` Linux user, private Discord chat (allowlisted to the user), pinned version; it can only call a safe menu (`botsy-control`: status, spend, review list/approve/reject, set cap, pause/resume, run now, daily log) through a Botsy MCP server; confirm codes for cap raises and approvals; $100 cap ceiling only root can change; Hermes on its own $5/month Anthropic workspace limit; later a "Botsy" tab in the Hermes dashboard (cap box + Save, pause switch, review queue). Spec: docs/OVERSEER.md.
+- Fiverr-Botsy: skipped (user).
+- After the pack build (user): hyperlinked digital planners, then Pinterest pins via the official API (user approves each pin), then KDP interiors (manual upload).
+- UPDATE (user, 2026-10-16, later): focus on Etsy and KDP. Pinterest dropped. New: Etsy print-on-demand physical products made by a third-party printer. User asked to "look for items selling now, essentially copy them and augment slightly"; answered that Botsy follows selling THEMES/product types across many shops and makes original designs (copying a specific item breaks copyright and CLAUDE.md). Overseer priority vs POD/KDP to confirm with the user. POD + KDP research workflow started.
+- CLAUDE.md rule extended: no scraping or browser automation on ANY marketplace/platform (user).
 - Spending cap: $25/month default in settings.yaml (user). User wants to adjust it easily "in the UI" -> part of the control-center work.
 - Pack ratio confirmed via my recommendation (master fresh; 2 derived : 1 fresh for 5-packs; 5 derived : 1 fresh for 20-packs), plus listings state page overlap between packs.
 - Next big asks (user): a StarNet-like control center with a central "Hermes" AI overseeing specialist agents (Botsy = one specialist); a Fiverr digital-download version of Botsy; a ranked list of other bot/agent passive-income avenues. Research workflow running.
