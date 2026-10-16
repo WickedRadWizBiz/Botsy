@@ -1,13 +1,16 @@
 """Synthetic CSV builders for research tests (all data invented, written to tmp_path)."""
 import csv
+import datetime
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from core import items
 from core.compliance import Blocklist
-from core.config import load_settings
+from core.config import ROOT, load_settings
 
 DATE = "2026-10-15"
 EVERBEE = ["Product Name", "Shop Name", "Price", "Mo. Sales", "Reviews", "Favorites",
@@ -79,7 +82,18 @@ def pinned_settings() -> dict:
     s["print"]["page_sizes"] = {"us_letter": {"width_in": 8.5, "height_in": 11.0},
                                 "a4": {"width_in": 8.2677, "height_in": 11.6929}}
     s["print"]["deliver_both_sizes"] = True
+    # Pinned so a test never counts the drafts in the repo's own output/ folder; the stage
+    # tests (test_stages.py) set it themselves.
+    s["research"]["stage"] = "discovery"
     return s
+
+
+def set_received(path: Path, day: str) -> Path:
+    """Give an export the received date `day` through its modification time (the last of
+    research's three date sources), at noon local time so the calendar day is certain."""
+    t = datetime.datetime.fromisoformat(f"{day}T12:00:00").timestamp()
+    os.utime(path, (t, t))
+    return path
 
 
 def load(path: Path) -> dict:
@@ -96,3 +110,19 @@ def dirs(tmp_path):
     inputs, out = tmp_path / "inputs", tmp_path / "briefs"
     inputs.mkdir()
     return inputs, out
+
+
+@pytest.fixture(autouse=True)
+def _never_count_the_repos_drafts(monkeypatch):
+    """research.run() with research.stage auto counts the real Etsy drafts in the configured
+    output dir. Tests that use the repo's settings must not read the repo's own output/
+    folder, so the count there is 0 (any other folder, such as tmp_path, is counted)."""
+    real = items.count_drafts
+    repo_out = (ROOT / "output").resolve()
+
+    def count(out_root=None, settings=None):
+        base = Path(out_root) if out_root else items.output_root(settings)
+        return 0 if base.resolve() == repo_out else real(out_root, settings)
+
+    monkeypatch.setattr(items, "count_drafts", count)
+

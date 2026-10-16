@@ -172,6 +172,39 @@ def _positive_int(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
+def count_drafts(out_root: str | Path | None = None, settings: dict | None = None) -> int:
+    """How many real Etsy drafts exist: item folders directly under `out_root` (default:
+    the configured output dir, settings paths.output_dir) whose publish.json has a
+    `listing_id` and is not a dry run (docs/SERVER.md section 8).
+
+    A dry-run publish.json (`dry_run: true`) is a simulated draft and never counts, nor
+    does the dry-run folder (output/dry-run is one level deeper). Unreadable records,
+    links and folders that cannot be listed are skipped: this is a count, not a check.
+    """
+    base = Path(out_root) if out_root else output_root(settings)
+    try:
+        dirs = sorted(base.iterdir())
+    except OSError:
+        return 0
+    n = 0
+    for d in dirs:
+        record = d / "publish.json"
+        try:
+            if d.is_symlink() or not d.is_dir() or record.is_symlink() or not record.is_file():
+                continue
+            doc = read_json(record)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or doc.get("dry_run") is True:
+            continue
+        lid = doc.get("listing_id")
+        if isinstance(lid, str) and lid.strip().isdecimal():  # an id saved as text
+            lid = int(lid.strip())
+        if isinstance(lid, int) and not isinstance(lid, bool) and lid > 0:
+            n += 1
+    return n
+
+
 def item_dir(item_id: str, root: str | Path | None = None) -> Path:
     return (Path(root) if root else output_root()) / item_id
 

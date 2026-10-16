@@ -5,12 +5,19 @@ from core.config import section
 from research.guard import HARD_FLOOR
 from research.niches import DEFAULT_RULES
 
+SHOP_FLOOR = 3   # user rule (2026-10-16): listing support spans >= 3 shops in every stage
+
 DEFAULTS: dict = {
     "inputs_dir": "data/research_inputs",
     "briefs_dir": "data/briefs",
     "source_tool": "auto",              # auto | erank | everbee | <label>
     "min_listings_per_pattern": 10,     # compliance floor; values below 10 are raised to 10
-    "min_shops_per_pattern": 3,         # listing-level support must span >= this many shops (user, 2026-10-16)
+    "min_shops_per_pattern": 3,         # listing-level support must span >= this many shops (user, 2026-10-16);
+                                        # values below 3 are raised to 3
+    # Evidence window (docs/SERVER.md section 12, research/window.py): briefs use exports
+    # received within window_days of the run date; the service deletes them after keep_days.
+    "window_days": 35,
+    "keep_days": 180,
     "briefs_per_niche": 5,
     "themes_in_patterns": 25,
     "keyword_clusters": 15,
@@ -78,8 +85,13 @@ DEFAULTS: dict = {
 
 
 def load_config(settings: dict) -> dict:
-    """settings `research:` over DEFAULTS, with the compliance floor enforced."""
+    """settings `research:` over DEFAULTS, with the floors enforced (10 listings, 3 shops).
+
+    These are the discovery-stage numbers; research.run swaps in the active stage's
+    thresholds (research/stages.py), which never go below them.
+    """
     cfg = section(settings, "research", DEFAULTS)
-    cfg["min_listings_per_pattern"] = max(HARD_FLOOR, int(cfg["min_listings_per_pattern"]))
-    cfg["min_shops_per_pattern"] = max(1, int(cfg["min_shops_per_pattern"]))
+    for key, floor in (("min_listings_per_pattern", HARD_FLOOR), ("min_shops_per_pattern", SHOP_FLOOR)):
+        value = cfg.get(key)
+        cfg[key] = max(floor, int(DEFAULTS[key] if value is None else value))
     return cfg

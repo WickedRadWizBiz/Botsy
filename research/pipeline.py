@@ -8,10 +8,15 @@ Inputs in the inputs dir (default data/research_inputs/):
 - trends*.csv: off-Etsy trend signals (keyword + interest 0-100, or a Google
   Trends timeline), demand boost only.
 Own-shop and trend rows never count toward min_listings_per_pattern.
+
+Stages (research/stages.py, docs/SERVER.md section 8): the run uses the thresholds of the
+discovery or refined stage. Evidence window (research/window.py, section 12): only market
+exports (and trend files) received within research.window_days of the run date are used.
 """
 from __future__ import annotations
 
 import csv
+import datetime as _dt
 import hashlib
 import logging
 import re
@@ -23,7 +28,7 @@ import pandas as pd
 from core.compliance import Blocklist, normalize
 from core.config import get_shop, load_settings, resolve, today
 from core.items import check_date, write_json
-from research import columns, history
+from research import columns, history, stages, window
 from research.aggregate import Row, Signal
 from research.briefs import build_doc
 from research.defaults import load_config
@@ -62,6 +67,7 @@ class MarketFile:
     has_competition: bool
     shop_names: set[str]
     titles: set[str]
+    received: str = ""           # YYYY-MM-DD the export arrived (research/window.py)
 
 
 def discover_inputs(inputs_dir: Path, known_niches) -> InputFiles:
@@ -169,6 +175,11 @@ def rows_for_niche(files: list[MarketFile], niche: str, threshold: int,
                     continue
             counted += 1
             if rec["_key"] in rows:
+                # The first file keeps the row's data; a newer export of the same listing
+                # still makes the row fresh evidence.
+                row = rows[rec["_key"]]
+                if f.received and (row.received or "") < f.received:
+                    row.received = f.received
                 continue
             listing = f.shape == "listing"
             text = rec["title"] if listing else rec["keyword"]
@@ -185,6 +196,7 @@ def rows_for_niche(files: list[MarketFile], niche: str, threshold: int,
                 price=_num(rec, "price"), sales=_num(rec, "sales"),
                 favorites=_num(rec, "favorites"), reviews=_num(rec, "reviews"),
                 search_volume=_num(rec, "search_volume"), shop=rec["_shop"],
+                received=f.received or None,
             )
         sources.append(_source_entry(f, len(sub), counted, threshold, min_shops))
     return list(rows.values()), sources
@@ -192,6 +204,8 @@ def rows_for_niche(files: list[MarketFile], niche: str, threshold: int,
 
 def _source_entry(f: MarketFile, rows: int, counted: int, threshold: int, min_shops: int = 1) -> dict:
     entry = {"tool": f.tool, "file": f.name, "shape": f.shape, "rows": rows, "counted_rows": counted}
+    if f.received:
+        entry["received"] = f.received
     if f.shape == "keyword":
         entry["rule"] = (
             f"keyword-level: a pattern needs >= {threshold} distinct keyword rows, each with "
@@ -288,15 +302,57 @@ def _safe_source_names(sources: list[dict], guard: Guard) -> None:
             s["file"] = f"input-{_key(s['file'])[:8]}.csv"
 
 
+def _received(path: Path, ledger: dict[str, str]) -> str:
+    try:
+        return window.received_date(path, ledger).isoformat()
+    except OSError:  # the file went away while we read; it counts as received today
+        return today()
+
+
+def _with_received(market: list[MarketFile], paths: dict[str, Path], ledger: dict[str, str]) -> None:
+    for m in market:
+        m.received = _received(paths[m.name], ledger)
+
+
+def _in_window(market: list[MarketFile], date: str, days: int) -> list[MarketFile]:
+    kept = [m for m in market if window.in_window(_dt.date.fromisoformat(m.received), date, days)]
+    old = len(market) - len(kept)
+    if old:
+        log.warning("%d of %d research exports were received more than %d days before %s, so "
+                    "they are not used (research.window_days). Fresh exports keep the evidence "
+                    "current.", old, len(market), days, date)
+    return kept
+
+
+def _trends_in_window(paths: list[Path], ledger: dict[str, str], date: str, days: int) -> list[Path]:
+    """Trend files are uploaded exports too, so an old one stops boosting demand once it
+    leaves the window. Own-shop stats are not windowed: they are our own numbers, which
+    the server refreshes, not market evidence that goes stale."""
+    kept = [p for p in paths
+            if window.in_window(_dt.date.fromisoformat(_received(p, ledger)), date, days)]
+    if len(kept) < len(paths):
+        log.info("%d trend file(s) were received more than %d days before %s and are not used",
+                 len(paths) - len(kept), days, date)
+    return kept
+
+
 def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs_dir=None,
         date: str | None = None, *, settings: dict | None = None,
         blocklist: Blocklist | None = None, dry_run: bool = False,
-        history_dir=None) -> list[Path]:
+        history_dir=None, stage: str | None = None) -> list[Path]:
     """Write data/briefs/<niche>-<date>.json for each niche of the shop that has rows.
 
     Every document passes validate_brief_doc before anything is written, so a
     compliance failure in one niche writes nothing. dry_run builds and validates
     but writes nothing; it returns the paths that would be written.
+
+    stage: "discovery" or "refined" (docs/SERVER.md section 8); None or "auto" resolves
+    it with research.stages.resolve_stage (refined after 20 real Etsy drafts). The stage's
+    thresholds apply to themes, patterns and tags; a refined brief also needs the theme
+    seen in research.stages.refined.min_weeks_seen ISO weeks (this run included) and
+    demand not falling, read from the history in history_dir (else settings
+    research.history_dir). Only market exports received within research.window_days of
+    the run date are counted (research/window.py).
 
     history_dir (the service passes settings research.history_dir): also write
     <history_dir>/<date>/<niche>.json for each of those niches (research/history.py,
@@ -305,7 +361,8 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
     """
     settings = settings if settings is not None else load_settings()
     cfg = load_config(settings)
-    threshold = cfg["min_listings_per_pattern"]
+    if stage not in (None, "auto"):
+        stages.check_stage(stage)
     shop = get_shop(settings, shop_id)
     known = list(settings.get("niches") or cfg["niche_rules"])
     targets = list(shop.get("niches") or known)
@@ -323,6 +380,14 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
         raise NoInputsError(
             f"No research exports found in {inputs}. Download a CSV export from eRank or "
             f"EverBee (keyword or listing results) into that folder, then run again.")
+    if stage in (None, "auto"):
+        stage = stages.resolve_stage(settings)
+    th = stages.stage_thresholds(settings, stage)
+    cfg = stages.apply_thresholds(cfg, th)
+    threshold = cfg["min_listings_per_pattern"]
+    refined = stage == "refined"
+    hist_cfg = history.history_config(settings)
+    read_dir = hist_dir if hist_dir is not None else resolve(hist_cfg["history_dir"])
 
     if blocklist is None:
         blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
@@ -334,12 +399,18 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
         raise NoInputsError(
             f"None of the CSVs in {inputs} could be read with a title or keyword column. Check "
             f"the export, or map its headers in settings research.column_overrides.")
+    # Every export's shop names and titles guard the output, including exports too old to count.
     shop_names = set().union(*(m.shop_names for m in market)) if market else set()
     titles = set().union(*(m.titles for m in market)) if market else set()
     guard = Guard(shop_names, titles, blocklist, cfg["verbatim_title_min_words"])
+    ledger = window.load_ledger(inputs)
+    days = window.window_config(settings)["window_days"]
+    _with_received(market, {p.name: p for p in found.market}, ledger)
+    market = _in_window(market, date, days)
+    trend_files = _trends_in_window(found.trends, ledger, date, days)
     own = load_own_shop(found.own_shop, cfg, rules, niche_rules, known)
-    trends = load_trends(found.trends, cfg, rules, known)
-    boost_rows = {p: _count_rows(p) for p in found.own_shop + found.trends}
+    trends = load_trends(trend_files, cfg, rules, known)
+    boost_rows = {p: _count_rows(p) for p in found.own_shop + trend_files}
 
     docs: dict[str, dict] = {}
     snapshots: dict[str, dict] = {}
@@ -350,18 +421,26 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
             continue
         sources += [{"tool": tool, "file": p.name, "rows": boost_rows[p],
                      "role": "demand boost only (not counted)"}
-                    for tool, paths in (("own_shop", found.own_shop), ("trends", found.trends))
+                    for tool, paths in (("own_shop", found.own_shop), ("trends", trend_files))
                     for p in paths]
         _safe_source_names(sources, guard)
-        doc = build_doc(n, rows, sources, settings=settings, cfg=cfg, shop=shop, shop_id=shop_id,
-                        date=date, guard=guard, rules=rules, own=own, trends=trends)
-        validate_brief_doc(doc, shop_names, titles, guard=guard)  # raises before any write
-        docs[n] = doc
-        if hist_dir is not None:
+        snap = gate = None
+        if hist_dir is not None or refined:
             snap = history.build_snapshot(n, rows, sources, settings=settings, cfg=cfg, date=date,
                                           guard=guard, rules=rules, own=own, trends=trends,
-                                          shop_names=shop_names)
+                                          shop_names=shop_names, stage=stage,
+                                          min_weeks_seen=th["min_weeks_seen"] if refined else 0)
             history.validate_snapshot(snap, guard)  # raises before any write, like briefs
+        if refined:
+            gate = stages.gate_for(n, snap, read_dir, date, th, hist_cfg["min_rows"])
+        doc = build_doc(n, rows, sources, settings=settings, cfg=cfg, shop=shop, shop_id=shop_id,
+                        date=date, guard=guard, rules=rules, own=own, trends=trends,
+                        stage=stage, thresholds=th, gate=gate)
+        validate_brief_doc(doc, shop_names, titles, guard=guard)  # raises before any write
+        docs[n] = doc
+        if refined:
+            _log_refined(n, doc, gate, th)
+        if hist_dir is not None:
             snapshots[n] = snap
 
     paths = []
@@ -374,3 +453,21 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
         for snap in snapshots.values():
             history.write_snapshot(hist_dir, snap)
     return paths
+
+
+def _log_refined(niche: str, doc: dict, gate, th: dict) -> None:
+    """One clear line when the refined history rules leave a niche without briefs."""
+    if doc["briefs"]:
+        if gate.refused:
+            log.info("%s: refined stage: %d brief(s); %d theme(s) held back (%s)", niche,
+                     len(doc["briefs"]), len(gate.refused),
+                     "; ".join(f"{k}: {v}" for k, v in sorted(gate.refused.items())[:5]))
+        return
+    if not doc["patterns"]["themes"]:
+        log.info("%s: refined stage: no theme has %d listings from %d shops in the recent "
+                 "exports yet; no briefs this time", niche, th["min_listings"], th["min_shops"])
+        return
+    log.info("%s: refined stage: no brief yet. Themes need fresh exports in %d different weeks "
+             "and steady demand (%s). The search list asks for those exports.", niche,
+             th["min_weeks_seen"],
+             "; ".join(f"{k}: {v}" for k, v in sorted(gate.refused.items())[:5]) or "none ready")

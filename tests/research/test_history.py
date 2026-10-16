@@ -10,7 +10,7 @@ from research.__main__ import main as cli_main
 from research.guard import BriefComplianceError
 
 from .conftest import (DATE, ERANK_KW, EVERBEE, keyword_rows, listing_rows, load,
-                       pinned_settings, write_csv)
+                       pinned_settings, set_received, write_csv)
 
 NICHE = "coloring_pages"
 
@@ -53,9 +53,10 @@ def test_history_written_only_with_history_dir(dirs, tmp_path):
     assert snap["schema"] == "history/v1"
     assert snap["niche"] == NICHE and snap["date"] == DATE
     assert snap["thresholds"] == {"listings": 10, "shops": 3}
+    assert snap["stage"] == "discovery"
     assert snap["sources"] == [{"tool": "everbee", "shape": "listing", "rows": 10}]
     assert set(snap["themes"][0]) == {"name", "listing_rows", "keyword_rows", "shop_count",
-                                      "demand", "qualified"}
+                                      "fresh_rows", "demand", "qualified"}
 
 
 def test_only_niches_with_rows_get_a_snapshot(dirs, tmp_path):
@@ -180,9 +181,11 @@ def test_timeline_weeks_and_trend(dirs, tmp_path):
     inputs, out = dirs
     hist = tmp_path / "history"
     week42, week43, week43b = "2026-10-12", "2026-10-19", "2026-10-21"
-    write_csv(inputs / "a.csv", EVERBEE, listing_rows("Octopus", 10) + listing_rows("Hedgehog", 6))
+    a = write_csv(inputs / "a.csv", EVERBEE, listing_rows("Octopus", 10) + listing_rows("Hedgehog", 6))
+    set_received(a, week42)
     _run(inputs, out, hist, date=week42)
-    write_csv(inputs / "b.csv", EVERBEE, listing_rows("Hedgehog", 4) + listing_rows("Walrus", 3))
+    b = write_csv(inputs / "b.csv", EVERBEE, listing_rows("Hedgehog", 4) + listing_rows("Walrus", 3))
+    set_received(b, week43)
     _run(inputs, out, hist, date=week43)
 
     assert [s["date"] for s in history.load(hist, NICHE)] == [week42, week43]
@@ -194,8 +197,12 @@ def test_timeline_weeks_and_trend(dirs, tmp_path):
     assert hedgehog["last"]["qualified"] is True and hedgehog["last"]["listing_rows"] == 10
     assert tl["octopus"]["weeks_qualified"] == 2 and tl["octopus"]["trend"] == 0
     assert tl["walrus"]["weeks_seen"] == 1 and tl["walrus"]["trend"] is None
+    # Octopus is still in the week-43 snapshot (inside the evidence window) but no export
+    # that week had it, so that week is not "seen" (docs/SERVER.md section 12).
+    assert tl["octopus"]["weeks_seen"] == 1 and tl["octopus"]["last_seen"] == week43
+    assert tl["octopus"]["last_fresh"] == week42 and hedgehog["last_fresh"] == week43
     assert set(hedgehog) == {"weeks_seen", "weeks_qualified", "first_seen", "last_seen",
-                             "last", "trend"}
+                             "last_fresh", "last", "trend"}
 
     # A second snapshot in the same ISO week adds no week.
     _run(inputs, out, hist, date=week43b)

@@ -277,10 +277,12 @@ def test_listing_export_without_shop_names_cannot_meet_shop_minimum(dirs, caplog
     assert all("octopus" not in _themes(load(p)) for p in paths)
 
 
-def test_min_shops_setting_is_never_below_one(dirs):
+@pytest.mark.parametrize("value", [0, 1, 2, None])
+def test_min_shops_setting_is_never_below_three(dirs, value):
+    # docs/SERVER.md section 8: the floor never drops below 3 shops (the user's rule).
     inputs, out = dirs
     settings = pinned_settings()
-    settings["research"]["min_shops_per_pattern"] = 0
+    settings["research"]["min_shops_per_pattern"] = value
     write_csv(inputs / "everbee-products.csv", EVERBEE, listing_rows("Octopus", 10, shop="OnlyShop"))
     doc = load(_run(inputs, out, niche="coloring_pages", settings=settings)[0])
-    assert doc["min_shops_per_pattern"] == 1 and "octopus" in _themes(doc)
+    assert doc["min_shops_per_pattern"] == 3 and "octopus" not in _themes(doc)

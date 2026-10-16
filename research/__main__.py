@@ -1,5 +1,5 @@
 """CLI: python -m research [--niche N] [--shop ID] [--inputs DIR] [--out DIR] [--date D]
-[--history DIR] [--dry-run] [--demo]."""
+[--history DIR] [--stage auto|discovery|refined] [--dry-run] [--demo]."""
 from __future__ import annotations
 
 import argparse
@@ -32,6 +32,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--history", metavar="DIR",
                     help="also save a research history snapshot per niche in DIR/<date>/ "
                          "(the server uses data/history); not written with --dry-run")
+    ap.add_argument("--stage", choices=("auto", "discovery", "refined"),
+                    help="research stage (default: settings research.stage, normally auto: "
+                         "refined once the shop has 20 real Etsy drafts; --demo uses discovery)")
     ap.add_argument("--dry-run", action="store_true", help="build and check briefs, write nothing")
     ap.add_argument("--demo", action="store_true",
                     help="use built-in synthetic exports instead of --inputs (CI and dry runs); "
@@ -48,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
         print("research: --demo ignores --inputs; use one or the other.", file=sys.stderr)
         return 2
 
+    # Synthetic demo exports have no history, so the refined stage could never pass them.
+    stage = args.stage or ("discovery" if args.demo else None)
     try:
         if args.demo:
             from research.demo import write_demo_inputs
@@ -55,10 +60,10 @@ def main(argv: list[str] | None = None) -> int:
             with tempfile.TemporaryDirectory(prefix="research-demo-") as tmp:
                 write_demo_inputs(tmp)
                 paths = run(args.niche, args.shop, tmp, args.out, args.date, dry_run=args.dry_run,
-                            history_dir=args.history)
+                            history_dir=args.history, stage=stage)
         else:
             paths = run(args.niche, args.shop, args.inputs, args.out, args.date, dry_run=args.dry_run,
-                        history_dir=args.history)
+                        history_dir=args.history, stage=stage)
     except NoInputsError as e:
         print(f"research: {e}", file=sys.stderr)
         return 2
@@ -78,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         doc = read_json(p)
         review = sum(1 for b in doc["briefs"] if b["needs_review"])
         print(f"wrote {_show(p)}: {len(doc['briefs'])} briefs ({review} need review), "
-              f"{doc['listing_count']} rows")
+              f"{doc['listing_count']} rows, {doc.get('stage', 'discovery')} stage")
     if args.history and paths:
         day = Path(args.history) / check_date(args.date or today())  # run() already checked it
         print(f"{'would write' if args.dry_run else 'wrote'} {len(paths)} history "

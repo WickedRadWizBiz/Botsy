@@ -3,6 +3,11 @@
 Everything here comes from aggregated patterns: theme names are short n-grams,
 keywords are keyword-tool phrases or tags shared by >= T listings, and audience
 and style notes are our own templates. Nothing identifies a listing or a shop.
+
+The document records the research stage and the thresholds it used (docs/SERVER.md
+section 8). In the refined stage a history gate (research/stages.HistoryGate) also has to
+pass each brief theme (seen in enough weeks, demand not falling); those briefs carry
+evidence.weeks_seen and evidence.trend. Patterns use the listing and shop thresholds only.
 """
 from __future__ import annotations
 
@@ -81,7 +86,10 @@ def theme_keywords(theme: Theme, phrases: list[Phrase], niche: str, guard: Guard
 
 def build_doc(niche: str, rows: list[Row], sources: list[dict], *, settings: dict, cfg: dict,
               shop: dict, shop_id: str, date: str, guard: Guard, rules: TextRules,
-              own: list[Signal] = (), trends: list[Signal] = ()) -> dict:
+              own: list[Signal] = (), trends: list[Signal] = (), stage: str = "discovery",
+              thresholds: dict | None = None, gate=None) -> dict:
+    """The brief document. `cfg` already holds the stage's numbers
+    (research.stages.apply_thresholds); `gate` is the refined history gate or None."""
     t = cfg["min_listings_per_pattern"]
     s = cfg["min_shops_per_pattern"]
     own = [s for s in own if s.niche in (None, niche)]
@@ -110,8 +118,11 @@ def build_doc(niche: str, rows: list[Row], sources: list[dict], *, settings: dic
     allowed = [a for a in (settings.get("niches", {}).get(niche) or {}).get("types", ACTIVITY_TYPES)
                if a in ACTIVITY_TYPES]
 
+    # The history gate runs before the overlap rule, so a refused theme never blocks an
+    # overlapping theme that passes ("farm" held back must not hide "farm animals").
+    candidates = [th for th in themes if gate is None or gate.check(th) is None]
     briefs = []
-    for theme in select_distinct(themes, int(cfg["briefs_per_niche"])):
+    for theme in select_distinct(candidates, int(cfg["briefs_per_niche"])):
         brief = {
             "brief_id": f"{niche}-{date}-{len(briefs) + 1:02d}",
             "niche": niche,
@@ -126,7 +137,7 @@ def build_doc(niche: str, rows: list[Row], sources: list[dict], *, settings: dic
             "activity_types": theme_activities(theme, allowed) if niche == "activity_sheets" else [],
             "evidence": {"listing_count": len(theme.rows), "listing_rows": theme.listing_rows,
                          "keyword_rows": theme.keyword_rows, "shop_count": theme.shop_count,
-                         "score": theme.demand},
+                         "score": theme.demand, **(gate.evidence(theme) if gate is not None else {})},
         }
         result = guard.blocklist.check_obj(brief)
         if result.blocked:
@@ -138,18 +149,21 @@ def build_doc(niche: str, rows: list[Row], sources: list[dict], *, settings: dic
     for i, brief in enumerate(briefs, 1):  # keep ids contiguous after any drop
         brief["brief_id"] = f"{niche}-{date}-{i:02d}"
 
-    return {
+    doc = {
         "schema": "brief/v1",
         "niche": niche,
         "created": date,
         "shop_id": shop_id,
+        "stage": stage,
         "sources": sources,
         "listing_count": total,
         "min_listings_per_pattern": t,
         "min_shops_per_pattern": s,
-        "patterns": patterns,
-        "briefs": briefs,
     }
+    if stage == "refined":
+        doc["min_weeks_seen"] = int((thresholds or {}).get("min_weeks_seen") or 0)
+    doc.update({"patterns": patterns, "briefs": briefs})
+    return doc
 
 
 def _theme_entry(theme: Theme, total: int) -> dict:

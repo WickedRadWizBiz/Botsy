@@ -66,6 +66,7 @@ class Row:
     reviews: float | None = None
     search_volume: float | None = None
     shop: str = ""                            # opaque hash of the shop name ("" = unknown); never written out
+    received: str | None = None               # newest received date (YYYY-MM-DD) of the exports holding it
 
 
 @dataclass

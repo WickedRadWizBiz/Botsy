@@ -87,9 +87,10 @@ def test_near_misses_with_progress_best_demand_first(tmp_path):
     _snap(hist, "2026-10-11", "coloring_pages", [_theme("narwhal", 3, 1, 0.2)])
     _snap(hist, "2026-10-17", "coloring_pages", [
         _theme("farm animals", 23, 7, 0.81, qualified=True),
-        _theme("narwhal", 4, 1, 0.2),
+        _theme("narwhal", 4, 2, 0.2),
         _theme("axolotl", 7, 2, 0.4),
         _theme("hedgehog", 12, 2, 0.3),
+        _theme("platypus", 9, 1, 0.9),      # one shop's catalog: not a lead (section 12)
     ])
     lines = _section(searchlist.build(_settings(), hist, date=DAY), "COLORING PAGES")
     assert lines == [
@@ -97,7 +98,7 @@ def test_near_misses_with_progress_best_demand_first(tmp_path):
         "  printable coloring pages  (every week)",
         "  axolotl coloring pages  (7 of 10 listings, 2 of 3 shops so far)",
         "  hedgehog coloring pages  (enough listings, 2 of 3 shops so far)",
-        "  narwhal coloring pages  (4 of 10 listings, 1 of 3 shops so far)",  # newest numbers
+        "  narwhal coloring pages  (4 of 10 listings, 2 of 3 shops so far)",  # newest numbers
     ]
 
 
@@ -252,3 +253,147 @@ def test_empty_settings_values_and_a_single_seed(tmp_path):
 def test_date_in_the_title_has_no_leading_zero(tmp_path):
     text = searchlist.build(_settings(), tmp_path, date="2026-10-04")
     assert text.startswith("BOTSY WEEKLY SEARCH LIST - Sunday 4 October 2026\r\n")
+
+
+# ---------------------------------------------------------------- stages and weekly evidence
+# (docs/SERVER.md sections 8 and 12)
+
+def test_refined_progress_shows_stage_thresholds_and_weeks(tmp_path):
+    hist = tmp_path / "history"
+    _snap(hist, "2026-10-10", "coloring_pages", [_theme("axolotl", 4, 2, 0.4, fresh_rows=4)])
+    _snap(hist, "2026-10-17", "coloring_pages", [
+        _theme("dinosaurs", 16, 4, 0.9, qualified=True, fresh_rows=3),
+        _theme("farm animals", 20, 5, 0.8, qualified=True, fresh_rows=5),
+        _theme("hedgehog", 12, 3, 0.6, fresh_rows=12),
+        _theme("axolotl", 7, 2, 0.4, fresh_rows=3),
+        {"name": "unicorn", "listing_rows": 0, "keyword_rows": 6, "shop_count": 0,
+         "fresh_rows": 6, "demand": 0.3, "qualified": False},
+    ], thresholds={"listings": 15, "shops": 3, "weeks": 3})
+    _snap(hist, "2026-10-03", "coloring_pages", [_theme("dinosaurs", 16, 4, 0.9, True, fresh_rows=3)])
+    _snap(hist, "2026-09-26", "coloring_pages", [_theme("dinosaurs", 16, 4, 0.9, True, fresh_rows=3)])
+    text = searchlist.build(_settings(), hist, date=DAY, stage="refined")
+    assert "stricter stage" in text and "seen in 3 different weeks" in text
+    assert "Botsy needs 15 listings from 3 different" in text
+    lines = _section(text, "COLORING PAGES")
+    assert lines[2:] == [
+        "  farm animals coloring pages  (enough listings and shops, seen 1 of 3 weeks)",
+        "  hedgehog coloring pages  (12 of 15 listings, 3 of 3 shops, seen 1 of 3 weeks)",
+        "  axolotl coloring pages  (7 of 15 listings, 2 of 3 shops, seen 2 of 3 weeks)",
+        "  unicorn coloring pages  (no listings yet, in 6 keyword searches, seen 1 of 3 weeks)",
+    ]                                    # dinosaurs: seen in 3 weeks, ready (not listed)
+
+    # The same history in the discovery stage: 10 listings, no weeks.
+    text = searchlist.build(_settings(), hist, date=DAY, stage="discovery")
+    assert "stricter stage" not in text and "Botsy needs 10 listings" in text
+    lines = _section(text, "COLORING PAGES")
+    assert lines[2:] == ["  axolotl coloring pages  (7 of 10 listings, 2 of 3 shops so far)",
+                         "  unicorn coloring pages  (no listings yet, seen in 6 keyword searches)"]
+
+
+def test_progress_text_in_the_refined_stage():
+    th = {"min_listings": 15, "min_shops": 3, "min_weeks_seen": 3}
+    kw = {"listing_rows": 0, "keyword_rows": 16, "shop_count": 0}
+    assert searchlist._progress(kw, th, 5) == "(enough keyword searches, seen 3 of 3 weeks)"
+    one = {"listing_rows": 1, "keyword_rows": 0, "shop_count": 2}
+    assert searchlist._progress(one, th, 0) == "(1 of 15 listings, 2 of 3 shops, seen 0 of 3 weeks)"
+    one_kw = {"listing_rows": 0, "keyword_rows": 1, "shop_count": 0}
+    assert searchlist._progress(one_kw, th, 1) == "(no listings yet, in 1 keyword search, seen 1 of 3 weeks)"
+
+
+def test_stage_comes_from_settings_and_the_draft_count(tmp_path):
+    s = _settings()
+    s["research"]["stage"] = "auto"
+    s["paths"] = {**s["paths"], "output_dir": str(tmp_path / "output")}
+    for i in range(19):
+        d = tmp_path / "output" / f"item-{i}"
+        d.mkdir(parents=True)
+        (d / "publish.json").write_text(json.dumps({"listing_id": 4_000_000_000 + i, "dry_run": False}))
+    assert "stricter stage" not in searchlist.build(s, tmp_path / "history", date=DAY)
+    d = tmp_path / "output" / "item-19"
+    d.mkdir()
+    (d / "publish.json").write_text(json.dumps({"listing_id": 4_100_000_000, "dry_run": False}))
+    assert "stricter stage" in searchlist.build(s, tmp_path / "history", date=DAY)
+    s["research"]["stage"] = "strict"              # a settings mistake must not stop the list
+    assert "Botsy needs 10 listings" in searchlist.build(s, tmp_path / "history", date=DAY)
+
+
+def test_near_miss_needs_two_shops_or_keyword_rows(tmp_path):
+    hist = tmp_path / "history"
+    _snap(hist, "2026-10-17", "stickers", [
+        _theme("platypus", 9, 1, 0.9),                      # one seller's catalog
+        _theme("narwhal", 3, 2, 0.5),
+        {"name": "mushroom", "listing_rows": 3, "keyword_rows": 4, "shop_count": 1,
+         "demand": 0.4, "qualified": False},
+    ])
+    lines = _section(searchlist.build(_settings(), hist, date=DAY), "STICKERS")
+    assert [ln.split("  (")[0].strip() for ln in lines[2:]] == ["narwhal stickers", "mushroom stickers"]
+
+
+def test_stalled_near_misses_move_down(tmp_path):
+    hist = tmp_path / "history"
+    for day, axolotl in (("2026-10-03", 5), ("2026-10-10", 6), ("2026-10-17", 7)):
+        _snap(hist, day, "coloring_pages", [
+            _theme("hedgehog", 8, 2, 0.9),                  # no growth for 3 snapshots
+            _theme("axolotl", axolotl, 2, 0.4),
+            _theme("walrus", 4, 2, 0.2),                    # flat, but only in this snapshot
+        ] if day == "2026-10-17" else [_theme("hedgehog", 8, 2, 0.9), _theme("axolotl", axolotl, 2, 0.4)])
+    lines = _section(searchlist.build(_settings(), hist, date=DAY), "COLORING PAGES")
+    assert [ln.split("  (")[0].strip() for ln in lines[2:]] == [
+        "axolotl coloring pages", "walrus coloring pages", "hedgehog coloring pages"]
+    snaps = [json.loads((hist / d / "coloring_pages.json").read_text())
+             for d in ("2026-10-03", "2026-10-10", "2026-10-17")]
+    assert searchlist.stalled("hedgehog", snaps) and not searchlist.stalled("axolotl", snaps)
+    assert not searchlist.stalled("hedgehog", snaps[1:])     # only 2 snapshots so far
+    # More shops is growth too.
+    snaps[-1]["themes"][0]["shop_count"] = 3
+    assert not searchlist.stalled("hedgehog", snaps)
+
+
+def test_recheck_uses_fresh_rows_not_presence(tmp_path):
+    # Inside the 35-day window a theme stays in every snapshot after its last export, so
+    # "last seen" must mean "last export with rows for it".
+    hist = tmp_path / "history"
+    _snap(hist, "2026-09-27", "coloring_pages", [_theme("farm animals", 23, 7, 0.8, True, fresh_rows=23),
+                                                 _theme("ocean animals", 15, 4, 0.6, True, fresh_rows=15)])
+    _snap(hist, "2026-10-08", "coloring_pages", [_theme("farm animals", 23, 7, 0.8, True, fresh_rows=0),
+                                                 _theme("ocean animals", 15, 4, 0.6, True, fresh_rows=2)])
+    _snap(hist, "2026-10-17", "coloring_pages", [_theme("farm animals", 23, 7, 0.8, True, fresh_rows=0),
+                                                 _theme("ocean animals", 16, 4, 0.6, True, fresh_rows=1)])
+    _snap(hist, "2026-10-17", "stickers", [_theme("frogs", 12, 3, 0.7, True, fresh_rows=0)])
+    text = searchlist.build(_settings(), hist, date=DAY)
+    lines = _section(text, "COLORING PAGES")
+    assert "  farm animals coloring pages  (recheck: last seen 3 weeks ago)" in lines
+    assert not any("ocean animals" in ln for ln in lines)     # fresh rows this week
+    # Never fresh at all: counted from the first snapshot it is in (1 day here).
+    assert not any("frogs" in ln for ln in _section(text, "STICKERS"))
+
+
+def test_an_unreadable_output_folder_still_sends_the_list(tmp_path, monkeypatch):
+    from research import stages
+
+    def broken(settings, *, out_root=None):
+        raise PermissionError("output folder not readable")
+
+    monkeypatch.setattr(stages, "resolve_stage", broken)
+    s = _settings()
+    s["research"]["stage"] = "auto"
+    text = searchlist.build(s, tmp_path / "history", date=DAY)
+    assert "Botsy needs 10 listings" in text and "stricter stage" not in text
+    assert "stricter stage" in searchlist.build(s, tmp_path / "history", date=DAY, stage="refined")
+
+
+def test_stalled_is_counted_week_to_week(tmp_path):
+    # Exported on Monday (growth), then two forced re-research days with nothing new: the
+    # theme is not stalled, because week to week it grew.
+    hist = tmp_path / "history"
+    _snap(hist, "2026-10-08", "coloring_pages", [_theme("hedgehog", 5, 2, 0.9), _theme("axolotl", 6, 2, 0.4)])
+    for day, axolotl in (("2026-10-12", 6), ("2026-10-13", 7), ("2026-10-14", 8)):
+        _snap(hist, day, "coloring_pages", [_theme("hedgehog", 8, 2, 0.9), _theme("axolotl", axolotl, 2, 0.4)])
+    lines = _section(searchlist.build(_settings(), hist, date=DAY), "COLORING PAGES")
+    assert [ln.split("  (")[0].strip() for ln in lines[2:]] == [
+        "hedgehog coloring pages", "axolotl coloring pages"]
+    snaps = [json.loads((hist / d / "coloring_pages.json").read_text())
+             for d in ("2026-10-08", "2026-10-12", "2026-10-13", "2026-10-14")]
+    assert searchlist.stalled("hedgehog", snaps)                       # day to day: flat
+    assert [s["date"] for s in searchlist.weekly(snaps)] == ["2026-10-08", "2026-10-14"]
+    assert not searchlist.stalled("hedgehog", searchlist.weekly(snaps))

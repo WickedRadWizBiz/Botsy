@@ -25,6 +25,7 @@ from collections.abc import Iterable, Iterator
 from core.compliance import Blocklist, find_urls, normalize
 
 HARD_FLOOR = 10          # CLAUDE.md: briefs come from patterns across >= 10 listings
+SHOPS_FLOOR = 3          # user rule (2026-10-16): listing-backed support spans >= 3 shops
 MIN_SHOP_NAME_CHARS = 3  # Etsy shop names have 4-20 chars; shorter cells are junk
 
 FORBIDDEN_KEYS = {"shop", "shops", "shop_name", "shop_names", "seller", "url", "urls", "link",
@@ -160,14 +161,15 @@ def doc_problems(doc: dict, guard: Guard) -> list[str]:
 
 
 def _shop_problems(doc: dict, floor: int) -> list[str]:
-    """When the document declares min_shops_per_pattern, every theme and brief whose
-    support comes from listing rows (fewer than `floor` keyword rows) must show at
-    least that many shops. Older brief files without the field are not checked."""
+    """When the document declares min_shops_per_pattern (at least SHOPS_FLOOR, 3: the
+    user's rule), every theme and brief whose support comes from listing rows (fewer than
+    `floor` keyword rows) must show at least that many shops. Older brief files without
+    the field are not checked."""
     shops = doc.get("min_shops_per_pattern")
     if shops is None:
         return []
-    if not isinstance(shops, int) or isinstance(shops, bool) or shops < 1:
-        return [f"min_shops_per_pattern is {shops!r}; it must be a whole number >= 1"]
+    if not isinstance(shops, int) or isinstance(shops, bool) or shops < SHOPS_FLOOR:
+        return [f"min_shops_per_pattern is {shops!r}; it must be a whole number >= {SHOPS_FLOOR}"]
     problems = []
     entries = [(f"patterns.themes entry {_label(e)!r}", e) for e in (doc.get("patterns") or {}).get("themes") or []]
     entries += [(f"brief {b.get('brief_id')!r}", b.get("evidence") or {}) for b in doc.get("briefs") or []]

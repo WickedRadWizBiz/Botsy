@@ -3,8 +3,8 @@
 `data/history/<YYYY-MM-DD>/<niche>.json` (schema history/v1) records which themes the
 exports support today, including near misses that are not yet strong enough for a
 brief. The weekly search list reads it to ask the user for the exports that would push
-a near miss over the line, and a later, stricter research stage can ask "seen in 3+
-weekly snapshots, demand not falling?" from `timeline()`.
+a near miss over the line, and the refined research stage (research/stages.py) asks
+"seen in 3+ weekly exports, demand not falling?" of it before a theme becomes a brief.
 
 Snapshots are local working state, never briefs: they are gitignored, never committed
 and never passed to a model. They still follow the brief rules, because they are built
@@ -20,6 +20,13 @@ Themes come from the same rows and the same aggregation as the brief (research/a
   one shop), minus every theme that already meets the brief thresholds.
 Demand is then ranked once across both lists, so one snapshot has one demand scale and a
 theme keeps that scale as it moves from near miss to qualified.
+
+Weekly evidence (docs/SERVER.md section 12): a snapshot is built from the exports inside
+the evidence window (research/window.py), so a theme stays in snapshots for weeks after
+its last export. Each theme therefore records `fresh_rows`, its supporting rows from
+exports received in the snapshot's ISO week, and `timeline()` counts a week as seen only
+when fresh_rows >= research.history.min_rows. `qualified` uses the stage thresholds of the
+run that wrote the snapshot (top-level `stage`, `thresholds`).
 """
 from __future__ import annotations
 
@@ -34,6 +41,7 @@ from core.config import DATE_RE, check_date, section
 from core.items import read_json, write_json
 from research.aggregate import Row, Signal, Theme, find_themes, score_demand, supported
 from research.text import TextRules
+from research.window import iso_week
 
 log = logging.getLogger(__name__)
 
@@ -148,7 +156,12 @@ def snapshot_themes(rows: list[Row], cfg: dict, guard: Guard, rules: TextRules, 
     return sorted(pairs, key=lambda p: (-p[0].demand, -len(p[0].rows), p[0].name))
 
 
-def _entry(theme: Theme, qualified: bool, guard: Guard) -> dict | None:
+def fresh_rows(theme: Theme, week: tuple[int, int]) -> int:
+    """The theme's supporting rows from exports received in ISO week `week`."""
+    return sum(1 for r in theme.rows if r.received and iso_week(r.received) == week)
+
+
+def _entry(theme: Theme, qualified: bool, guard: Guard, week: tuple[int, int]) -> dict | None:
     result = guard.blocklist.check(theme.name)
     if result.blocked or guard.text_problems(theme.name):
         return None  # find_themes already drops these; checked again before any write
@@ -157,6 +170,7 @@ def _entry(theme: Theme, qualified: bool, guard: Guard) -> dict | None:
         "listing_rows": theme.listing_rows,
         "keyword_rows": theme.keyword_rows,
         "shop_count": theme.shop_count,
+        "fresh_rows": fresh_rows(theme, week),
         "demand": theme.demand,
         "qualified": qualified,
     }
@@ -167,28 +181,41 @@ def _entry(theme: Theme, qualified: bool, guard: Guard) -> dict | None:
 
 def build_snapshot(niche: str, rows: list[Row], sources: list[dict], *, settings: dict,
                    cfg: dict, date: str, guard: Guard, rules: TextRules,
-                   own: list[Signal] = (), trends: list[Signal] = (), shop_names=()) -> dict:
+                   own: list[Signal] = (), trends: list[Signal] = (), shop_names=(),
+                   stage: str | None = None, min_weeks_seen: int = 0) -> dict:
     """The history/v1 document for one niche, from the rows research.run counted.
 
+    `cfg` holds the stage's thresholds (research.stages.apply_thresholds), so `qualified`
+    means "meets this stage's listing and shop thresholds within this run's window".
     `sources` are research's per-file entries; only tool, shape and row count are kept
     (a downloaded file name could carry a shop name, and history does not need it).
+    `stage` and, for refined, `min_weeks_seen` are recorded so the file says which bar
+    it was measured against.
     """
     hist = history_config(settings)
     own = [s for s in own if s.niche in (None, niche)]
     trends = [s for s in trends if s.niche in (None, niche)]
     pairs = snapshot_themes(rows, cfg, guard, rules, own=own, trends=trends,
                             min_rows=hist["min_rows"], shop_names=shop_names)
-    themes = _cap([e for e in (_entry(t, q, guard) for t, q in pairs) if e], hist["max_themes"])
-    return {
+    week = iso_week(check_date(date))
+    themes = _cap([e for e in (_entry(t, q, guard, week) for t, q in pairs) if e], hist["max_themes"])
+    thresholds = {"listings": cfg["min_listings_per_pattern"], "shops": cfg["min_shops_per_pattern"]}
+    if min_weeks_seen:
+        thresholds["weeks"] = int(min_weeks_seen)
+    doc = {
         "schema": SCHEMA,
         "niche": niche,
         "date": check_date(date),
-        "thresholds": {"listings": cfg["min_listings_per_pattern"],
-                       "shops": cfg["min_shops_per_pattern"]},
+    }
+    if stage:
+        doc["stage"] = stage
+    doc.update({
+        "thresholds": thresholds,
         "sources": [{"tool": s["tool"], "shape": s["shape"], "rows": s["rows"]}
                     for s in sources if "shape" in s],
         "themes": themes,
-    }
+    })
+    return doc
 
 
 def _cap(entries: list[dict], limit: int) -> list[dict]:
@@ -315,43 +342,97 @@ def load(history_dir: str | Path, niche: str) -> list[dict]:
     return out
 
 
-def _week(day: str) -> tuple[int, int]:
-    iso = Date.fromisoformat(day).isocalendar()
-    return iso[0], iso[1]
+_week = iso_week   # (ISO year, ISO week) of a YYYY-MM-DD date
 
 
-def timeline(history_dir: str | Path, niche: str) -> dict[str, dict]:
-    """Per theme name: weeks_seen, weeks_qualified, first_seen, last_seen, last, trend.
+def _whole(value) -> int:
+    """A snapshot count; a damaged or hand-edited value reads as 0 instead of stopping
+    research or the search list."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
-    Weeks are ISO weeks (date.isocalendar), so two snapshots in one week count once.
-    `trend` is the change in listing_rows between the niche's newest two snapshots when
-    the theme is in both, else None.
+
+def fresh_count(entry: dict) -> int | None:
+    """An entry's fresh_rows, or None for a snapshot written before fresh_rows existed.
+    A value that is there but not a whole number (a damaged file) counts as 0, never as
+    the old "present means seen" rule."""
+    if "fresh_rows" not in entry:
+        return None
+    value = entry["fresh_rows"]
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    return 0
+
+
+def seen(entry: dict, min_rows: int) -> bool:
+    """True when the snapshot's own week brought the theme at least min_rows fresh rows.
+    An entry from before fresh_rows existed counts as seen (the old rule: present)."""
+    fresh = fresh_count(entry)
+    return True if fresh is None else fresh >= max(1, int(min_rows))
+
+
+def weeks_by_theme(snaps: list[dict], min_rows: int) -> dict[str, set]:
+    """{theme name: ISO weeks in which it was seen} over `snaps`."""
+    out: dict[str, set] = {}
+    for snap in snaps:
+        wk = _week(snap["date"])
+        for e in snap.get("themes") or []:
+            name = e.get("name") if isinstance(e, dict) else None
+            if isinstance(name, str) and name and seen(e, min_rows):
+                out.setdefault(name, set()).add(wk)
+    return out
+
+
+TIMELINE_KEYS = ("weeks_seen", "weeks_qualified", "first_seen", "last_seen", "last_fresh",
+                 "last", "trend")
+
+
+def timeline(history_dir: str | Path, niche: str, *, min_rows: int | None = None,
+             settings: dict | None = None) -> dict[str, dict]:
+    """Per theme name: weeks_seen, weeks_qualified, first_seen, last_seen, last_fresh, last,
+    trend.
+
+    - weeks_seen: ISO weeks (date.isocalendar, so two snapshots in one week count once)
+      in which the theme had fresh_rows >= min_rows ("seen in N weekly exports");
+      min_rows is research.history.min_rows from `settings` (default 3);
+    - weeks_qualified: ISO weeks in which a snapshot marked it qualified (it met that
+      run's stage thresholds within that run's evidence window);
+    - first_seen / last_seen: the first and newest snapshot dates it appears in;
+    - last_fresh: the newest snapshot date in which it had any fresh rows, or None;
+    - last: its newest entry;
+    - trend: change in listing_rows between the niche's newest two snapshots when the
+      theme is in both, else None.
     """
+    if min_rows is None:
+        min_rows = history_config(settings or {})["min_rows"]
     snaps = load(history_dir, niche)
     out: dict[str, dict] = {}
-    weeks: dict[str, set] = {}
+    seen_weeks = weeks_by_theme(snaps, min_rows)
     qualified: dict[str, set] = {}
     for snap in snaps:
         wk = _week(snap["date"])
         for e in snap["themes"]:
-            name = e.get("name")
+            name = e.get("name") if isinstance(e, dict) else None
             if not isinstance(name, str) or not name:
                 continue
-            t = out.setdefault(name, {"first_seen": snap["date"]})
-            weeks.setdefault(name, set()).add(wk)
+            t = out.setdefault(name, {"first_seen": snap["date"], "last_fresh": None})
             q = qualified.setdefault(name, set())
             if e.get("qualified"):
                 q.add(wk)
+            fresh = fresh_count(e)
+            if fresh is None or fresh > 0:
+                t["last_fresh"] = snap["date"]
             t["last_seen"] = snap["date"]
             t["last"] = dict(e)
-    newest = {e.get("name"): e for e in snaps[-1]["themes"]} if snaps else {}
-    previous = {e.get("name"): e for e in snaps[-2]["themes"]} if len(snaps) > 1 else {}
+
+    def by_name(snap: dict) -> dict:
+        return {e.get("name"): e for e in snap["themes"] if isinstance(e, dict)}
+
+    newest = by_name(snaps[-1]) if snaps else {}
+    previous = by_name(snaps[-2]) if len(snaps) > 1 else {}
     for name, t in out.items():
-        t["weeks_seen"] = len(weeks[name])
+        t["weeks_seen"] = len(seen_weeks.get(name, ()))
         t["weeks_qualified"] = len(qualified[name])
         a, b = previous.get(name), newest.get(name)
-        t["trend"] = (int(b.get("listing_rows", 0)) - int(a.get("listing_rows", 0))
+        t["trend"] = (_whole(b.get("listing_rows")) - _whole(a.get("listing_rows"))
                       if a is not None and b is not None else None)
-    return {name: {k: t[k] for k in ("weeks_seen", "weeks_qualified", "first_seen",
-                                     "last_seen", "last", "trend")}
-            for name, t in out.items()}
+    return {name: {k: t[k] for k in TIMELINE_KEYS} for name, t in out.items()}
