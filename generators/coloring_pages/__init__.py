@@ -114,7 +114,7 @@ def generate(brief: dict, *, brief_file: str | Path | None = None, shop_id: str 
 
         results, skipped = generate_batch(client, planned, n, aspect_ratio=aspect_ratio, image_size=image_size,
                                           blocklist=ctx.blocklist, process=process,
-                                          max_failures=int(cfg["max_failures"]))
+                                          max_failures=int(cfg["max_failures"]), item_id=ctx.item_id)
         pages = [r for _, r in results]
         art = [_art(build, p, bool(cfg["vector_in_pdf"])) for p in pages]
         title = f"{ctx.theme.title()} Coloring Pages"

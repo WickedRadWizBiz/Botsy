@@ -12,6 +12,12 @@ Verified against google-genai 2.31.0 (by introspection):
   `Blob.mime_type`); parts with `Part.thought` true are interim "thinking" images.
 - the SDK does not retry unless `HttpOptions.retry_options` is set, so the backoff here is
   the only retry layer. `HttpOptions.timeout` is in milliseconds.
+- `response.usage_metadata` (GenerateContentResponseUsageMetadata): prompt_token_count,
+  thoughts_token_count, candidates_token_count and candidates_tokens_details (per modality).
+
+Spending (docs/SERVER.md section 10): GeminiImageClient calls core.spend.check_budget("image")
+before every request (its BudgetExceeded is never retried) and records each answered request
+once in the spend ledger. FakeImageClient never checks or records.
 """
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ from typing import Protocol, runtime_checkable
 
 from PIL import Image, ImageDraw, ImageFilter
 
+from core import spend
 from core.config import require_env, section
 
 log = logging.getLogger(__name__)
@@ -87,11 +94,16 @@ class GeminiImageClient(_Budget):
 
     The google-genai SDK client is created on the first call, so building this object needs
     no secrets. `sdk_client` and `sleep` are injectable for tests.
+
+    Spend tracking uses `settings` (cap and ledger; None = config/settings.yaml). Set
+    `item_id` before a pack's images so the ledger can name the item they were for.
     """
+
+    stage = "generate"   # pipeline stage named in the spend ledger
 
     def __init__(self, model: str, *, api: str = "gemini", cfg: dict | None = None,
                  sdk_client=None, sleep: Callable[[float], None] = time.sleep,
-                 rng: random.Random | None = None):
+                 rng: random.Random | None = None, settings: dict | None = None):
         cfg = {**DEFAULTS, **(cfg or {})}
         super().__init__(cfg["max_images_per_run"])
         if api not in ("gemini", "vertex"):
@@ -102,6 +114,8 @@ class GeminiImageClient(_Budget):
         self._sdk = sdk_client
         self._sleep = sleep
         self._rng = rng or random.Random()
+        self.settings = settings
+        self.item_id: str | None = None
 
     @classmethod
     def from_settings(cls, settings: dict, **kwargs) -> GeminiImageClient:
@@ -112,7 +126,7 @@ class GeminiImageClient(_Budget):
         if not image.get("model"):
             raise ValueError("settings models.image.model is not set")
         return cls(image["model"], api=image.get("api", "gemini"),
-                   cfg=section(settings, "imaging", DEFAULTS), **kwargs)
+                   cfg=section(settings, "imaging", DEFAULTS), settings=settings, **kwargs)
 
     def _client(self):
         if self._sdk is None:
@@ -142,6 +156,7 @@ class GeminiImageClient(_Budget):
         retries = int(self.cfg["max_retries"])
         for attempt in range(retries + 1):
             self.check()
+            spend.check_budget("image", settings=self.settings)  # before every paid request, never retried
             log.info("image request model=%s api=%s aspect=%s size=%s attempt=%d prompt=%r",
                      self.model, self.api, aspect_ratio, image_size, attempt + 1, prompt)
             try:
@@ -156,12 +171,71 @@ class GeminiImageClient(_Budget):
                 self._sleep(delay)
                 continue
             self.used += 1          # an answered request is billable, image or not
-            return image_from_response(response)
+            try:
+                image = image_from_response(response)
+            except ImageGenerationError:
+                # The tokens are still billed, and so is an image the model made that we
+                # cannot use (unreadable, or only interim thought images).
+                self.record_spend(response, image_size, images=None)
+                raise
+            self.record_spend(response, image_size, images=1)
+            return image
         raise AssertionError("unreachable")
+
+    def record_spend(self, response, image_size: str, *, images: int | None) -> None:
+        """One spend-ledger line for an answered request. `images` None means "work it out":
+        1 when the model drew an image we cannot use (see made_an_image), else 0. Nothing is
+        written when there is nothing to bill (no image and no usage_metadata tokens). Never
+        raises: the image is paid for, and losing it over a ledger problem would only pay for
+        another one. At most one image is counted per request, at the price for image_size."""
+        try:
+            if images is None:
+                images = 1 if made_an_image(response) else 0
+            tokens = usage_tokens(response, images)
+            if not images and not any(tokens.values()):
+                return
+            spend.record("google", self.model, "image", stage=self.stage, item_id=self.item_id, images=images,
+                         image_size=image_size, settings=self.settings, **tokens)
+        except Exception:  # never lose a paid image over the ledger (see docstring)
+            log.exception("could not add the image request to the spend ledger")
 
     def backoff(self, attempt: int) -> float:
         base = min(float(self.cfg["backoff_max_s"]), float(self.cfg["backoff_base_s"]) * 2 ** attempt)
         return base * (1 + self._rng.random() * float(self.cfg["backoff_jitter"]))
+
+
+def usage_tokens(response, images: int) -> dict:
+    """{"input_tokens", "output_tokens"} from `usage_metadata` (zeros when it is missing).
+    Image output tokens are left out, since the per-image price covers them: output_tokens is
+    thinking plus any text. Without a per-modality breakdown, the candidate tokens count as
+    image tokens when an image came back, and as text when none did."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    details = getattr(meta, "candidates_tokens_details", None) or []
+    if details:
+        text = sum(_n(getattr(d, "token_count", None)) for d in details
+                   if _enum_name(getattr(d, "modality", None)).upper() != "IMAGE")
+    else:
+        text = 0 if images else _n(getattr(meta, "candidates_token_count", None))
+    return {"input_tokens": _n(getattr(meta, "prompt_token_count", None)),
+            "output_tokens": _n(getattr(meta, "thoughts_token_count", None)) + text}
+
+
+def made_an_image(response) -> bool:
+    """True when the response holds image data (usable or not) or reports image output
+    tokens: the model drew something, so the request is priced as one image."""
+    for p in getattr(response, "parts", None) or []:
+        blob = getattr(p, "inline_data", None)
+        if blob is not None and (getattr(blob, "mime_type", None) or "image/").startswith("image/"):
+            return True
+    details = getattr(getattr(response, "usage_metadata", None), "candidates_tokens_details", None) or []
+    return any(_enum_name(getattr(d, "modality", None)).upper() == "IMAGE" and _n(getattr(d, "token_count", None))
+               for d in details)
+
+
+def _n(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 def is_transient(exc: BaseException) -> bool:
@@ -248,7 +322,9 @@ def run_client(settings: dict) -> GeminiImageClient:
     key = (image.get("model"), image.get("api", "gemini"))
     if key not in _RUN_CLIENTS:
         _RUN_CLIENTS[key] = GeminiImageClient.from_settings(settings)
-    return _RUN_CLIENTS[key]
+    client = _RUN_CLIENTS[key]
+    client.settings = settings      # spend cap and ledger follow the caller's current settings
+    return client
 
 
 def reset_run_clients() -> None:

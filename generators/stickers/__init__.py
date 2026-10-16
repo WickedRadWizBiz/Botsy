@@ -116,7 +116,7 @@ def generate(brief: dict, *, brief_file: str | Path | None = None, shop_id: str 
 
         results, skipped = generate_batch(client, planned, n, aspect_ratio=aspect_ratio, image_size=image_size,
                                           blocklist=ctx.blocklist, process=process,
-                                          max_failures=int(cfg["max_failures"]))
+                                          max_failures=int(cfg["max_failures"]), item_id=ctx.item_id)
         assets = [rel for _, (rel, _) in results]
         members = [(build / a, f"{slug}-sticker-{i:02d}.png") for i, a in enumerate(assets, 1)]
         parts = split_by_size(members, int(float(cfg["zip_max_mb"]) * 1e6))

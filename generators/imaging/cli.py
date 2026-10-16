@@ -6,18 +6,22 @@
 The options are in generators/cli.py, shared with the activity-sheet CLI. Without --dry-run
 the Gemini image API is called and GOOGLE_API_KEY (or the Vertex variables) must be set in
 .env; --dry-run writes to output/dry-run unless --out is given. A brief that fails (blocked
-term, refused images) is reported and skipped; hitting the run's image cap stops the run.
+term, refused images) is reported and skipped; hitting the run's image cap or the monthly
+spending cap (spend.monthly_cap_usd) stops the run.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
 
 from core.config import MissingSecretError
+from core.spend import BudgetExceeded, LedgerUnavailable
 from generators import cli
 from generators.imaging.client import ImageCapExceeded, ImageGenerationError
 
 
 def run_cli(niche: str, generate: Callable, argv: list[str] | None = None, description: str = "") -> int:
+    # The monthly spending cap, or a spending log that cannot be written, stops the run
+    # with its plain message (core.spend), like the run's image cap.
     return cli.run_cli(niche, generate, argv, description=description,
-                       stop_errors=(ImageCapExceeded, MissingSecretError),
+                       stop_errors=(ImageCapExceeded, MissingSecretError, BudgetExceeded, LedgerUnavailable),
                        skip_errors=(ValueError, ImageGenerationError))

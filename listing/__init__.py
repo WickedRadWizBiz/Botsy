@@ -142,8 +142,11 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
         if not text_cfg.get("model"):
             raise ListingError(f"{item_id}: settings models.text.model is not set")
         try:
+            # settings and item_id: the spend ledger names the item, and the cap and ledger
+            # path come from the settings this stage was given (core.spend).
             result = model.write(client or default_client(), facts, cfg, model=text_cfg["model"],
-                                 max_tokens=int(text_cfg.get("max_tokens") or 2000), blocklist=blocklist)
+                                 max_tokens=int(text_cfg.get("max_tokens") or 2000), blocklist=blocklist,
+                                 settings=settings, item_id=item_id)
         except ListingComplianceError as e:
             raise ListingComplianceError(f"{item_id}: {e}", e.terms) from None
         except model.API_ERRORS as e:  # the item stays qa_passed, so the next run tries again

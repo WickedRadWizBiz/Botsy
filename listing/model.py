@@ -11,6 +11,11 @@ output_config={"format": {"type": "json_schema", "schema": ...}, "effort": ...})
 fallback. Claude Opus 5.5 always thinks (no `thinking` param needed or allowed off), and
 thinking tokens count toward `max_tokens`, which is why `effort` defaults to "low": this
 is short, rule-bound copy and the code checks every rule anyway.
+
+Spending (docs/SERVER.md section 10): every request is preceded by core.spend.check_budget
+("text"), whose BudgetExceeded propagates (no retry, no template copy), and followed by
+core.spend.record() of `response.usage` (output_tokens includes thinking tokens): one line
+per model that ran, so a declined attempt before a fallback is counted too.
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 
+from core import spend
 from core.compliance import Blocklist
 from listing import rules
 from listing.errors import ListingComplianceError
@@ -131,10 +137,70 @@ def response_text(response) -> str:
     return "".join(parts)
 
 
-def write(client, facts: dict, cfg: dict, *, model: str, max_tokens: int, blocklist: Blocklist) -> ModelResult:
+def record_usage(response, model: str, *, settings: dict | None = None, item_id: str | None = None) -> None:
+    """Add one answered request to the spend ledger: one line per model that ran (normally
+    one), each priced at that model's rates. A response without `usage` (the test fakes)
+    records nothing. Never raises: the call is already paid for, and dropping its draft over
+    a ledger problem would only pay again."""
+    try:
+        attempts = billed_attempts(response, model)
+    except Exception:  # an odd usage shape must not lose the paid draft either
+        log.exception("could not read the token usage of the listing request for the spend ledger")
+        return
+    for served, input_tokens, output_tokens in attempts:
+        try:
+            spend.record("anthropic", served, "text", stage="listing", item_id=item_id, input_tokens=input_tokens,
+                         output_tokens=output_tokens, settings=settings)
+        except Exception:  # never lose a paid draft over the ledger (see docstring)
+            log.exception("could not add the listing request to the spend ledger")
+
+
+def billed_attempts(response, model: str) -> list[tuple[str, int, int]]:
+    """[(model, input_tokens, output_tokens)] for one response, one entry per model that ran.
+
+    With the server-side refusal fallback, top-level `usage` covers only the attempt that
+    produced the returned message; `usage.iterations` lists every attempt (the declined one
+    as a `message` entry, usually without a model, so the requested model; the fallback as
+    `fallback_message`). A declined attempt is billed when it declined mid-response or in
+    some categories; it is always counted here, so the estimate can only run high.
+    No cache_control is sent, so the cache counts are 0; any that appear are counted at the
+    full input price. output_tokens already includes thinking tokens."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return []
+    served = getattr(response, "model", None) or model
+    top = (_input_tokens(usage), _tokens(usage, "output_tokens"))
+    per_model: dict[str, list[int]] = {}
+    for it in getattr(usage, "iterations", None) or []:
+        name = getattr(it, "model", None)
+        name = name if isinstance(name, str) and name.strip() else model
+        counts = per_model.setdefault(name, [0, 0])
+        counts[0] += _input_tokens(it)
+        counts[1] += _tokens(it, "output_tokens")
+    # Iterations must cover at least the top-level counts; if not (a format change), trust the top level.
+    totals = [sum(c[0] for c in per_model.values()), sum(c[1] for c in per_model.values())]
+    if per_model and totals[0] >= top[0] and totals[1] >= top[1]:
+        return [(name, i, o) for name, (i, o) in per_model.items()]
+    return [(served, *top)]
+
+
+def _input_tokens(usage) -> int:
+    return sum(_tokens(usage, k) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+
+
+def _tokens(usage, name: str) -> int:
+    value = getattr(usage, name, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def write(client, facts: dict, cfg: dict, *, model: str, max_tokens: int, blocklist: Blocklist,
+          settings: dict | None = None, item_id: str | None = None) -> ModelResult:
     """Ask for a draft, re-asking with the problems found, up to 1 + max_retries calls.
     A blocked term in any draft stops at once with ListingComplianceError: we never
-    rewrite our way around a trademark hit; a person looks at the item instead."""
+    rewrite our way around a trademark hit; a person looks at the item instead.
+
+    `settings` and `item_id` are for the spend ledger (settings None = config/settings.yaml).
+    core.spend.BudgetExceeded from the check before a request propagates as is."""
     # Each retry is a fresh single-turn request carrying the previous draft and its
     # problems, rather than a replayed conversation: no assistant turns (or thinking
     # blocks) are sent back, so requests stay independent and simple to fake in tests.
@@ -142,8 +208,10 @@ def write(client, facts: dict, cfg: dict, *, model: str, max_tokens: int, blockl
     result = ModelResult(draft=None, errors=["no usable response from the model"])
     feedback = None
     for attempt in range(1, 2 + int(cfg["max_retries"])):
+        spend.check_budget("text", settings=settings)  # before every paid request
         response = call(client, cfg, model=model, max_tokens=int(max_tokens), system=system_prompt(cfg),
                         messages=[{"role": "user", "content": user_message(facts, feedback)}])
+        record_usage(response, model, settings=settings, item_id=item_id)
         result.attempts = attempt
         served = getattr(response, "model", None) or model  # with a fallback, the model that answered
         stop = getattr(response, "stop_reason", None)

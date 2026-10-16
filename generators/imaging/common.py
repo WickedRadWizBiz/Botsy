@@ -127,14 +127,18 @@ def check_budget(client: ImageClient, needed: int) -> None:
 
 
 def generate_batch(client: ImageClient, planned: list[PlannedImage], n: int, *, aspect_ratio: str,
-                   image_size: str, blocklist: Blocklist, process: Callable, max_failures: int
-                   ) -> tuple[list[tuple[PlannedImage, T]], list[dict]]:
+                   image_size: str, blocklist: Blocklist, process: Callable, max_failures: int,
+                   item_id: str | None = None) -> tuple[list[tuple[PlannedImage, T]], list[dict]]:
     """Generate and process images in plan order until n succeed.
 
     `process(image, index)` turns a raw image into the stage's result and may raise
     ImageGenerationError (e.g. blank page). Refused or unusable subjects are replaced by the
     next planned one, up to max_failures; other errors propagate. Returns (results, skipped).
+    `item_id` is given to a client that records spending (GeminiImageClient.item_id), so the
+    spend ledger names the item each image was for.
     """
+    if item_id is not None and hasattr(client, "item_id"):
+        client.item_id = item_id
     done: list[tuple[PlannedImage, T]] = []
     skipped: list[dict] = []
     for plan in planned:
