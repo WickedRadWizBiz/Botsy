@@ -1,13 +1,14 @@
 """CLI: python -m research [--niche N] [--shop ID] [--inputs DIR] [--out DIR] [--date D]
-[--dry-run] [--demo]."""
+[--history DIR] [--dry-run] [--demo]."""
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
 import tempfile
+from pathlib import Path
 
-from core.config import ROOT
+from core.config import ROOT, check_date, today
 from core.items import read_json
 from research.guard import BriefComplianceError
 from research.pipeline import NoInputsError, run
@@ -28,6 +29,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--inputs", help="folder with the CSV exports (default: research.inputs_dir)")
     ap.add_argument("--out", help="folder for brief JSON files (default: research.briefs_dir)")
     ap.add_argument("--date", help="date in output names, YYYY-MM-DD (default: today)")
+    ap.add_argument("--history", metavar="DIR",
+                    help="also save a research history snapshot per niche in DIR/<date>/ "
+                         "(the server uses data/history); not written with --dry-run")
     ap.add_argument("--dry-run", action="store_true", help="build and check briefs, write nothing")
     ap.add_argument("--demo", action="store_true",
                     help="use built-in synthetic exports instead of --inputs (CI and dry runs); "
@@ -50,9 +54,11 @@ def main(argv: list[str] | None = None) -> int:
 
             with tempfile.TemporaryDirectory(prefix="research-demo-") as tmp:
                 write_demo_inputs(tmp)
-                paths = run(args.niche, args.shop, tmp, args.out, args.date, dry_run=args.dry_run)
+                paths = run(args.niche, args.shop, tmp, args.out, args.date, dry_run=args.dry_run,
+                            history_dir=args.history)
         else:
-            paths = run(args.niche, args.shop, args.inputs, args.out, args.date, dry_run=args.dry_run)
+            paths = run(args.niche, args.shop, args.inputs, args.out, args.date, dry_run=args.dry_run,
+                        history_dir=args.history)
     except NoInputsError as e:
         print(f"research: {e}", file=sys.stderr)
         return 2
@@ -73,6 +79,10 @@ def main(argv: list[str] | None = None) -> int:
         review = sum(1 for b in doc["briefs"] if b["needs_review"])
         print(f"wrote {_show(p)}: {len(doc['briefs'])} briefs ({review} need review), "
               f"{doc['listing_count']} rows")
+    if args.history and paths:
+        day = Path(args.history) / check_date(args.date or today())  # run() already checked it
+        print(f"{'would write' if args.dry_run else 'wrote'} {len(paths)} history "
+              f"snapshot(s) in {_show(day.resolve())}")
     return 0
 
 

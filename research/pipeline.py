@@ -23,7 +23,7 @@ import pandas as pd
 from core.compliance import Blocklist, normalize
 from core.config import get_shop, load_settings, resolve, today
 from core.items import check_date, write_json
-from research import columns
+from research import columns, history
 from research.aggregate import Row, Signal
 from research.briefs import build_doc
 from research.defaults import load_config
@@ -290,12 +290,18 @@ def _safe_source_names(sources: list[dict], guard: Guard) -> None:
 
 def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs_dir=None,
         date: str | None = None, *, settings: dict | None = None,
-        blocklist: Blocklist | None = None, dry_run: bool = False) -> list[Path]:
+        blocklist: Blocklist | None = None, dry_run: bool = False,
+        history_dir=None) -> list[Path]:
     """Write data/briefs/<niche>-<date>.json for each niche of the shop that has rows.
 
     Every document passes validate_brief_doc before anything is written, so a
     compliance failure in one niche writes nothing. dry_run builds and validates
     but writes nothing; it returns the paths that would be written.
+
+    history_dir (the service passes settings research.history_dir): also write
+    <history_dir>/<date>/<niche>.json for each of those niches (research/history.py,
+    docs/SERVER.md section 3). Snapshots are checked like briefs before anything is
+    written and are never written in a dry run. The return value is unchanged.
     """
     settings = settings if settings is not None else load_settings()
     cfg = load_config(settings)
@@ -310,6 +316,7 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
     date = check_date(date or today())  # goes into the file name
     inputs = Path(inputs_dir) if inputs_dir else resolve(cfg["inputs_dir"])
     out_dir = Path(briefs_dir) if briefs_dir else resolve(cfg["briefs_dir"])
+    hist_dir = Path(history_dir) if history_dir else None
 
     found = discover_inputs(inputs, known)
     if not found.market:
@@ -335,6 +342,7 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
     boost_rows = {p: _count_rows(p) for p in found.own_shop + found.trends}
 
     docs: dict[str, dict] = {}
+    snapshots: dict[str, dict] = {}
     for n in targets:
         rows, sources = rows_for_niche(market, n, threshold, rules, cfg["min_shops_per_pattern"])
         if not rows:
@@ -349,6 +357,12 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
                         date=date, guard=guard, rules=rules, own=own, trends=trends)
         validate_brief_doc(doc, shop_names, titles, guard=guard)  # raises before any write
         docs[n] = doc
+        if hist_dir is not None:
+            snap = history.build_snapshot(n, rows, sources, settings=settings, cfg=cfg, date=date,
+                                          guard=guard, rules=rules, own=own, trends=trends,
+                                          shop_names=shop_names)
+            history.validate_snapshot(snap, guard)  # raises before any write, like briefs
+            snapshots[n] = snap
 
     paths = []
     for n, doc in docs.items():
@@ -356,4 +370,7 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
         if not dry_run:
             write_json(path, doc)
         paths.append(path)
+    if hist_dir is not None and not dry_run:
+        for snap in snapshots.values():
+            history.write_snapshot(hist_dir, snap)
     return paths
