@@ -1,10 +1,11 @@
 # Task State
-_Last updated: 2026-10-16 (phase 3 packs build + expansion research running)_
+_Last updated: 2026-10-16 19:30 UTC (resumed after session limit)_
 
 ## Current objective
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Next: phase 3 themed packs + stationery + TTRPG niches + low-competition scoring (docs/PACKS.md).
 
 ## Next immediate action
+- 2026-10-16 ~17:00 UTC the account hit its session limit: pack build stopped after its 5 builders + 1 review; design workflow after its 3 researchers. Both RESUMED at 19:30 UTC (pack run `wf_bbcab72a-afa`, design run `wf_9c29118b-5aa`); cached agents replay, the rest reruns.
 - Design workflow running: run `wf_9c29118b-5aa` (script botsy-kdp-hermes-snn-design-wf_9c29118b-5aa.js): KDP top-seller research (stationery/productivity/niche log books), Hermes as active production director + supporter, SNN (SpikingJelly/BindsNET) roles. Report proposals to the user; save to docs/PROPOSAL_KDP_HERMES_SNN.md.
 - POD + KDP research running: run `wf_e468ebde-ec0` (script botsy-pod-kdp-research-wf_e468ebde-ec0.js). Then write docs/POD.md and docs/KDP.md specs and confirm priorities with the user (overseer vs POD vs KDP vs digital planners).
 Two workflows running (restarted after a container restart on 2026-10-16):
