@@ -79,6 +79,11 @@ Products are themed packs, not single images: "Summer Coloring Pages, 20 Pages",
 
 ## 5. Listing, QA, mockups
 
+- **Overlap is stated plainly** (user-approved recommendation, 2026-10-16):
+  - a derived pack's description says "These N pages are also included in our <size>-page <theme> pack";
+  - the master pack says which smaller packs it contains;
+  - a fresh pack says "All-new pages, not included in our other packs".
+  - Nobody should buy the same page twice by accident; it prevents bad reviews and refund requests.
 - **Titles** carry the pack: "…, 20 Pages", "Set of 5 …", and for ttrpg the system when set ("… for D&D 5e"). The description says what is in the pack (page types and counts) and that bigger or smaller packs of the theme exist, without links.
 - **QA checks:**
   - the pack page count equals `pack.size` (plus title/answer pages where the niche adds them);
