@@ -45,3 +45,6 @@ data/.service_state.json
 
 # Server-only settings overrides (docs/SERVER.md section 14)
 config/settings.local.yaml
+
+# KDP briefs and patterns are built from BookBeam exports; never commit them (docs/KDP_RESEARCH.md)
+data/briefs/kdp/
