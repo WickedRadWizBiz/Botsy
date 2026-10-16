@@ -1,13 +1,16 @@
 # Task State
-_Last updated: 2026-10-16 20:45 UTC_
+_Last updated: 2026-10-16 23:10 UTC_
 
 ## Current objective
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Next: phase 3 themed packs + stationery + TTRPG niches + low-competition scoring (docs/PACKS.md).
 
 ## Next immediate action
-- Packs build (run `wf_bbcab72a-afa`, resumed 19:30 UTC) is in its review phase; integrate (settings merge, full suite, 5-niche e2e, docs) follows. When it finishes: run the full suite, check the 5-niche dry run, commit in logical commits, push, check CI. If the container restarts: Workflow(scriptPath=botsy-packs-build-wf_54bb3bbf-a07.js, resumeFromRunId=wf_bbcab72a-afa). ~60 uncommitted pack files are on disk until then.
-- KDP/Hermes/SNN design is DONE and committed (f377599): docs/KDP_RESEARCH.md, docs/OVERSEER.md, docs/SNN.md, docs/PROPOSAL_2026-10-16.md (build order + 33 decisions). Reported to the user 2026-10-16; waiting on their answers.
-- After packs: build order step 2 in docs/PROPOSAL_2026-10-16.md (BookBeam/EverBee/eRank policy entries, planner brands as review words), then fonts + watchdog + sensors.
+- 2026-10-16 ~20:45 UTC the session limit was hit again (reset 22:50). Resumed 23:10 UTC:
+  - packs build `wf_bbcab72a-afa` (task wzc1yrui0): 9/11 agents cached; re-running review:compliance-listing-qa (its partial fixes are on disk) and integrate.
+  - answers design `wf_31245900-d0b` (task w0vy8twp3): 4 designers + 4 skeptics (low-cost research data, SNN adjacency, Hermes scale-up + Sunday 8 pm ET plan, medical vs lifestyle terms). Read-only on the repo.
+- If the limit hits again: resume each with Workflow(scriptPath=<script>, resumeFromRunId=<run>) after the reset (scripts in ~/.claude/projects/.../workflows/scripts/).
+- When packs finish: full suite, 5-niche dry run, logical commits, push, CI. When the design finishes: write docs (KDP_RESEARCH/OVERSEER/SNN updates + term policy), report the low-cost path to the user.
+- KDP/Hermes/SNN proposal committed (f377599); user's answers recorded below.
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
