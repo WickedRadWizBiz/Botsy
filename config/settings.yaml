@@ -219,7 +219,7 @@ notify:
 # your provider bills are what count. ---
 spend:
   ledger_file: data/spend/ledger.jsonl   # one line per paid API call (gitignored)
-  monthly_cap_usd: null          # dollars per calendar month (UTC), for example 25. null or 0 = no cap.
+  monthly_cap_usd: 25            # dollars per calendar month (UTC) (user, 2026-10-16). null or 0 = no cap.
                                  # At the cap, paid AI calls stop until next month or until you raise it.
                                  # With a cap set, paid calls also pause if the ledger cannot be written.
                                  # On the server, set it in config/settings.local.yaml.

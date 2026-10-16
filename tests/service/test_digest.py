@@ -104,7 +104,7 @@ def test_digest_lists_every_section(settings, monkeypatch):
 
 
 def test_test_mode_review_commands_say_dry_run(tmp_path):
-    s, _ = make_settings(tmp_path)
+    s, _ = make_settings(tmp_path, spend={"monthly_cap_usd": None})  # pinned: the shipped default is 25
     write_events(s, [{"ts": at(1), "kind": "held_for_review", "item_id": "2026-10-15-stickers-cats-bbbb",
                       "reasons": ["flagged term"], "dry_run": True},
                      {"ts": at(1), "kind": "draft_created", "item_id": "a", "listing_id": 1,
