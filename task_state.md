@@ -1,11 +1,11 @@
 # Task State
-_Last updated: 2026-10-16 (server build integrated and tested, not committed yet; next: commit + push, deploy, then refined stage, Discord, spend tracker, overnight log)_
+_Last updated: 2026-10-16 (server build committed; phase-2 build running)_
 
 ## Current objective
-Run Botsy 24/7 on Lightsail: server service + weekly search list + Windows upload helper (built and integrated 2026-10-16), then refined research stage, Discord notifications, spend tracker, overnight log.
+Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows upload helper, Lightsail deploy kit. Building now (workflow `botsy-phase2-build`): refined research stage + evidence window, spend tracker, events/Discord/overnight log, theme cooldown, server-only settings, disk caps (docs/SERVER.md sections 8-14).
 
 ## Next immediate action
-Review the uncommitted server build (`service/`, `deploy/lightsail/`, `windows/`, `research/history.py`, tests, settings, README, docs/SERVER.md), commit and push. Then the user sets up the server (`deploy/lightsail/README.md`) and the PC (`windows/README.md`). Then launch the second build (refined stage, Discord, spend, overnight log) from the spec drafted in the scratchpad.
+When `botsy-phase2-build` finishes: review, run `pytest -q`, commit, push, report to the user. Then the user deploys: `deploy/lightsail/README.md` (server) and `windows/README.md` (PC).
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
