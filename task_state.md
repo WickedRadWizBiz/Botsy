@@ -2,10 +2,10 @@
 _Last updated: 2026-10-16 (server build running; next: refined stage, Discord, spend tracker, overnight log)_
 
 ## Current objective
-Pipeline is code-complete. Waiting on the user's answers under "Open decisions" and the setup items under "Waiting on the user".
+Run Botsy 24/7 on Lightsail: server service + weekly search list + Windows upload helper (building), then refined research stage, Discord notifications, spend tracker, overnight log.
 
 ## Next immediate action
-User: answer "Open decisions" (start with the hard-blocked common words), fill in the shop name and taxonomy ids, then do one live smoke run: `python -m pipeline run --niche activity_sheets --max-items 1` (needs ANTHROPIC_API_KEY + Etsy auth).
+When workflow `botsy-server-build` finishes: review, run `pytest -q` + service end-to-end, commit, push. Then launch the second build (refined stage, Discord, spend, overnight log) from the spec drafted in the scratchpad.
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
