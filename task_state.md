@@ -1,5 +1,5 @@
 # Task State
-_Last updated: 2026-10-16 (building server service, weekly search list, Windows helper)_
+_Last updated: 2026-10-16 (building server service, search list, Windows helper; refined stage after 20 drafts)_
 
 ## Current objective
 Pipeline is code-complete. Waiting on the user's answers under "Open decisions" and the setup items under "Waiting on the user".
@@ -23,7 +23,8 @@ User: answer "Open decisions" (start with the hard-blocked common words), fill i
 
 ## Open decisions (ask the user)
 - PROPOSED (awaiting go-ahead): host on AWS Lightsail, running 24/7. See "Lightsail plan" below.
-- Still open from the Lightsail questions: (2) when the stricter "refined" research stage starts (after N drafts / N weeks / manual switch), (3) refined defaults (25+ listings, 3 shops, seen in 3+ weekly exports, demand not falling, own sales counted), (4) 4 GB Lightsail plan.
+- Stricter "refined" research stage starts after 20 drafts (user, 2026-10-16). Not built yet.
+- Still open from the Lightsail questions: (3) refined defaults (25+ listings, 3 shops, seen in 3+ weekly exports, demand not falling, own sales counted), (4) 4 GB Lightsail plan.
 - `listings_d` scope (lets `python -m publisher discard` delete our own failed drafts): keep or drop?
 - Primary listing photo: fanned-pages hero (current) or single-page close-up first?
 - Tracing font: Helvetica (current) or embed a school-style font (e.g. Andika, OFL)?
