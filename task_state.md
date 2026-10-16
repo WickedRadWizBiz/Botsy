@@ -1,5 +1,5 @@
 # Task State
-_Last updated: 2026-10-16 (3-shop minimum built; Lightsail plan awaiting 4 answers)_
+_Last updated: 2026-10-16 (building server service, weekly search list, Windows helper)_
 
 ## Current objective
 Pipeline is code-complete. Waiting on the user's answers under "Open decisions" and the setup items under "Waiting on the user".
@@ -23,7 +23,7 @@ User: answer "Open decisions" (start with the hard-blocked common words), fill i
 
 ## Open decisions (ask the user)
 - PROPOSED (awaiting go-ahead): host on AWS Lightsail, running 24/7. See "Lightsail plan" below.
-- EverBee export cadence and how exports reach the server (user asked 2026-10-16; answered in chat, awaiting their 4 Lightsail answers).
+- Still open from the Lightsail questions: (2) when the stricter "refined" research stage starts (after N drafts / N weeks / manual switch), (3) refined defaults (25+ listings, 3 shops, seen in 3+ weekly exports, demand not falling, own sales counted), (4) 4 GB Lightsail plan.
 - `listings_d` scope (lets `python -m publisher discard` delete our own failed drafts): keep or drop?
 - Primary listing photo: fanned-pages hero (current) or single-page close-up first?
 - Tracing font: Helvetica (current) or embed a school-style font (e.g. Andika, OFL)?
@@ -40,6 +40,7 @@ User: answer "Open decisions" (start with the hard-blocked common words), fill i
 - Hard-blocked common words stay hard-blocked (user: fine as is).
 - Competitor tags shared by 10+ listings may be used as brief keywords (user: OK).
 - Duplicate Etsy-limit settings keys removed; limits live only in `core/etsy.py`.
+- Exports cannot be automated within the rules (EverBee runs on etsy.com pages; no official EverBee/eRank API). User approved instead (2026-10-16): a weekly search list the server writes, and a Windows helper (user is on Windows) that uploads EverBee/eRank CSVs from Downloads automatically. Transport: SFTP to an upload-only chroot account (Windows has OpenSSH built in). Spec: `docs/SERVER.md`.
 - `research.min_shops_per_pattern: 3` (user): listing-backed themes, tags and patterns need 3+ different shops (hashed in memory, only the count is written). Applies from the first batch.
 
 ## Waiting on the user
