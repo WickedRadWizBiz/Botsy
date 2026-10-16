@@ -1,0 +1,13 @@
+# Every day at 07:07 server time (UTC unless you changed the server's time zone), just
+# after Discord's quiet hours end (notify.quiet_hours, 22:00 to 07:00 by default).
+# Persistent=true: a run missed while the server was off happens at the next boot.
+[Unit]
+Description=Botsy: daily log at 07:07
+
+[Timer]
+OnCalendar=*-*-* 07:07:00
+Persistent=true
+Unit=botsy-digest.service
+
+[Install]
+WantedBy=timers.target

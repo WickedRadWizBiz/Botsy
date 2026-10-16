@@ -1,7 +1,9 @@
 """Shared builders for the service tests: settings and an inbox in tmp_path, invented CSVs.
 
-Every path in the settings points into tmp_path, so no test touches the repo's data/,
-output/ or /srv. All rows are invented (fake shops, fake listing links).
+Every path in the settings points into tmp_path (inbox, research folders, output, the
+event journal, the service state file and the spend ledger), so no test touches the
+repo's data/, output/ or /srv. Discord is switched off. All rows are invented (fake
+shops, fake listing links).
 """
 from __future__ import annotations
 
@@ -28,9 +30,13 @@ def make_settings(tmp_path: Path, service: dict | None = None, **sections) -> tu
                      "history_dir": str(tmp_path / "history")},
         "service": {"inbox_dir": str(tmp_path / "inbox"), "rejected_dir": str(tmp_path / "rejected"),
                     "lock_file": str(tmp_path / "data" / ".service.lock"), "settle_s": 0,
-                    "lock_timeout_s": 5, **(service or {})},
+                    "lock_timeout_s": 5, "events_file": str(tmp_path / "data" / "events.jsonl"),
+                    "state_file": str(tmp_path / "data" / ".service_state.json"), **(service or {})},
         "paths": {"output_dir": str(tmp_path / "output"), "review_dir": str(tmp_path / "output" / "review")},
         "pipeline": {"dry_run_output_dir": str(tmp_path / "dry")},
+        "spend": {"ledger_file": str(tmp_path / "data" / "spend" / "ledger.jsonl")},
+        # Discord stays off unless a test switches it on (and then it passes a fake session).
+        "notify": {"discord": {"enabled": False}},
     })
     deep_merge(s, sections)
     (tmp_path / "inbox" / "incoming").mkdir(parents=True, exist_ok=True)

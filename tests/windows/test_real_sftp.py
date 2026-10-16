@@ -79,8 +79,9 @@ def test_check_upload_and_fetch_for_real(bh, real, winenv, monkeypatch):
     opened = []
     monkeypatch.setattr(bh.os, "startfile", lambda p: opened.append(p), raising=False)
     (inbox / "outbox" / "search-list.txt").write_bytes(b"owl stickers\r\n")
-    # status.txt not written yet: "-get" lets the batch carry on.
-    assert bh.fetch_outbox(cfg) == {"search-list.txt": "changed", "status.txt": "missing"}
+    # status.txt and daily-log.txt not written yet: "-get" lets the batch carry on.
+    assert bh.fetch_outbox(cfg) == {"search-list.txt": "changed", "status.txt": "missing",
+                                    "daily-log.txt": "missing"}
     assert len(opened) == 1
 
 

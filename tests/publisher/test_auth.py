@@ -189,3 +189,25 @@ def _expect_timeout(port: int) -> bool:
     except AuthError:
         return True
     return False
+
+
+def test_token_days_left_reads_only_the_local_token_file(tmp_path, monkeypatch):
+    import json as _json
+    from datetime import UTC, datetime
+
+    from core.config import load_settings
+
+    settings = load_settings()
+    token_file = tmp_path / "etsy_tokens.json"
+    monkeypatch.setenv("ETSY_TOKEN_FILE", str(token_file))
+    assert auth.token_days_left(settings) is None                       # no file yet
+    now = datetime(2026, 10, 16, tzinfo=UTC).timestamp()
+    token_file.write_text(_json.dumps({"refresh_token": "x", "refresh_issued": "2026-08-01"}), encoding="utf-8")
+    assert auth.token_days_left(settings, now=now) == 90 - 76
+    token_file.write_text(_json.dumps({"refresh_token": "x"}), encoding="utf-8")
+    assert auth.token_days_left(settings, now=now) is None              # issue date unknown
+    token_file.write_text("not json", encoding="utf-8")
+    assert auth.token_days_left(settings, now=now) is None
+    # While pytest runs, a token file inside the repo is never read.
+    monkeypatch.setenv("ETSY_TOKEN_FILE", ".etsy_tokens.json")
+    assert auth.token_days_left(settings, now=now) is None

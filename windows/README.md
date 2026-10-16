@@ -8,9 +8,12 @@ searches worth exporting next.
 **What it does**
 - Every 30 seconds it looks in your **Downloads** folder for new EverBee or eRank export files.
 - It sends each new export to your server once.
-- Once an hour it copies two files from the server into **Documents\Botsy**:
+- Once an hour it copies three files from the server into **Documents\Botsy**:
   - `status.txt`: what the server did with your files;
-  - `search-list.txt`: this week's searches. This one opens in Notepad by itself when it changes.
+  - `daily-log.txt`: the server's daily log, written every morning (what happened in the
+    last 24 hours, items waiting for your review, spending, problems). Open it when you like;
+  - `search-list.txt`: this week's searches. This one opens in Notepad by itself when it
+    changes (the other two never open by themselves).
 
 **What it never does**
 - It never sends any other file. A bank statement, an order history, a spreadsheet you
@@ -131,6 +134,8 @@ your copy alone until the server has a new list, and only then replaces it (and 
 - **What the server did**: open **Documents\Botsy\status.txt**. It is updated once an
   hour (and about 15 minutes after an upload). It lists files received, any files the
   server turned down and why, and what was made from them.
+- **The last day in short**: **Documents\Botsy\daily-log.txt**, new every morning. It
+  also gives the exact command for each item that waits for your review.
 - **This week's searches**: **Documents\Botsy\search-list.txt**.
 
 ## Which files it sends
@@ -199,7 +204,7 @@ the installer again instead. If you do edit the file (with Notepad), sign out an
 | `watch_dir` | the folder it watches | `%USERPROFILE%\Downloads` |
 | `poll_seconds` | how often it looks | `30` |
 | `max_age_days` | ignore files older than this | `14` |
-| `outbox_dir` | where the search list and status go | `%USERPROFILE%\Documents\Botsy` |
+| `outbox_dir` | where the search list, status and daily log go | `%USERPROFILE%\Documents\Botsy` |
 
 If your browser saves downloads somewhere else, put that folder in `watch_dir`, for
 example `"C:\\Users\\you\\OneDrive\\Downloads"` (two backslashes each time). If the file
@@ -213,9 +218,9 @@ is not written exactly right, the helper does not start and says so in `helper.l
 | Settings | `%APPDATA%\Botsy\helper.json` |
 | Log (about 1 MB, older copies `helper.log.1` ...) | `%APPDATA%\Botsy\helper.log` |
 | List of files already sent | `%APPDATA%\Botsy\state.json` |
-| What the last search list and status fetch got | `%APPDATA%\Botsy\outbox.json` |
+| What the last fetch of the search list, status and daily log got | `%APPDATA%\Botsy\outbox.json` |
 | The server line from Step 5 | `%APPDATA%\Botsy\server-command.txt` |
-| Search list and status | `Documents\Botsy` |
+| Search list, status and daily log | `Documents\Botsy` |
 | This PC's key (keep it private, never share it) | `%USERPROFILE%\.ssh\botsy_upload` |
 
 **New PC?** Do the same steps there. It gets its own key, so paste its line on the server too.

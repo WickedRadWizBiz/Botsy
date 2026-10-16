@@ -111,6 +111,22 @@ def test_ledger_persists_and_grows(env):
     assert all((paths.inputs / e["file"]).is_file() for e in entries.values())
 
 
+def test_export_removed_by_cleanup_is_still_a_duplicate(env):
+    """service.cleanup keeps the sha256 of an export it deleted, marked "deleted" (section 14)."""
+    settings, paths = env
+    data = everbee_csv()
+    upload(paths.incoming, "first.csv", data)
+    stored = run_ingest(settings, paths).accepted[0]
+    stored.unlink()
+    book = ledger(paths)
+    book[hashlib.sha256(data).hexdigest()]["deleted"] = DATE
+    (paths.inputs / inbox.LEDGER_NAME).write_text(json.dumps(book), encoding="utf-8")
+    upload(paths.incoming, "first again.csv", data)
+    res = run_ingest(settings, paths)
+    assert res.accepted == [] and res.duplicates == ["first again.csv"]
+    assert list(paths.inputs.glob("*.csv")) == []
+
+
 def test_broken_ledger_is_set_aside(env):
     settings, paths = env
     paths.inputs.mkdir(parents=True)
@@ -348,3 +364,21 @@ def test_wait_for_quiet_resets_on_change(tmp_path):
     capped = inbox.wait_for_quiet(tmp_path, 1000, max_wait_s=30, poll_s=4,
                                   clock=lambda: clock["t"], sleep=lambda s: clock.update(t=clock["t"] + s))
     assert capped == pytest.approx(30)
+
+
+def test_csv_error_detail_never_quotes_the_export(env, monkeypatch):
+    """A parser message can quote a cell (a competitor's title or link); the reason that
+    goes to status.txt and the .reason.txt file keeps only the kind of problem."""
+    settings, paths = env
+
+    def broken(*a, **kw):
+        raise ValueError("bad value 'RivalShop Owl Pack' near https://www.etsy.com/listing/123")
+
+    monkeypatch.setattr(inbox.columns, "load_export", broken)
+    upload(paths.incoming, "export.csv", everbee_csv())
+    res = run_ingest(settings, paths)
+    (name, reason), = res.rejected
+    assert "could not be read as a CSV table" in reason
+    assert "RivalShop" not in reason and "etsy.com" not in reason
+    reason_file = next(paths.rejected.glob("*.reason.txt")).read_text(encoding="utf-8")
+    assert "RivalShop" not in reason_file and "etsy.com" not in reason_file

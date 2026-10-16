@@ -11,10 +11,14 @@ to know Linux: every command is written out, and you copy and paste it.
   drafts**. Nothing ever goes live by itself: you approve every draft in Etsy.
 - Every day at 06:17 (server time) it does a full check, and every Sunday at 18:07 it
   writes a new search list telling you what to export next.
-- It writes a short report, `status.txt`, which the helper copies to `Documents\Botsy` on
-  your PC.
+- It writes a short report, `status.txt`, and every morning at 07:07 a **daily log**,
+  `daily-log.txt` (what happened in the last 24 hours). The helper copies both to
+  `Documents\Botsy` on your PC.
+- If you want, it also sends short messages to a **Discord** channel: new drafts, items
+  waiting for your review, problems, the daily log and the weekly search list (step 11).
 - It starts in **test mode** (nothing is paid for, nothing is sent to Etsy). You switch
-  on the real thing in step 9, when everything else works.
+  on the real thing in step 9, when everything else works. A **monthly spending cap**
+  (step 12) stops paid work when you have spent what you want to spend.
 
 **What you need**
 
@@ -113,7 +117,10 @@ What the setup did, in short:
   upload files into `/srv/botsy-inbox/incoming` and read `/srv/botsy-inbox/outbox`;
 - put the code in `/opt/botsy`, with its own Python packages;
 - created `/opt/botsy/.env` for your secrets (empty for now, readable only by `botsy`);
-- switched on three automatic jobs (watch for uploads, daily check, weekly search list);
+- created `/opt/botsy/config/settings.local.yaml`, this server's own settings (test mode;
+  step 9 and step 12 change it; updates never touch it);
+- switched on four automatic jobs (watch for uploads, daily check, daily log, weekly
+  search list);
 - added the command `botsy`, which runs Botsy's tools for you, for example
   `botsy service status`;
 - added the command `botsy-setup`, which runs this setup again later (steps 7 and 10).
@@ -140,7 +147,8 @@ quotes):
 - leave `ETSY_REDIRECT_URI=https://localhost:3003/callback` as it is (it must match the
   callback URL of your Etsy app);
 - `ETSY_SHOP_ID=` is filled in after step 6;
-- `ETSY_REFRESH_TOKEN=` stays empty on the server (the server keeps its own token file).
+- `ETSY_REFRESH_TOKEN=` stays empty on the server (the server keeps its own token file);
+- `DISCORD_WEBHOOK_URL=` is optional: step 11 explains it.
 
 Save with **Ctrl+O** then **Enter**. Leave nano with **Ctrl+X**.
 
@@ -210,11 +218,13 @@ More ways to look (all safe, they change nothing):
 | What | Command | Normal answer |
 |---|---|---|
 | Is the upload watcher on? | `systemctl status botsy-inbox.path` | `active (waiting)` |
-| When do the timers run next? | `systemctl list-timers 'botsy*'` | two lines with dates |
+| When do the timers run next? | `systemctl list-timers 'botsy*'` | three lines with dates |
 | How did the last run go? | `systemctl status botsy-tick` | `inactive (dead)` between runs is fine; `failed` means the last run had a problem |
 | The last run's messages | `sudo journalctl -u botsy-tick -n 50 --no-pager` | lines with INFO |
 | The daily check's messages | `sudo journalctl -u botsy-daily -n 50 --no-pager` | lines with INFO |
 | Run the daily check now | `sudo systemctl start botsy-daily.service` | takes minutes; then check the status |
+| Read the daily log | `sudo cat /srv/botsy-inbox/outbox/daily-log.txt` | what happened in the last 24 hours |
+| Make a daily log now | `botsy service digest` | `wrote .../daily-log.txt` |
 
 Press **q** to leave a screen that ends with `(END)` or `lines 1-20`.
 
@@ -228,13 +238,24 @@ real Etsy drafts (they cost API money; drafts are only drafts until you publish 
 
 1. Make sure `config/settings.yaml` has your shop name (not `YOUR_SHOP_NAME`), your prices
    and the Etsy taxonomy ids (see "Etsy setup" in the main README.md). Real drafts are
-   refused until these are set.
-2. In the same file, under `service:`, change `live: false` to `live: true`.
-   Make the change on GitHub (see "Change a setting" below), or ask Claude to do it.
-3. Update the server (step 10).
-4. `botsy service status` now says **Mode: LIVE**.
+   refused until these are set. (Change them on GitHub, see "Change a setting" below.)
+2. Think about a spending cap first (step 12).
+3. Open this server's own settings file:
 
-To go back to test mode, change it to `live: false` the same way.
+   ```
+   sudo -u botsy nano /opt/botsy/config/settings.local.yaml
+   ```
+
+   Find the line `live: false` (under `service:`) and change it to `live: true`. Keep the
+   two spaces in front of `live`. Save with **Ctrl+O** then **Enter**, leave with **Ctrl+X**.
+   (If nano opens an empty file, leave it with Ctrl+X, run `sudo botsy-setup` once to
+   create the file, and open it again.)
+4. Type `botsy service status`. It now says **Mode: LIVE**. The next check works for
+   real (to start one now: `sudo systemctl start botsy-daily.service`).
+
+This file stays on the server: GitHub and `sudo botsy-setup` never change it, so going
+live needs no change on GitHub. To go back to test mode, change it to `live: false` the
+same way.
 
 **Reviewing items.** Some items wait for your OK before they become drafts (for example a
 word that might be a trademark). `status.txt` says how many. On the server:
@@ -263,10 +284,101 @@ the next one uses the new code.
 Always update this way (not with `git pull`): `botsy-setup` also updates root's own copy
 of the setup files, the SSH rules and the automatic jobs, so they match the code.
 
+## Step 11. Discord messages (optional)
+
+Botsy can post short messages to a Discord channel of yours: new Etsy drafts, items that
+wait for your review, uploads it could not use, spending warnings, problems, the weekly
+search list (with the file) and the daily log. From 22:00 to 07:00 (server time) it only
+posts urgent news (the spending cap, problems); the rest goes into the morning's daily log.
+Each item waiting for review is announced once, and the same problem at most once a day.
+
+1. In Discord, open your server and pick a channel (or make one, for example `botsy`).
+2. Click the gear next to the channel name (**Edit Channel**), then **Integrations** >
+   **Webhooks** > **New Webhook**. You can rename it to `Botsy`.
+3. Click **Copy Webhook URL**. The link starts with `https://discord.com/api/webhooks/`.
+   Treat it like a password: anyone with it can post in your channel.
+4. On the server, open the secrets file:
+
+   ```
+   sudo -u botsy nano /opt/botsy/.env
+   ```
+
+   Find the line `DISCORD_WEBHOOK_URL=` and paste the link right after the `=` (no spaces,
+   no quotes). Save with **Ctrl+O** then **Enter**, leave with **Ctrl+X**.
+5. Test it:
+
+   ```
+   botsy service notify-test
+   ```
+
+   It says **Sent a test message to Discord** and the message shows up in the channel. If
+   it says the link does not look right, copy it again in Discord (step 3).
+
+To stop the messages, empty the line again (`DISCORD_WEBHOOK_URL=`). If you ever shared
+the link by mistake, delete the webhook in Discord and make a new one.
+
+## Step 12. Spending cap
+
+Live mode pays Anthropic (listing text) and Google (images) for every item. Botsy keeps an
+estimate of what each call cost and can stop paid work for the rest of the month when a
+cap is reached:
+
+1. Open this server's settings: `sudo -u botsy nano /opt/botsy/config/settings.local.yaml`
+2. At the bottom, find the line `monthly_cap_usd: null` under `spend:`. Change `null` to
+   your monthly amount in US dollars, so it reads:
+
+   ```
+   spend:
+     monthly_cap_usd: 25   # change null to your monthly limit in dollars, e.g. 25
+   ```
+
+   Keep the two spaces in front of `monthly_cap_usd`, so it stays under `spend:`. Save and
+   leave nano as before. (A server set up before this step was added may have the two
+   lines with a `# ` in front; remove the `# ` from both.)
+
+At 80% of the cap you get a warning (Discord and the daily log). When the cap is reached,
+the server stops making new images and listing text until the next month (or until you
+raise the cap); exports are still taken in and studied, and items you already approved
+still become drafts. To see the spending so far:
+
+```
+botsy service spend
+```
+
+`botsy service spend --month 2026-10` shows another month. The numbers are estimates from
+Botsy's price list (`spend.prices` in the settings); your Anthropic and Google bills are
+what count.
+
+## Step 13. The daily log
+
+Every morning at 07:07 (server time) the server writes `daily-log.txt`: exports received,
+research, items made, drafts, items waiting for your review (with the exact command to
+approve each one), spending, problems and what runs next. You find it:
+
+- on your PC in `Documents\Botsy\daily-log.txt` (the helper copies it within the hour; it
+  does not open it for you);
+- in Discord, if you set it up (step 11);
+- on the server: `sudo cat /srv/botsy-inbox/outbox/daily-log.txt` (older days:
+  `ls /srv/botsy-inbox/outbox/` shows `daily-log-<date>.txt` files).
+
+To make one now, type `botsy service digest` (`--hours 48` covers two days). If the
+server was off for a morning, the next log also covers the missed days (up to 7).
+
 ## Change a setting
 
-Settings are in `config/settings.yaml` in the repository. Change them on GitHub, so the
-server and GitHub always agree:
+Switches for this server only (test or live mode, the spending cap) are in
+`/opt/botsy/config/settings.local.yaml` (steps 9 and 12). Anything you put there wins over
+`config/settings.yaml`, and updates never change it. Edit it with
+`sudo -u botsy nano /opt/botsy/config/settings.local.yaml`.
+- It cannot loosen a compliance rule: a value below a floor (fewer than 10 listings or 3
+  shops per pattern), a change under `compliance:` or `listing.always_disclose_ai: false`
+  is ignored, and the log says so.
+- A file nano cannot save as valid settings (for example `service: true` on one line) stops
+  every check with "setup problem" (exit 2) until it is fixed; `botsy service status` says
+  which line.
+
+All other settings are in `config/settings.yaml` in the repository. Change them on GitHub,
+so the server and GitHub always agree:
 
 1. Open the repository on GitHub and pick your branch in the branch menu (top left).
 2. Open `config/settings.yaml` and click the pencil icon (**Edit this file**).
@@ -282,7 +394,8 @@ automatic runs only research again when new exports arrive).
 
 ## Optional: use your own time zone
 
-The server uses UTC, so "06:17" is 06:17 UTC. To use your time zone (for example London):
+The server uses UTC, so "06:17" is 06:17 UTC (the same goes for the 07:07 daily log and
+Discord's quiet hours, 22:00 to 07:00). To use your time zone (for example London):
 
 ```
 sudo timedatectl set-timezone Europe/London
@@ -299,7 +412,9 @@ step 10 once so the timers pick it up.
   free (attached to an instance) and when it is charged, so delete one you no longer use.
 - **Snapshots** (backups, below) are charged per GB per month (same pricing page).
 - **APIs**: Anthropic and Google bill you for what live mode uses. Test mode uses neither.
-  `pipeline.max_items_per_run` in the settings caps how many items one run makes.
+  `pipeline.max_items_per_run` in the settings caps how many items one run makes, and the
+  spending cap (step 12) caps a month. `botsy service spend` shows the estimate so far.
+- **Discord** webhooks are free.
 - **Etsy** charges its usual fees only when you publish a listing in Etsy.
 
 To stop all Lightsail costs, delete the instance, its snapshots and the static IP.
@@ -326,6 +441,10 @@ The most important files, if you ever copy things by hand: `/opt/botsy/.env`,
 
 - **The status file lists a problem.** The text after `!` says what failed. Many fix
   themselves at the next run (Etsy or an API was down). Missing keys: step 5.
+- **No Discord messages**: type `botsy service notify-test`; it says what is missing.
+  Between 22:00 and 07:00 only urgent messages are sent; the rest is in the daily log.
+- **"paid steps skipped"** in the status file: the monthly spending cap is reached (step
+  12). It starts again next month, or raise the cap.
 - **"another Botsy service command is still running"** (exit code 3): two runs met; the
   second waited 30 minutes and gave up. Nothing is lost: uploads stay in the inbox and the
   next run takes them. The daily check and the weekly search list try again 20 minutes
@@ -360,7 +479,10 @@ The most important files, if you ever copy things by hand: `/opt/botsy/.env`,
 | `/opt/botsy/data/briefs/` | design briefs |
 | `/opt/botsy/output/` | items (`output/dry-run/` in test mode) |
 | `/srv/botsy-inbox/incoming/` | where the helper uploads |
-| `/srv/botsy-inbox/outbox/` | `status.txt`, `status.json`, `search-list.txt` for the helper |
+| `/srv/botsy-inbox/outbox/` | `status.txt`, `status.json`, `search-list.txt`, `daily-log.txt` for the helper |
+| `/opt/botsy/config/settings.local.yaml` | this server's own settings: test or live mode, spending cap (updates never change it) |
+| `/opt/botsy/data/events.jsonl` | the server's diary of what happened (the daily log is made from it) |
+| `/opt/botsy/data/spend/ledger.jsonl` | the estimated cost of every paid API call |
 | `/etc/ssh/sshd_config.d/botsy-upload.conf` | the upload account's SSH rules |
 | `/etc/ssh/botsy-upload/authorized_keys` | the PC keys that may upload |
 | `/etc/systemd/system/botsy-*` | the automatic jobs |

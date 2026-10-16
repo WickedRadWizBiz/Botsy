@@ -41,8 +41,8 @@ UNIT_DIR=/etc/systemd/system
 WRAPPER=/usr/local/bin/botsy
 LAUNCHER=/usr/local/sbin/botsy-setup
 UNITS=(botsy-inbox.path botsy-tick.service botsy-daily.service botsy-daily.timer
-       botsy-weekly.service botsy-weekly.timer)
-ENABLE=(botsy-inbox.path botsy-daily.timer botsy-weekly.timer)
+       botsy-weekly.service botsy-weekly.timer botsy-digest.service botsy-digest.timer)
+ENABLE=(botsy-inbox.path botsy-daily.timer botsy-weekly.timer botsy-digest.timer)
 
 REPO_URL=""
 BRANCH=""
@@ -374,6 +374,57 @@ check_env_file() {
   as_app chmod 600 "$env_file"
 }
 
+# ---------------------------------------------------------------- 8b. server-only settings
+
+# config/settings.local.yaml holds switches that belong to this server only (going live,
+# the spending cap). Botsy reads it over config/settings.yaml (docs/SERVER.md section 14).
+# It is created once, as botsy, and never overwritten: an update leaves it as it is.
+check_local_settings() {
+  say "Checking the server settings file $APP_DIR/config/settings.local.yaml"
+  local local_file=$APP_DIR/config/settings.local.yaml
+  if as_app test -e "$local_file" || as_app test -L "$local_file"; then
+    note "It already exists and was left as it is."
+    return 0
+  fi
+  # set -C: never replaces a file (or follows a link) that appeared in the meantime.
+  as_app sh -c 'umask 027 && set -C && cat > "$1"' sh "$local_file" <<'LOCAL'
+# Botsy settings for this server only. They win over config/settings.yaml, and updates
+# (sudo botsy-setup) never change this file. Edit it with:
+#   sudo -u botsy nano /opt/botsy/config/settings.local.yaml
+# Save with Ctrl+O then Enter, leave with Ctrl+X. The next check uses the new values.
+
+service:
+  # false = test mode (no API calls, no Etsy drafts). true = live: real images, listing
+  # text and Etsy drafts (you still approve every draft in Etsy).
+  live: false
+
+# Monthly spending cap in US dollars for the APIs (estimates). When it is reached, new
+# images and listing text wait until next month. Keep the two spaces in front of
+# monthly_cap_usd, so it stays under spend:.
+spend:
+  monthly_cap_usd: null   # change null to your monthly limit in dollars, e.g. 25
+LOCAL
+  note "Created it (test mode). See README, 'Go live'."
+}
+
+# ---------------------------------------------------------------- 8c. working folders
+
+# Folders Botsy keeps its own records in, made as botsy so botsy owns them. With a
+# spending cap set, paid calls pause while the spending log cannot be written.
+check_data_dirs() {
+  say "Checking Botsy's working folders"
+  local dir
+  for dir in "$APP_DIR/data/spend"; do
+    as_app mkdir -p -m 750 "$dir"
+    if ! as_app test -w "$dir"; then
+      note "WARNING: $dir cannot be written by $APP_USER, so a spending cap would pause paid steps."
+      note "Fix it with:  sudo chown -R $APP_USER:$APP_USER $dir"
+      return 0
+    fi
+  done
+  note "Done."
+}
+
 # ---------------------------------------------------------------- 9. services
 
 install_services() {
@@ -386,7 +437,8 @@ install_services() {
   systemctl reset-failed 'botsy-*' 2> /dev/null || true   # clears a stopped watcher (README, troubleshooting)
   systemctl enable --quiet "${ENABLE[@]}"
   systemctl restart "${ENABLE[@]}"
-  note "Watching $INBOX/incoming; daily check at 06:17, weekly search list on Sunday 18:07 (server time)."
+  note "Watching $INBOX/incoming; daily check at 06:17, daily log at 07:07, weekly search list"
+  note "on Sunday 18:07 (server time)."
 }
 
 # ---------------------------------------------------------------- 10. helper command
@@ -425,6 +477,10 @@ finish() {
   if ! as_app grep -qE '^ANTHROPIC_API_KEY=.+' "$APP_DIR/.env"; then
     note "Next: fill in the secrets with  sudo -u $APP_USER nano $APP_DIR/.env"
   fi
+  if ! as_app grep -qE '^DISCORD_WEBHOOK_URL=.+' "$APP_DIR/.env"; then
+    note "Optional: Discord messages. Put DISCORD_WEBHOOK_URL in $APP_DIR/.env, then type:"
+    note "  botsy service notify-test      (README, 'Discord messages')"
+  fi
 }
 
 # ---------------------------------------------------------------- run
@@ -456,6 +512,8 @@ main() {
   update_app_code
   install_python_packages
   check_env_file
+  check_local_settings
+  check_data_dirs
   install_services
   install_wrapper
   finish

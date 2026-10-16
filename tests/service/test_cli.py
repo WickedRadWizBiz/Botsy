@@ -162,3 +162,151 @@ def test_status_command_prints_the_status(env, capsys):
     assert cli.main(["status", "--settings", str(path)]) == 0
     assert "Nothing has happened yet" in capsys.readouterr().out
     assert (paths.outbox / status.TEXT_NAME).exists()
+
+
+# ---------------------------------------------------------------- digest, spend, notify-test
+
+WEBHOOK = "https://discord.com/api/webhooks/1/test-token-abcdef"
+
+
+@pytest.fixture
+def discord(monkeypatch, tmp_path):
+    """Discord switched on with a webhook set; notify.send recorded instead of posting."""
+    from service import notify
+
+    calls = []
+    monkeypatch.setattr(notify, "load_env", lambda: None)
+    monkeypatch.setenv(notify.ENV_VAR, WEBHOOK)
+    monkeypatch.setattr(notify, "send", lambda text, **kw: calls.append((text, kw)) or calls_ok[0])
+    calls_ok = [True]
+    settings, path = make_settings(tmp_path, notify={"discord": {"enabled": True}})
+    return types.SimpleNamespace(calls=calls, ok=calls_ok, settings=settings, path=path,
+                                 paths=service_paths(settings))
+
+
+def test_digest_command_writes_the_log_and_posts_it(discord, capsys):
+    from core import events
+
+    events.emit("draft_created", settings=discord.settings, item_id="a", listing_id=1, title="Frog Stickers",
+                dry_run=True)
+    assert cli.main(["digest", "--settings", str(discord.path), "--date", DATE]) == 0
+    out = capsys.readouterr().out
+    latest = discord.paths.outbox / "daily-log.txt"
+    assert f"wrote {latest}" in out and "Discord: daily log sent" in out
+    assert (discord.paths.outbox / f"daily-log-{DATE}.txt").read_bytes() == latest.read_bytes()
+    assert "Frog Stickers" in latest.read_text(encoding="utf-8")
+    (text, kw), = discord.calls
+    assert kw["urgent"] is True and kw["filename"] == "daily-log.txt" and "Botsy daily log" in text
+
+    discord.ok[0] = False
+    assert cli.main(["digest", "--settings", str(discord.path), "--hours", "6"]) == 1
+    assert "could not be sent" in capsys.readouterr().err
+
+
+def test_digest_without_discord_still_writes_the_log(env, capsys):
+    _, path, paths = env
+    assert cli.main(["digest", "--settings", str(path), "--date", DATE]) == 0
+    out = capsys.readouterr().out
+    assert "Discord: not sent." in out and "switched off" in out
+    assert (paths.outbox / "daily-log.txt").exists()
+    with pytest.raises(SystemExit):
+        cli.main(["digest", "--settings", str(path), "--hours", "0"])
+    with pytest.raises(SystemExit):
+        cli.main(["digest", "--settings", str(path), "--hours", "lots"])
+
+
+def test_spend_command_prints_a_table(env, capsys):
+    from core import spend
+
+    settings, path, _ = env
+    spend.record("anthropic", "claude-opus-5-5", "text", stage="listing", item_id="x",
+                 input_tokens=1_000_000, settings=settings)
+    assert cli.main(["spend", "--settings", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "Total: $4.00" in out and "By stage" in out and "listing" in out
+    assert cli.main(["spend", "--settings", str(path), "--month", "2020-01"]) == 0
+    assert "Spending for 2020-01" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["spend", "--settings", str(path), "--month", "2026-13"])
+
+
+def test_notify_test_command(discord, tmp_path, capsys):
+    assert cli.main(["notify-test", "--settings", str(discord.path)]) == 0
+    assert "Sent a test message to Discord" in capsys.readouterr().out
+    (text, kw), = discord.calls
+    assert "Botsy test message" in text and kw["urgent"] is True
+
+    discord.ok[0] = False
+    assert cli.main(["notify-test", "--settings", str(discord.path)]) == 1
+    assert "Could not send the test message" in capsys.readouterr().err
+
+    _, off_path = make_settings(tmp_path / "off")          # Discord switched off in these settings
+    assert cli.main(["notify-test", "--settings", str(off_path)]) == 2
+    assert "Not sent." in capsys.readouterr().out and len(discord.calls) == 2
+
+
+def test_read_only_commands_do_not_wait_for_the_lock(env, capsys):
+    from service.lock import service_lock
+
+    _, path, paths = env
+    with service_lock(paths.lock, 1):
+        assert cli.main(["spend", "--settings", str(path)]) == 0
+        assert cli.main(["digest", "--settings", str(path)]) == 0
+        assert cli.main(["notify-test", "--settings", str(path)]) == 2      # not set up, but no wait
+
+
+def test_searchlist_posts_the_list_with_the_file_attached(discord, monkeypatch, capsys):
+    from core import events
+
+    def build(settings, history_dir, *, date, status=None):
+        return "SEARCH LIST\r\n"
+
+    def write(outbox, text, date):
+        p = Path(outbox) / "search-list.txt"
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    monkeypatch.setitem(sys.modules, "service.searchlist", types.SimpleNamespace(build=build, write=write))
+    assert cli.main(["searchlist", "--settings", str(discord.path), "--date", DATE]) == 0
+    assert "Discord: search list sent" in capsys.readouterr().out
+    (text, kw), = discord.calls
+    assert kw["file"] == discord.paths.outbox / "search-list.txt" and kw["kinds"] == ["search_list_written"]
+    assert "search list is ready" in text
+    import datetime as dt
+    got = events.read(dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1), settings=discord.settings)
+    assert [e["kind"] for e in got] == ["search_list_written"]
+
+
+def test_digest_window_reaches_back_to_the_last_log(tmp_path):
+    import datetime as dt
+    import os
+
+    until = dt.datetime(2026, 10, 16, 7, 7, 30, tzinfo=dt.timezone.utc)
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    day = dt.timedelta(days=1)
+    # No earlier log: the last 24 hours.
+    assert cli.digest_since(outbox, until, None, "daily-log.txt") == until - day
+    log = outbox / "daily-log.txt"
+    log.write_text("x", encoding="utf-8")
+    for last, want in ((until - 3 * day, until - 3 * day),                 # two mornings missed
+                       (until - day - dt.timedelta(seconds=20), until - day - dt.timedelta(seconds=20)),
+                       (until - dt.timedelta(hours=8), until - day),       # a log made by hand today
+                       (until - 9 * day, until - day)):                    # too long ago: 24 hours
+        os.utime(log, (last.timestamp(), last.timestamp()))
+        assert cli.digest_since(outbox, until, None, "daily-log.txt") == want
+    os.utime(log, ((until - 3 * day).timestamp(),) * 2)
+    assert cli.digest_since(outbox, until, 6, "daily-log.txt") == until - dt.timedelta(hours=6)   # --hours wins
+
+
+def test_cleanup_command_prints_what_it_removed(env, capsys):
+    _, path, paths = env
+    old = paths.rejected / "2026-01-02-bank.csv"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("x", encoding="utf-8")
+    (paths.rejected / "2026-01-02-bank.csv.reason.txt").write_text("not an export", encoding="utf-8")
+    assert cli.main(["cleanup", "--settings", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "removed 1 rejected upload(s)" in out and not old.exists()
+    assert cli.main(["cleanup", "--settings", str(path)]) == 0
+    assert "nothing old enough to remove" in capsys.readouterr().out

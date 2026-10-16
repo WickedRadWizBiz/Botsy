@@ -426,14 +426,17 @@ def test_fetch_outbox_opens_search_list_only_on_change(bh, cfg, fake_sftp, monke
     fake_sftp.outbox = {"outbox/search-list.txt": b"axolotl coloring pages\r\n",
                         "outbox/status.txt": b"last tick: ok\r\n"}
     out = Path(cfg["outbox_dir"])
-    assert bh.fetch_outbox(cfg) == {"search-list.txt": "changed", "status.txt": "changed"}
+    assert bh.fetch_outbox(cfg) == {"search-list.txt": "changed", "status.txt": "changed",
+                                    "daily-log.txt": "missing"}
     assert opened == [str(out / "search-list.txt")]
     assert (out / "status.txt").read_bytes() == b"last tick: ok\r\n"
     assert fake_sftp.calls[0]["batch"] == ['-get "outbox/search-list.txt" "search-list.txt"',
-                                           '-get "outbox/status.txt" "status.txt"']
+                                           '-get "outbox/status.txt" "status.txt"',
+                                           '-get "outbox/daily-log.txt" "daily-log.txt"']
 
     fake_sftp.outbox["outbox/status.txt"] = b"last tick: newer\r\n"
-    assert bh.fetch_outbox(cfg) == {"search-list.txt": "same", "status.txt": "changed"}
+    assert bh.fetch_outbox(cfg) == {"search-list.txt": "same", "status.txt": "changed",
+                                    "daily-log.txt": "missing"}
     assert len(opened) == 1
 
     fake_sftp.outbox["outbox/search-list.txt"] = b"frog stickers\r\n"
@@ -445,9 +448,11 @@ def test_fetch_outbox_missing_files_and_errors(bh, cfg, monkeypatch):
     opened = []
     monkeypatch.setattr(bh.os, "startfile", lambda p: opened.append(p), raising=False)
     monkeypatch.setattr(bh.subprocess, "run", FakeSftp())
-    assert bh.fetch_outbox(cfg) == {"search-list.txt": "missing", "status.txt": "missing"}
+    assert bh.fetch_outbox(cfg) == {"search-list.txt": "missing", "status.txt": "missing",
+                                    "daily-log.txt": "missing"}
     monkeypatch.setattr(bh.subprocess, "run", FakeSftp(returncode=255, stderr="timed out"))
-    assert bh.fetch_outbox(cfg) == {"search-list.txt": "error", "status.txt": "error"}
+    assert bh.fetch_outbox(cfg) == {"search-list.txt": "error", "status.txt": "error",
+                                    "daily-log.txt": "error"}
     assert opened == []
 
 
@@ -468,6 +473,21 @@ def test_fetch_outbox_keeps_the_users_notes(bh, cfg, fake_sftp, monkeypatch):
     assert local.read_bytes() == b"frog stickers\r\n" and len(opened) == 2
     record = json.loads(Path(cfg["outbox_state_file"]).read_text(encoding="utf-8"))
     assert set(record) == {"search-list.txt", "status.txt"}
+
+
+def test_fetch_outbox_brings_the_daily_log_without_opening_it(bh, cfg, fake_sftp, monkeypatch):
+    opened = []
+    monkeypatch.setattr(bh.os, "startfile", lambda p: opened.append(p), raising=False)
+    fake_sftp.outbox = {"outbox/daily-log.txt": b"Botsy daily log\r\n"}
+    out = Path(cfg["outbox_dir"])
+    assert bh.fetch_outbox(cfg)["daily-log.txt"] == "changed"
+    assert (out / "daily-log.txt").read_bytes() == b"Botsy daily log\r\n"
+    fake_sftp.outbox["outbox/daily-log.txt"] = b"Botsy daily log, next day\r\n"
+    assert bh.fetch_outbox(cfg)["daily-log.txt"] == "changed"
+    assert (out / "daily-log.txt").read_bytes() == b"Botsy daily log, next day\r\n"
+    assert opened == []                                                # only the search list opens
+    record = json.loads(Path(cfg["outbox_state_file"]).read_text(encoding="utf-8"))
+    assert set(record) == {"daily-log.txt"}
 
 
 def test_fetch_outbox_puts_back_a_deleted_copy_quietly(bh, cfg, fake_sftp, monkeypatch):

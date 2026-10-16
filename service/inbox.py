@@ -198,6 +198,15 @@ def _read_upload(path: Path, name: str, max_bytes: int) -> bytes:
     return data
 
 
+_DETAIL_QUOTED = re.compile(r"'(?:[^'\\]|\\.)*'" + r'|"(?:[^"\\]|\\.)*"')
+_DETAIL_LINK = re.compile(r"(?:https?://|www\.)\S+|\b[\w.-]*etsy\.com/\S*", re.I)
+
+
+def _plain_detail(text: str) -> str:
+    """One line, with quoted text replaced by '...' and links by [link] (like service.tick.scrub)."""
+    return _DETAIL_LINK.sub("[link]", _DETAIL_QUOTED.sub("'...'", " ".join(str(text).split())))
+
+
 def _check_export(data: bytes, name: str, overrides: dict, source_tool: str) -> columns.Export:
     """Read the bytes the way research will, from a private temp copy that keeps the
     original name (the tool is detected from the name, then the header row)."""
@@ -207,7 +216,9 @@ def _check_export(data: bytes, name: str, overrides: dict, source_tool: str) -> 
         try:
             export = columns.load_export(p, overrides, source_tool)
         except Exception as e:  # pandas, csv or decoding errors: all mean "not a readable table"
-            detail = display_name(" ".join(str(e).split()))[:160]
+            # The parser's message can quote a cell of the export (a competitor's title or
+            # link): quoted text and links are replaced before it reaches status.txt.
+            detail = display_name(_plain_detail(str(e)))[:160]
             raise _Refused(f"it could not be read as a CSV table ({type(e).__name__}: {detail})",
                            data) from None
     if export.shape not in SHAPES:

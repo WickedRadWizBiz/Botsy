@@ -38,16 +38,23 @@ WEEK_KEYS = ("ticks", "exports", "duplicates", "rejected", "briefs", "design_bri
 
 _SECRET_NAME = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL", re.I)
 _NOT_SECRET = re.compile(r"_(FILE|PATH|DIR|URI|URL|ISSUED)$", re.I)
+# Secrets whose names the patterns above do not catch: the Discord webhook link holds a token.
+ALWAYS_SECRET = ("DISCORD_WEBHOOK_URL",)
+# Any Discord webhook link or path (its last part is a token), even one not in the environment
+# (for example a library error that names the request path).
+_WEBHOOK = re.compile(r"(?:https?://[\w.-]*discord(?:app)?\.com)?/api/(?:v\d+/)?webhooks/[^\s'\"<>]+", re.I)
 
 
 def redact(text: str, environ=None) -> str:
-    """Replace the value of every secret-looking environment variable with [secret]."""
+    """Replace the value of every secret-looking environment variable, and any Discord
+    webhook link, with [secret]."""
     env = os.environ if environ is None else environ
     values = {str(v).strip() for k, v in env.items()
-              if _SECRET_NAME.search(k) and not _NOT_SECRET.search(k) and len(str(v).strip()) >= 8}
+              if (k in ALWAYS_SECRET or (_SECRET_NAME.search(k) and not _NOT_SECRET.search(k)))
+              and len(str(v).strip()) >= 8}
     for value in sorted(values, key=len, reverse=True):
         text = text.replace(value, "[secret]")
-    return text
+    return _WEBHOOK.sub("[secret]", text)
 
 
 def now_iso() -> str:
@@ -73,9 +80,10 @@ def new_record(*, date: str, forced: bool, live: bool, started: str | None = Non
         "started": started or now_iso(), "finished": None, "date": date,
         "forced": bool(forced), "live": bool(live), "own_stats": None,
         "ingest": {"accepted": [], "duplicates": [], "rejected": []},
-        "research": {"ran": False, "brief_files": [], "briefs": 0, "notes": []},
+        "research": {"ran": False, "stage": None, "brief_files": [], "briefs": 0, "notes": []},
         "run": {"ran": False, "dry_run": not live, "items": 0, "generated": 0, "drafts": 0,
-                "awaiting_review": 0, "failed": [], "summaries": [], "notes": [], "exit_code": 0},
+                "awaiting_review": 0, "cooldown": 0, "budget_wait": 0, "failed": [], "summaries": [],
+                "notes": [], "exit_code": 0},
         "errors": [], "exit_code": 0,
     }
 
@@ -210,14 +218,21 @@ def _tick_lines(rec: dict) -> list[str]:
 
     if res.get("ran"):
         files = res.get("brief_files") or []
+        stage = f", {res['stage']} stage" if res.get("stage") else ""
         lines.append(f"Research: {_plural(len(files), 'brief file')} written "
-                     f"({_plural(int(res.get('briefs') or 0), 'design brief')})")
+                     f"({_plural(int(res.get('briefs') or 0), 'design brief')}{stage})")
     else:
         lines.append("Research: not run (no new exports)")
     lines += _cap(res.get("notes") or [], "  - ")
 
     if run.get("ran"):
         lines.append(f"Items made: {int(run.get('generated') or 0)}")
+        cooled = int(run.get("cooldown") or 0)
+        if cooled:
+            lines.append(f"Skipped: {cooled} (same theme made recently)")
+        waiting_cap = int(run.get("budget_wait") or 0)
+        if waiting_cap:
+            lines.append(f"Waiting for next month (spending cap reached): {waiting_cap}")
         lines += _cap([f"Note: {n}" for n in run.get("notes") or []], "  ")
         drafts = int(run.get("drafts") or 0)
         if run.get("dry_run") is False:
@@ -238,6 +253,11 @@ def _tick_lines(rec: dict) -> list[str]:
 
     if rec.get("own_stats"):
         lines.append(f"Our own shop stats: {rec['own_stats'].get('detail', '')}")
+    cleanup = rec.get("cleanup")
+    if isinstance(cleanup, dict) and cleanup:
+        lines.append("Old files tidied away: " + ", ".join(
+            f"{str(k).replace('_', ' ')} {n}" for k, n in cleanup.items()))
+    lines += _cap([f"Could not tidy: {x}" for x in rec.get("cleanup_problems") or []], "  ")
     errors = rec.get("errors") or []
     lines.append("Problems: none" if not errors else f"Problems: {len(errors)}")
     lines += _cap(errors, "  ! ")

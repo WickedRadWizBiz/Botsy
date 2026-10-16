@@ -145,3 +145,33 @@ def test_redact_ignores_short_and_non_secret_values():
     env = {"API_KEY": "short", "SHOP_NAME": "SuperLongShopName123", "MY_TOKEN": "tok-1234567890"}
     assert status.redact("short SuperLongShopName123 tok-1234567890", env) == \
         "short SuperLongShopName123 [secret]"
+
+
+def test_the_discord_webhook_link_is_a_secret(tmp_path, monkeypatch):
+    link = "https://discord.com/api/webhooks/123/very-secret-token"
+    assert status.redact(f"post to {link} failed", {"DISCORD_WEBHOOK_URL": link}) == "post to [secret] failed"
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", link)
+    status.update(tmp_path, record(NOW, errors=[f"notify: could not reach {link}"]), now=NOW)
+    for name in (status.JSON_NAME, status.TEXT_NAME):
+        assert "very-secret-token" not in (tmp_path / name).read_text(encoding="utf-8")
+
+
+def test_render_shows_the_research_stage_and_cleanup():
+    rec = record(NOW)
+    rec["research"]["stage"] = "refined"
+    rec["cleanup"] = {"rejected_files": 2, "old_exports": 1}
+    body = status.render({"ticks": [rec]}).replace("\r\n", "\n")
+    assert "Research: 1 brief file written (5 design briefs, refined stage)" in body
+    assert "Old files tidied away: rejected files 2, old exports 1" in body
+
+
+def test_any_discord_webhook_link_is_replaced():
+    from service.status import redact
+
+    text = ("ConnectionError: HTTPSConnectionPool(host='discord.com', port=443): Max retries exceeded "
+            "with url: /api/webhooks/123456/AbC-token_xyz (Caused by x); full https://discordapp.com/api/v10/"
+            "webhooks/1/tok?wait=true")
+    out = redact(text, environ={})
+    assert "AbC-token" not in out and "tok?wait" not in out and out.count("[secret]") == 2
+    assert redact("starts with https://discord.com/api/webhooks/ (copy it)", environ={}) == \
+        "starts with https://discord.com/api/webhooks/ (copy it)"

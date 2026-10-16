@@ -9,8 +9,10 @@
    the requests the server allows (put, rename, -get, cd, pwd), into the same inbox.
 4. A second tick takes in the helper's upload: the server keeps the helper's niche prefix
    and the same short hash.
-5. `python -m service searchlist` lists the helper's export as a near miss, and a second
-   helper pass copies search-list.txt and status.txt into the PC's Documents\\Botsy.
+5. `python -m service searchlist` lists the helper's export as a near miss, and
+   `python -m service digest` writes the daily log from the event journal. A second
+   helper pass copies search-list.txt, status.txt and daily-log.txt into the PC's
+   Documents\\Botsy (it opens only the search list).
 
 Nothing in the outbox, the history or the PC copies may name a shop or hold a link.
 Everything is invented (demo exports, fake shops and links); no network, no root.
@@ -225,9 +227,16 @@ def test_uploads_to_drafts_to_search_list_and_back_to_the_pc(world, tmp_path, ca
     assert lines[-2].startswith("Last week: 3 exports received, 3 brief files written, 2 items made")
     assert "\n" not in raw.decode("utf-8").replace("\r\n", "")
 
+    assert cli.main(["digest", "--settings", str(path), "--date", DATE]) == 0
+    log_text = (paths.outbox / "daily-log.txt").read_bytes().decode("utf-8").replace("\r\n", "\n")
+    assert "Received: 3" in log_text and "Not used: 1" in log_text
+    assert "Practice drafts (test mode, nothing sent to Etsy): 2" in log_text
+    assert "Stage: discovery" in log_text
+
     _helper_once(pc)
     documents = pc["home"] / "Documents" / "Botsy"
     assert (documents / "search-list.txt").read_bytes() == raw
     assert (documents / "status.txt").read_bytes() == (paths.outbox / status.TEXT_NAME).read_bytes()
+    assert (documents / "daily-log.txt").read_bytes() == (paths.outbox / "daily-log.txt").read_bytes()
 
-    _no_leaks(paths.outbox, paths.history, documents)
+    _no_leaks(paths.outbox, paths.history, documents, tmp_path / "data")

@@ -3,9 +3,10 @@
 It runs at logon from Task Scheduler with pythonw.exe (no window). Every poll it looks
 in the Downloads folder for new CSV files that look like EverBee or eRank exports and
 uploads each one, once, into the server inbox with the Windows OpenSSH sftp client.
-Once an hour it fetches the weekly search list and the status file into
-Documents\\Botsy, and opens the search list when it changed. See docs/SERVER.md
-section 7 and windows/README.md.
+Once an hour it fetches the weekly search list, the status file and the daily log into
+Documents\\Botsy, and opens the search list when it changed (only the search list: the
+status file and the daily log are just kept up to date). See docs/SERVER.md sections 7
+and 11, and windows/README.md.
 
 Rules this file keeps:
 - Standard library only, so it runs on a plain python.org install with nothing else.
@@ -86,7 +87,8 @@ QUIET_SECONDS = 5.0             # a file modified more recently may still be dow
 MIN_UPLOAD_BYTES_PER_SECOND = 20_000
 LOG_MAX_BYTES = 1_000_000
 LOG_BACKUPS = 3
-OUTBOX_FILES = ("search-list.txt", "status.txt")
+# Fetched from the server's outbox into Documents\Botsy. Only SEARCH_LIST is opened.
+OUTBOX_FILES = ("search-list.txt", "status.txt", "daily-log.txt")
 SEARCH_LIST = "search-list.txt"
 
 # Host and user end up on the sftp command line: a value starting with "-" would be
@@ -638,14 +640,15 @@ def _same_bytes(path: Path, data: bytes) -> bool:
 
 
 def fetch_outbox(cfg: Mapping) -> dict[str, str]:
-    """Copy outbox/search-list.txt and outbox/status.txt into Documents\\Botsy.
+    """Copy outbox/search-list.txt, status.txt and daily-log.txt into Documents\\Botsy.
 
     Returns {file name: "changed" | "same" | "missing" | "error"}. "changed" means the
     server has content this PC has not fetched before: only then is the local copy
     replaced, and the search list opened. Fetches are compared with the last fetch
     (recorded in outbox_state_file), not with the local copy, so a list the user ticked
     off or wrote notes in is left alone and not opened again every hour. A local copy
-    the user deleted is put back quietly.
+    the user deleted is put back quietly. Only the search list is ever opened; the
+    status file and the daily log are saved for the user to open when they like.
     """
     out_dir = Path(cfg["outbox_dir"])
     record_path = Path(cfg["outbox_state_file"])
@@ -658,7 +661,7 @@ def fetch_outbox(cfg: Mapping) -> dict[str, str]:
         cmds = [f'-get "{cfg["remote_outbox"]}/{name}" "{name}"' for name in OUTBOX_FILES]
         res = run_sftp(cfg, cmds, tmp)
         if not res.ok:
-            log.warning("Could not fetch the search list and status: %s", res.message)
+            log.warning("Could not fetch the search list, status and daily log: %s", res.message)
             return {name: "error" for name in OUTBOX_FILES}
         for name in OUTBOX_FILES:
             got = Path(tmp) / name

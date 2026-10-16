@@ -9,7 +9,7 @@ Writes <item>/publish.json (docs/CONTRACTS.md section 5) and sets the manifest s
 "drafted". Every request passes the safety layer in publisher/safety.py. CLI:
 python -m publisher auth | publish | discard | taxonomy | own-stats.
 """
-from publisher.auth import AuthError, AuthRequired
+from publisher.auth import AuthError, AuthRequired, token_days_left
 from publisher.client import EtsyAPIError, EtsyClient, RateLimited
 from publisher.defaults import DEFAULTS
 from publisher.fake import FakeEtsyClient, FakeEtsySession
@@ -30,4 +30,5 @@ __all__ = [
     "DEFAULTS", "AuthError", "AuthRequired", "EtsyAPIError", "EtsyClient", "FakeEtsyClient",
     "FakeEtsySession", "PublishError", "PublishGateError", "RateLimited", "ReviewPending", "SafetyViolation",
     "check_ready", "discard_draft", "owned_listing_ids", "publish_draft", "review_wait", "run_all",
+    "token_days_left",
 ]

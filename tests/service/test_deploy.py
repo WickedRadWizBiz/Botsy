@@ -23,7 +23,7 @@ from core.config import ROOT
 
 DEPLOY = ROOT / "deploy" / "lightsail"
 SETUP = DEPLOY / "setup.sh"
-SERVICES = ("botsy-tick.service", "botsy-daily.service", "botsy-weekly.service")
+SERVICES = ("botsy-tick.service", "botsy-daily.service", "botsy-weekly.service", "botsy-digest.service")
 
 
 def _text(path: Path) -> str:
@@ -113,6 +113,80 @@ def test_timer_runs_retry_only_a_lock_timeout():
     assert _unit("botsy-daily.service")["ExecStart"] == [
         "/opt/botsy/.venv/bin/python -m service tick --force --own-stats"]
     assert _unit("botsy-weekly.service")["ExecStart"] == ["/opt/botsy/.venv/bin/python -m service searchlist"]
+
+
+def test_daily_log_timer_is_installed_and_enabled():
+    text = _text(SETUP)
+    units = re.search(r"UNITS=\(([^)]*)\)", text).group(1).split()
+    enable = re.search(r"ENABLE=\(([^)]*)\)", text).group(1).split()
+    assert {"botsy-digest.service", "botsy-digest.timer"} <= set(units)
+    assert "botsy-digest.timer" in enable and "botsy-digest.service" not in enable
+    for unit in units:
+        assert (DEPLOY / "systemd" / unit).is_file(), unit
+    timer = _unit("botsy-digest.timer")
+    assert timer["OnCalendar"] == ["*-*-* 07:07:00"] and timer["Persistent"] == ["true"]
+    assert timer["Unit"] == ["botsy-digest.service"]
+    service = _unit("botsy-digest.service")
+    assert service["ExecStart"] == ["/opt/botsy/.venv/bin/python -m service digest"]
+    assert "Restart" not in service          # it never waits for the lock, so never exits 3
+
+
+# setup.sh's check_local_settings with as_app running the command directly in tmp_path.
+LOCAL_HARNESS = r'''
+source "$SCRIPT"
+APP_DIR=$T/app
+as_app() { "$@"; }
+say() { :; }
+check_local_settings
+'''
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_local_settings_are_created_once_and_never_overwritten(tmp_path):
+    import yaml
+
+    script = tmp_path / "setup-defs.sh"
+    script.write_text("\n".join(_text(SETUP).rstrip().splitlines()[:-1]) + "\n", encoding="utf-8")
+    (tmp_path / "app" / "config").mkdir(parents=True)
+    env = {"PATH": os.environ["PATH"], "SCRIPT": str(script), "T": str(tmp_path), "HOME": str(tmp_path)}
+
+    def run():
+        res = subprocess.run(["bash", "-c", LOCAL_HARNESS], env=env, text=True, capture_output=True, timeout=60)
+        assert res.returncode == 0, res.stdout + res.stderr
+        return res.stdout
+
+    local = tmp_path / "app" / "config" / "settings.local.yaml"
+    assert "Created it" in run()
+    doc = yaml.safe_load(local.read_text(encoding="utf-8"))
+    assert doc == {"service": {"live": False}, "spend": {"monthly_cap_usd": None}}   # test mode, no cap
+    assert "monthly_cap_usd" in local.read_text(encoding="utf-8")
+    assert stat.S_IMODE(local.stat().st_mode) == 0o640
+    local.write_text("service:\n  live: true\n", encoding="utf-8")   # the user went live
+    assert "left as it is" in run()
+    assert local.read_text(encoding="utf-8") == "service:\n  live: true\n"
+    local.unlink()
+    local.symlink_to(tmp_path / "elsewhere.yaml")                 # a link is never followed
+    assert "left as it is" in run() and not (tmp_path / "elsewhere.yaml").exists()
+
+
+DATA_HARNESS = r'''
+source "$SCRIPT"
+APP_DIR=$T/app
+as_app() { "$@"; }
+say() { :; }
+check_data_dirs
+'''
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_setup_makes_the_spend_folder(tmp_path):
+    script = tmp_path / "setup-defs.sh"
+    script.write_text("\n".join(_text(SETUP).rstrip().splitlines()[:-1]) + "\n", encoding="utf-8")
+    (tmp_path / "app").mkdir()
+    env = {"PATH": os.environ["PATH"], "SCRIPT": str(script), "T": str(tmp_path), "HOME": str(tmp_path)}
+    res = subprocess.run(["bash", "-c", DATA_HARNESS], env=env, text=True, capture_output=True, timeout=60)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert (tmp_path / "app" / "data" / "spend").is_dir() and "Done." in res.stdout
 
 
 # ---------------------------------------------------------------- --upload-pubkey fast path

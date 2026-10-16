@@ -217,6 +217,41 @@ def refresh_age_warning(tokens: dict | None, now: float | None = None) -> str | 
             "run `python -m publisher auth` (and update ETSY_REFRESH_TOKEN and ETSY_REFRESH_TOKEN_ISSUED in CI)")
 
 
+def token_file(settings: dict, shop_id: str | None = None) -> Path:
+    """The shop's token file: env <etsy_token_file_env> (default ETSY_TOKEN_FILE), else
+    .etsy_tokens.json in the repo (the same rule EtsyClient uses)."""
+    from core.config import get_shop, load_env, resolve
+
+    load_env()
+    shop = get_shop(settings, shop_id)
+    return resolve(os.environ.get(shop.get("etsy_token_file_env", "ETSY_TOKEN_FILE")) or ".etsy_tokens.json")
+
+
+def token_days_left(settings: dict, shop_id: str | None = None, *, now: float | None = None) -> int | None:
+    """Days until the shop's stored refresh token expires (REFRESH_TOKEN_DAYS after it was
+    issued; 0 or less means it has expired), or None when there is no token file, it holds
+    no refresh token, or its issue date is unknown. Reads only the local token file: no
+    network, no other secrets. While pytest runs, a token file inside the repo (the
+    user's real one) is not read."""
+    from core.config import ROOT
+
+    path = token_file(settings, shop_id)
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            path.resolve().relative_to(ROOT.resolve())
+            return None
+        except (ValueError, OSError):
+            pass
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("refresh_token"):
+        return None
+    age = refresh_token_age_days(data, now)
+    return None if age is None else REFRESH_TOKEN_DAYS - age
+
+
 class TokenStore:
     """Tokens in a JSON file (mode 600), seeded from ETSY_REFRESH_TOKEN when the file is absent.
 
