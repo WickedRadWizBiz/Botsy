@@ -31,3 +31,9 @@ output/*
 Thumbs.db
 .vscode/
 .idea/
+
+# Server working state (docs/SERVER.md): research history, rejected uploads, lock
+data/history/
+data/inbox_rejected/
+data/.service.lock
+data/research_inputs/.ingested.json
