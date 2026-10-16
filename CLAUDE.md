@@ -17,7 +17,7 @@ research → brief → generate → QA → listing → draft → human approval
 5. `publisher/` uses Etsy Open API v3 for our own shop and creates DRAFTS only.
 
 ## Compliance rules (never break; ask me before changing any)
-- No scraping and no browser automation on etsy.com or any other marketplace or platform (Fiverr, Amazon/KDP, Pinterest, print-on-demand sites, stock sites, ...): official APIs or the user's own clicks only (user, 2026-10-16).
+- Scraping and browser automation follow each platform's own policies (user, 2026-10-16). Before any automated access, check the platform's terms of service / acceptable-use policy and its robots.txt, and record the result with sources and date in `config/platform_policies.yaml`. Allowed only where the terms do not forbid it and robots.txt allows the paths; if the terms say nothing about scraping or automated access, robots.txt decides. A platform with no entry is not accessed automatically. Never log in, bypass blocks or paywalls, or collect personal data. Recorded so far: Etsy, Amazon (incl. KDP), Pinterest and Fiverr forbid it, so they are used only through official APIs or the user's own clicks.
 - Never use the Etsy API to collect or analyze other sellers' listings or shops (Etsy API Terms, section 5, items 24–25; requires Etsy's written authorization).
 - Etsy API use is limited to our own shop: drafts, images, digital files, our own stats.
 - Never copy a specific listing. Never pass a competitor's image, file, title or description to any model.

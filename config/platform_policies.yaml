@@ -1,0 +1,50 @@
+# Each platform's stance on scraping / automated access (CLAUDE.md compliance rule).
+# Botsy accesses a site automatically only if it is listed here with scraping: allowed.
+# allowed       = terms do not forbid it AND robots.txt allows the paths we would use
+# forbidden     = terms (or robots.txt) forbid it: official API or the user's own clicks only
+# unknown       = not checked yet: no automated access
+# Re-check entries older than 180 days before relying on them.
+
+platforms:
+  etsy:
+    scraping: forbidden
+    official_api: Etsy Open API v3 (own shop only; never other sellers' listings or shops)
+    sources:
+      - url: https://www.etsy.com/legal/api
+        note: "API Terms of Use: no automated systems or browser extensions accessing, analysing or scraping Etsy data without Etsy's written authorization."
+      - url: https://www.etsy.com/legal/terms-of-use
+        note: "General Terms of Use also restrict automated access (secondary summary; re-read the live page)."
+    checked: "2026-10-16"
+  amazon:   # includes KDP
+    scraping: forbidden
+    official_api: none for KDP publishing (the user uploads by hand); Creators API analysis needs Amazon's written approval
+    sources:
+      - url: https://www.amazon.com/gp/help/customer/display.html?nodeId=GLSBYFE9MGKKQXXM
+        note: "Conditions of Use exclude 'any use of data mining, robots, or similar data gathering and extraction tools'."
+      - url: https://affiliate-program.amazon.com/help/operating/policies
+        note: "Using product data to aggregate or analyze needs prior written approval."
+    checked: "2026-10-16"
+  pinterest:
+    scraping: forbidden
+    official_api: Pinterest API v5 (our own pins; the user chooses each pin to publish)
+    sources:
+      - url: https://policy.pinterest.com/en/developer-guidelines
+        note: "Bans scraping and using Pinterest materials to train AI."
+    checked: "2026-10-16"
+  fiverr:
+    scraping: forbidden
+    official_api: none for sellers
+    sources:
+      - url: https://help.fiverr.com/hc/en-us/articles/32242973123985-Our-Community-Standards
+        note: "Bans unauthorized access methods, scraping, and bots for mass messaging."
+    checked: "2026-10-16"
+  everbee:
+    scraping: unknown
+    official_api: none found; we use only the CSV exports the user downloads
+    sources: []
+    checked: "2026-10-16"
+  erank:
+    scraping: unknown
+    official_api: none found; we use only the CSV exports the user downloads
+    sources: []
+    checked: "2026-10-16"
