@@ -1,11 +1,11 @@
 # Task State
-_Last updated: 2026-10-16 (server build running; next: refined stage, Discord, spend tracker, overnight log)_
+_Last updated: 2026-10-16 (server build integrated and tested, not committed yet; next: commit + push, deploy, then refined stage, Discord, spend tracker, overnight log)_
 
 ## Current objective
-Run Botsy 24/7 on Lightsail: server service + weekly search list + Windows upload helper (building), then refined research stage, Discord notifications, spend tracker, overnight log.
+Run Botsy 24/7 on Lightsail: server service + weekly search list + Windows upload helper (built and integrated 2026-10-16), then refined research stage, Discord notifications, spend tracker, overnight log.
 
 ## Next immediate action
-When workflow `botsy-server-build` finishes: review, run `pytest -q` + service end-to-end, commit, push. Then launch the second build (refined stage, Discord, spend, overnight log) from the spec drafted in the scratchpad.
+Review the uncommitted server build (`service/`, `deploy/lightsail/`, `windows/`, `research/history.py`, tests, settings, README, docs/SERVER.md), commit and push. Then the user sets up the server (`deploy/lightsail/README.md`) and the PC (`windows/README.md`). Then launch the second build (refined stage, Discord, spend, overnight log) from the spec drafted in the scratchpad.
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
@@ -22,14 +22,16 @@ When workflow `botsy-server-build` finishes: review, run `pytest -q` + service e
 - Blocklist: added ~36 franchise terms, 5 review terms, 11 app/platform brands as review terms (2026-10-15).
 
 ## Open decisions (ask the user)
-- PROPOSED (awaiting go-ahead): host on AWS Lightsail, running 24/7. See "Lightsail plan" below.
+- Server build, still to check for real: `setup.sh` was tested by hand on Ubuntu's OpenSSH and systemd in a mount namespace, but not yet on a real Lightsail instance. Its `--upload-pubkey` fast path (added at integration) is tested only with shims. The Windows helper and `install_helper.ps1` have not run on a real Windows PC yet (tests use Linux, a fake sftp and OpenSSH's `sftp -D`).
+- `deploy/lightsail/README.md` names the branch `claude/zen-newton-w7xzq9`; change it there if the server should follow another branch (for example `main`).
+- The weekly GitHub Action and the server can both create drafts from the same briefs. Once the server is live, keep `PIPELINE_PUBLISH` off (or drop the weekly Action) so only one of them drafts.
 - `listings_d` scope (lets `python -m publisher discard` delete our own failed drafts): keep or drop?
 - Primary listing photo: fanned-pages hero (current) or single-page close-up first?
 - Tracing font: Helvetica (current) or embed a school-style font (e.g. Andika, OFL)?
 - Optional: research could sign brief files (HMAC) so hand-edited briefs are refused.
 - Research skips keyword-level exports with no competition column (stricter); an opt-in setting could count them as keyword evidence.
 
-## Lightsail plan (proposed 2026-10-16, not built)
+## Lightsail plan (proposed 2026-10-16; built 2026-10-16, see Completed)
 - The user wants the pipeline on a Lightsail server running 24/7, doing market research continuously, with a stricter research bar after the first batch.
 - On a server the Etsy token file persists, so refresh-token rotation stops being a problem; the weekly GitHub Action becomes optional (CI tests stay).
 - Limit: competitor data can only come from licensed exports the user downloads (no official eRank/EverBee research API found 2026-10-16; scraping Etsy or using the Etsy API on other shops is forbidden). The server automates everything else: watch an inbox for new exports, pull our own shop stats daily (Etsy API, allowed), optional trend data, keep research history, re-score, gate candidates, generate, list, draft.
@@ -67,6 +69,8 @@ When workflow `botsy-server-build` finishes: review, run `pytest -q` + service e
 - 2026-10-15: Pushed to GitHub. Added `core/` + `docs/CONTRACTS.md`.
 - 2026-10-15: Built Phases 1–5 with parallel agents + adversarial review per stage (~720 tests). Built Phase 6 orchestrator + Actions. Dry-run e2e passes for all three niches.
 - 2026-10-15: Integrated the audit fixes: `core/briefs.py` (brief check shared by research, generators, pipeline), `core/etsy.py` (Etsy limits), `core.items.content_count` / `stage_out_root` / `clear_downstream` (drops dry-run publish.json, reopens approvals on regeneration); publisher: `PublishGateError.problems`, `ReviewPending`, `review_wait()`, content-digest approval check, own-shop title dedupe, title/tag limits from settings, refresh-token age warning (`refresh_issued`); listing: `needs_listing()` re-lists stale copy (old shop name / placeholder); stage CLIs default `--dry-run` to `output/dry-run`; new `tests/test_pipeline.py`; CONTRACTS.md and README rewritten to match.
+
+- 2026-10-16: Server build (docs/SERVER.md): `service/` (`python -m service` ingest/research/run/searchlist/tick/status, lock, settle wait, rounds, status.txt/status.json, outbox scrubbing and secret redaction), `research/history.py` (history snapshots, `--history`), weekly search list, `deploy/lightsail/` (`setup.sh` installed as root-owned `botsy-setup`, root's own copy in /usr/local/lib/botsy/src, chroot SFTP account, hardened systemd units), `windows/` (stdlib helper + installer). Integration: settings blocks (`research.history*`, `service:`), `botsy-setup` command everywhere, `--upload-pubkey` fast path, distinct brief-file counts in the weekly totals, `tests/service/test_end_to_end.py` (uploads -> tick -> helper -> tick -> search list -> PC), README "Run it 24/7 on Lightsail", docs/SERVER.md updated to match the build.
 
 ## Deferred until reset
 (none)

@@ -41,6 +41,8 @@ python -m publisher publish --dry-run --out /tmp/stages/out
 | `output/review/<item_id>.json` | review queue entries |
 | `output/runs/run-<date>-<HHMMSS>.json` | pipeline run summaries |
 | `output/dry-run/` | everything from a `--dry-run` without `--out` (setting `pipeline.dry_run_output_dir`), including its review queue, runs and research briefs |
+| `data/history/<date>/<niche>.json` | research history snapshots (server; gitignored, never sent to a model) |
+| `data/inbox_rejected/` | uploads the server did not use, each with a `.reason.txt` (server; gitignored) |
 
 `output/` is gitignored. In GitHub Actions it becomes a workflow artifact.
 
@@ -63,7 +65,7 @@ Download CSV exports from eRank, EverBee or a similar licensed tool into `data/r
 - Name a file `<niche>__anything.csv` (for example `stickers__erank.csv`) to force its niche. Otherwise each row's niche comes from `research.niche_rules`.
 - `own_shop*.csv` holds our own shop's stats (`python -m publisher own-stats` writes one). `trends*.csv` holds off-Etsy trend signals. Both only boost demand and are never counted as listings.
 
-`python -m research [--niche N] [--inputs DIR] [--out DIR] [--date D] [--dry-run] [--demo]` writes `data/briefs/<niche>-<date>.json`. A brief pattern needs at least 10 listings from at least 3 different shops (`research.min_shops_per_pattern`), and briefs contain no shop names, listing URLs, images or verbatim titles. Commit the brief files.
+`python -m research [--niche N] [--inputs DIR] [--out DIR] [--date D] [--history DIR] [--dry-run] [--demo]` writes `data/briefs/<niche>-<date>.json` (and, with `--history`, a history snapshot per niche in `DIR/<date>/`). A brief pattern needs at least 10 listings from at least 3 different shops (`research.min_shops_per_pattern`), and briefs contain no shop names, listing URLs, images or verbatim titles. Commit the brief files.
 
 ## Stage commands
 Each stage runs on its own. The generator, QA, listing and `publisher publish` commands take `--out DIR` (default `output/`; with `--dry-run`, `output/dry-run/`) and `--settings FILE`. For `research`, `--out` is the briefs folder.
@@ -128,6 +130,33 @@ The live publish job has no token file. It seeds one from the `ETSY_REFRESH_TOKE
 
 Until this is set up, keep `PIPELINE_PUBLISH` off and create drafts locally from the downloaded artifact (`python -m publisher publish --out batch`).
 
+## Run it 24/7 on Lightsail
+Botsy can run on its own on a small AWS Lightsail server (Ubuntu 24.04, 4 GB plan). You still make the exports yourself in EverBee or eRank (the rules allow nothing else), but everything after that is automatic:
+
+1. Every Sunday the server writes a **search list**. The Botsy helper on your Windows PC saves it as `Documents\Botsy\search-list.txt` and opens it. Search each line in EverBee (type only the words before the brackets) and click **Export CSV**.
+2. The helper notices the new file in your Downloads folder and uploads it to the server. It only ever sends EverBee or eRank exports, never any other CSV.
+3. The server checks the upload, researches, makes the items and creates Etsy **drafts** (practice drafts until you turn live mode on). You approve every draft in Etsy.
+4. The helper also copies the server's report to `Documents\Botsy\status.txt` every hour.
+
+Set it up in this order. Both guides go step by step:
+- **The server:** [`deploy/lightsail/README.md`](deploy/lightsail/README.md). It ends with `sudo botsy-setup`, the one command for updating the server later.
+- **Your Windows PC:** [`windows/README.md`](windows/README.md). The installer prints one line to paste on the server: `sudo botsy-setup --upload-pubkey "..."`.
+
+The server starts in **test mode** (`service.live: false` in `config/settings.yaml`): no API calls and no Etsy drafts. "Go live" in the server guide says how to switch. The exact behaviour is in `docs/SERVER.md`.
+
+### Server commands: `python -m service`
+On the server, type `botsy service <command>`; that runs it as the `botsy` account. Options: `--settings FILE`, `--inbox DIR`, `--date YYYY-MM-DD`.
+| Command | What it does |
+|---|---|
+| `ingest` | take finished uploads out of the inbox; anything that is not an export goes to `data/inbox_rejected/` with a reason |
+| `research` | research every shop niche, with history snapshots in `data/history/` |
+| `run` | generate, QA, listing and draft for every shop (a dry run unless `service.live` is `true`) |
+| `searchlist` | write this week's `search-list.txt` for the helper to fetch |
+| `tick` | ingest, then research and run when a new export arrived, then the status files (`--force`: run even without a new upload; `--own-stats`: first read our own shop's stats, live mode only) |
+| `status` | rebuild `status.txt` and show it |
+
+The server runs these by itself: `tick` when an upload arrives, `tick --force --own-stats` every day at 06:17, and `searchlist` every Sunday at 18:07. Exit codes: 0 ok, 1 something failed (see `status.txt`), 2 setup problem, 3 another command was still running after 30 minutes.
+
 ## Layout
 | Folder | Role |
 |---|---|
@@ -137,6 +166,9 @@ Until this is set up, keep `PIPELINE_PUBLISH` off and create drafts locally from
 | `listing/` | Title, 13 tags, description, alt text, AI disclosure |
 | `publisher/` | Etsy Open API v3, own shop, drafts only |
 | `pipeline/` | Runs the stages in order; `python -m pipeline` |
+| `service/` | The 24/7 server: inbox, ticks, status files, weekly search list; `python -m service` |
+| `deploy/lightsail/` | Server setup (`setup.sh`, installed as `botsy-setup`), SSH rules and systemd units |
+| `windows/` | The Botsy helper for your PC (`botsy_helper.py`) and its installer |
 | `core/` | Shared settings, compliance (blocklist, AI disclosure, brief checks), Etsy limits and item helpers |
 | `config/` | `settings.yaml`, trademark blocklist, AI disclosure |
 | `data/samples/` | synthetic exports for dry runs and CI |

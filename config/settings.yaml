@@ -90,6 +90,12 @@ research:
   own_shop_boost: 0.1            # own_shop*.csv: closes up to 10% of a theme's gap to demand 1.0 (never counted)
   trend_boost: 0.1               # trends*.csv: same, from interest 0-100 (never counted)
   blocked_cooccurrence: {flag_share: 0.2, drop_share: 0.5}   # share of a theme's rows naming a blocked term
+  # Research history (docs/SERVER.md section 3): `python -m service research` writes
+  # data/history/<date>/<niche>.json here. Gitignored, never committed, never sent to a model.
+  history_dir: data/history
+  history:
+    min_rows: 3                  # a near-miss theme needs this many clean rows of one kind (listing rows, or counted keyword rows); empty = default
+    max_themes: 200              # themes kept per snapshot, best demand first (qualified themes are never cut first); empty = default
   # Not set here on purpose (lists in YAML replace the defaults): excluded_terms (platform and
   # planner brands), extra_blocked_terms / extra_review_terms (a stricter-only supplement to
   # config/trademark_blocklist.txt) live in research/defaults.py DEFAULTS.
@@ -132,6 +138,36 @@ pipeline:
   max_brief_age_days: 6          # live runs skip the newest brief file of a niche older than this (from the
                                  # date in its name), so the weekly Action drafts each committed brief file
                                  # once. Keep it below 7. null = off. Files named with --brief are exempt.
+
+# --- 24/7 server: python -m service (docs/SERVER.md). Defaults: service/paths.py and
+# service/searchlist.py DEFAULTS. Research history folder: research.history_dir above. ---
+service:
+  inbox_dir: /srv/botsy-inbox      # SFTP chroot of botsy-upload (root-owned, mode 755)
+  incoming_subdir: incoming        # the Windows helper uploads <name>.part, then renames it
+  outbox_subdir: outbox            # status.txt, status.json, search-list.txt (the helper reads them)
+  rejected_dir: data/inbox_rejected
+  lock_file: data/.service.lock
+  live: false                      # false = dry runs: no API calls, no Etsy drafts. Only a real `true` goes live.
+  max_upload_bytes: 25000000       # matches max_upload_bytes in the Windows helper's helper.json
+  part_max_age_h: 48               # an unfinished <name>.part this old was given up on and is deleted (0 = never)
+  lock_timeout_s: 1800             # a second service command waits this long, then exits with code 3
+  settle_s: 300                    # after an accepted upload, wait until the inbox is quiet this long (one research run per batch)
+  settle_max_s: 3600               # never wait longer than this
+  max_rounds: 3                    # research + run again for uploads that finish during a run
+  status_keep_days: 35             # tick records kept in outbox/status.json
+  search_list:                     # outbox/search-list.txt, written every Sunday (docs/SERVER.md section 4)
+    max_per_niche: 6               # search lines per niche; empty = default
+    recheck_weeks: 2               # a qualified theme not seen in history for this long goes back on the list
+    seeds:                         # our own starter searches, listed every week (no brand names: they get flagged); one phrase or a list
+      coloring_pages: ["coloring pages for kids", "printable coloring pages"]
+      stickers: ["digital stickers", "digital planner stickers"]
+      activity_sheets: ["kids activity sheets", "printable mazes for kids"]
+    nouns:                         # added after a theme name: "axolotl" -> "axolotl coloring pages"
+      coloring_pages: coloring pages
+      stickers: stickers
+      activity_sheets: activity sheets
+# The Windows helper has no section here: it runs on the PC and reads %APPDATA%\Botsy\helper.json
+# (defaults: DEFAULTS in windows/botsy_helper.py; see windows/README.md).
 
 # --- Per-stage tuning. Defaults live in each module's DEFAULTS dict; these override them. ---
 
