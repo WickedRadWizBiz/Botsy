@@ -1,0 +1,12 @@
+# Every day at 06:17 server time (UTC unless you changed the server's time zone).
+# Persistent=true: a run missed while the server was off happens at the next boot.
+[Unit]
+Description=Botsy: daily check at 06:17
+
+[Timer]
+OnCalendar=*-*-* 06:17:00
+Persistent=true
+Unit=botsy-daily.service
+
+[Install]
+WantedBy=timers.target

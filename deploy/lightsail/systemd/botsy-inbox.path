@@ -1,0 +1,17 @@
+# Starts a Botsy check when the Windows helper finishes an upload.
+# The helper writes incoming/<name>.part and then renames it; either change starts
+# botsy-tick.service, which ignores .part files and waits for the inbox to go quiet.
+# Installed by deploy/lightsail/setup.sh (docs/SERVER.md section 6).
+[Unit]
+Description=Botsy: watch the upload inbox for new research exports
+
+[Path]
+PathChanged=/srv/botsy-inbox/incoming
+# systemd stops watching while botsy-tick runs, so an upload that finishes during a run
+# would otherwise wait for the daily check. These are checked again when a run ends.
+PathExistsGlob=/srv/botsy-inbox/incoming/*.csv
+PathExistsGlob=/srv/botsy-inbox/incoming/*.CSV
+Unit=botsy-tick.service
+
+[Install]
+WantedBy=multi-user.target

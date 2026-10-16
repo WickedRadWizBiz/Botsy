@@ -1,0 +1,11 @@
+# Every Sunday at 18:07 server time (UTC unless you changed the server's time zone).
+[Unit]
+Description=Botsy: weekly search list on Sunday at 18:07
+
+[Timer]
+OnCalendar=Sun *-*-* 18:07:00
+Persistent=true
+Unit=botsy-weekly.service
+
+[Install]
+WantedBy=timers.target

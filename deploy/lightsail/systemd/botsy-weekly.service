@@ -1,0 +1,42 @@
+# Writes the weekly search list (outbox/search-list.txt); the Windows helper downloads it.
+[Unit]
+Description=Botsy: write the weekly search list
+# At most 4 starts (the run and its retries) in 12 hours.
+StartLimitIntervalSec=12h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+User=botsy
+Group=botsy
+WorkingDirectory=/opt/botsy
+ExecStart=/opt/botsy/.venv/bin/python -m service searchlist
+Environment=PYTHONUNBUFFERED=1
+UMask=0027
+TimeoutStartSec=1h
+# Exit code 3 means another Botsy command held the lock for 30 minutes: try again in 20
+# minutes instead of skipping this run. Other failures (exit 1 or 2, or killed for lack of
+# memory) are not retried; they would fail again, and a full run can cost API money.
+Restart=on-failure
+RestartSec=20min
+RestartPreventExitStatus=1 2 SIGKILL
+# Hardening: no privilege gain, /usr /boot /etc read-only, no access to /home, a private
+# /tmp and /dev, no kernel or clock changes, network only over IP (Etsy and the APIs).
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/opt/botsy -/srv/botsy-inbox/outbox
