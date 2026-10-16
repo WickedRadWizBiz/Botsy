@@ -1,12 +1,11 @@
 # Task State
-_Last updated: 2026-10-16 (server build committed; phase-2 build running)_
+_Last updated: 2026-10-16 (phase 2 committed and pushed; phase 3 packs/niches spec ready, awaiting user go-ahead)_
 
 ## Current objective
-Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows upload helper, Lightsail deploy kit. Building now (workflow `botsy-phase2-build`): refined research stage + evidence window, spend tracker, events/Discord/overnight log, theme cooldown, server-only settings, disk caps (docs/SERVER.md sections 8-14).
+Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Next: phase 3 themed packs + stationery + TTRPG niches + low-competition scoring (docs/PACKS.md).
 
 ## Next immediate action
-After phase 2 is committed: launch phase-3 build from docs/PACKS.md (research opportunity + pack sizes, pack engine, stationery + ttrpg generators, compliance/listing/QA/mockups).
-When `botsy-phase2-build` finishes: review, run `pytest -q`, commit, push, report to the user. Then the user deploys: `deploy/lightsail/README.md` (server) and `windows/README.md` (PC).
+Wait for the user to (a) confirm the fresh/derived pack ratio reading in docs/PACKS.md section 3 and (b) check /usage. Then launch the phase-3 build. Also ask the user for a monthly spending cap (default: none).
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
