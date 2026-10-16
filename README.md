@@ -11,11 +11,11 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
 pip install -q -r requirements.txt
 cp .env.example .env   # then fill in keys (see the labels in the file)
-pytest -q              # offline; about 2 minutes (the end-to-end test is marked slow: -m "not slow" skips it)
+pytest -q              # offline; about 2 minutes (the end-to-end tests are marked slow: -m "not slow" skips them)
 ```
 - **potrace** (coloring pages): Windows `choco install potrace`, macOS `brew install potrace`, Ubuntu `sudo apt install potrace`.
 - **rembg** (sticker backgrounds, `isnet-general-use`): downloads a ~170 MB model on first use into `$REMBG_HOME/models` (default `~/.rembg`). To skip it, set `vectorize.stickers.background_removal: floodfill` in `config/settings.yaml`; that suits the plain white backgrounds the prompts ask for.
-- Secrets live only in `.env` (gitignored). `.env.example` lists every variable.
+- Secrets live only in `.env` (gitignored). `.env.example` lists every variable, including the optional `DISCORD_WEBHOOK_URL` (server guide `deploy/lightsail/README.md`, steps 11-13).
 
 ## Quick start (offline)
 A dry run needs no secrets and makes no API calls: fake images, template listings and a fake Etsy client, on the synthetic exports in `data/samples/`.
@@ -43,6 +43,8 @@ python -m publisher publish --dry-run --out /tmp/stages/out
 | `output/dry-run/` | everything from a `--dry-run` without `--out` (setting `pipeline.dry_run_output_dir`), including its review queue, runs and research briefs |
 | `data/history/<date>/<niche>.json` | research history snapshots (server; gitignored, never sent to a model) |
 | `data/inbox_rejected/` | uploads the server did not use, each with a `.reason.txt` (server; gitignored) |
+| `data/spend/ledger.jsonl` | estimated cost of every paid API call (gitignored) |
+| `data/events.jsonl` | what the server did, one line per event; the daily log is built from it (server; gitignored) |
 
 `output/` is gitignored. In GitHub Actions it becomes a workflow artifact.
 
@@ -57,7 +59,8 @@ python -m pipeline status [--out DIR]
 - Reruns are cheap. An item that already exists for a brief (same shop and `brief_id`, any date) is reused at its current status, so a rerun only retries what failed; reused items count toward `--max-items`. `--regenerate` rebuilds them (new images, new API spend) and resets an earlier approval. Items with a real Etsy draft, or rejected in the review queue, are never rebuilt.
 - Without `generate` in `--stages`, the later stages work on every item in `--out`, filtered by `--niche` / `--shop`; `--max-items` then caps the listings written. A real `--stages listing,publish` run also re-lists items whose copy the publisher would refuse as stale (dry-run template text, or written before the shop name was set).
 - Live runs skip a niche's newest brief file when it is older than `pipeline.max_brief_age_days` (6 days), so the weekly Action drafts each committed brief file only once. Files named with `--brief` are exempt.
-- Exit status: `0` every stage that ran succeeded (items waiting for review count as success), `1` an item, brief or stage failed, `2` setup error (missing secret, no Etsy tokens, safety-layer refusal). A setup error stops that stage instead of being retried once per item.
+- **No duplicates.** A brief is skipped when the shop already has an item of the same theme made in the last 60 days, or one with an Etsy draft at any age (`pipeline.theme_cooldown_days`). `--regenerate` lifts the 60 days, never a real draft.
+- Exit status: `0` every stage that ran succeeded (items waiting for review count as success; so does a run stopped by the spending cap), `1` an item, brief or stage failed, `2` setup error (missing secret, no Etsy tokens, safety-layer refusal, a spending log that cannot be written). A setup error stops that stage instead of being retried once per item.
 
 ## Research inputs
 Download CSV exports from eRank, EverBee or a similar licensed tool into `data/research_inputs/`. They are licensed data: they stay on your machine (gitignored) and are never committed or passed to a model.
@@ -65,7 +68,9 @@ Download CSV exports from eRank, EverBee or a similar licensed tool into `data/r
 - Name a file `<niche>__anything.csv` (for example `stickers__erank.csv`) to force its niche. Otherwise each row's niche comes from `research.niche_rules`.
 - `own_shop*.csv` holds our own shop's stats (`python -m publisher own-stats` writes one). `trends*.csv` holds off-Etsy trend signals. Both only boost demand and are never counted as listings.
 
-`python -m research [--niche N] [--inputs DIR] [--out DIR] [--date D] [--history DIR] [--dry-run] [--demo]` writes `data/briefs/<niche>-<date>.json` (and, with `--history`, a history snapshot per niche in `DIR/<date>/`). A brief pattern needs at least 10 listings from at least 3 different shops (`research.min_shops_per_pattern`), and briefs contain no shop names, listing URLs, images or verbatim titles. Commit the brief files.
+`python -m research [--niche N] [--inputs DIR] [--out DIR] [--date D] [--history DIR] [--stage auto|discovery|refined] [--dry-run] [--demo]` writes `data/briefs/<niche>-<date>.json` (and, with `--history`, a history snapshot per niche in `DIR/<date>/`). A brief pattern needs at least 10 listings from at least 3 different shops (`research.min_shops_per_pattern`), and briefs contain no shop names, listing URLs, images or verbatim titles. Commit the brief files.
+- Only exports received in the last 35 days count (`research.window_days`). Older ones are ignored, and the server deletes them after 180 days (`research.keep_days`).
+- **Refined stage.** Once the shop has 20 real Etsy drafts, research gets stricter by itself (`research.stage: auto`): a theme then needs 15 listings from 3 shops, must show up in exports from 3 different weeks, and its demand may not be falling. Our own sales count for more. The first stage, "discovery", uses the rules above. Settings: `research.stage` and `research.stages.refined`.
 
 ## Stage commands
 Each stage runs on its own. The generator, QA, listing and `publisher publish` commands take `--out DIR` (default `output/`; with `--dry-run`, `output/dry-run/`) and `--settings FILE`. For `research`, `--out` is the briefs folder.
@@ -136,13 +141,21 @@ Botsy can run on its own on a small AWS Lightsail server (Ubuntu 24.04, 4 GB pla
 1. Every Sunday the server writes a **search list**. The Botsy helper on your Windows PC saves it as `Documents\Botsy\search-list.txt` and opens it. Search each line in EverBee (type only the words before the brackets) and click **Export CSV**.
 2. The helper notices the new file in your Downloads folder and uploads it to the server. It only ever sends EverBee or eRank exports, never any other CSV.
 3. The server checks the upload, researches, makes the items and creates Etsy **drafts** (practice drafts until you turn live mode on). You approve every draft in Etsy.
-4. The helper also copies the server's report to `Documents\Botsy\status.txt` every hour.
+4. The helper also copies the server's report to `Documents\Botsy\status.txt` every hour, and the **daily log** (`daily-log.txt`: what happened overnight, what is waiting for you, what it cost) every morning.
+5. If you want, the server also posts short messages to a **Discord** channel: new drafts, items waiting for your review, problems, the spending cap, the daily log and the weekly search list.
 
 Set it up in this order. Both guides go step by step:
 - **The server:** [`deploy/lightsail/README.md`](deploy/lightsail/README.md). It ends with `sudo botsy-setup`, the one command for updating the server later.
 - **Your Windows PC:** [`windows/README.md`](windows/README.md). The installer prints one line to paste on the server: `sudo botsy-setup --upload-pubkey "..."`.
 
-The server starts in **test mode** (`service.live: false` in `config/settings.yaml`): no API calls and no Etsy drafts. "Go live" in the server guide says how to switch. The exact behaviour is in `docs/SERVER.md`.
+The server starts in **test mode** (`service.live: false`): no API calls and no Etsy drafts. The exact behaviour is in `docs/SERVER.md`.
+
+**The server's own settings** live in `/opt/botsy/config/settings.local.yaml` on the server, not on GitHub. Updates never change that file, and it wins over `config/settings.yaml`. Edit it with `sudo -u botsy nano /opt/botsy/config/settings.local.yaml`:
+- **Go live:** change `live: false` to `live: true` under `service:` (server guide, step 9).
+- **Spending cap:** to cap AI spending, set `spend.monthly_cap_usd` (dollars per month) in config/settings.local.yaml: change `monthly_cap_usd: null` to, for example, `monthly_cap_usd: 25`. Keep the two spaces in front of it so it stays under `spend:` (step 12). At 80% you get a warning; at the cap, new images and listing text wait until next month. `botsy service spend` shows the estimate so far; your Anthropic and Google bills are what count.
+- Values that would loosen a compliance rule (fewer than 10 listings or 3 shops per pattern, anything under `compliance:`, `listing.always_disclose_ai: false`) are ignored with a warning.
+
+**Discord (optional):** make a webhook in Discord (channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL), put it in `/opt/botsy/.env` as `DISCORD_WEBHOOK_URL=...`, then type `botsy service notify-test` (step 11). The link is a secret: it lives only in `.env`. Between 22:00 and 07:00 only urgent messages (problems, the spending cap) are sent; the rest is in the morning's daily log (step 13).
 
 ### Server commands: `python -m service`
 On the server, type `botsy service <command>`; that runs it as the `botsy` account. Options: `--settings FILE`, `--inbox DIR`, `--date YYYY-MM-DD`.
@@ -152,10 +165,14 @@ On the server, type `botsy service <command>`; that runs it as the `botsy` accou
 | `research` | research every shop niche, with history snapshots in `data/history/` |
 | `run` | generate, QA, listing and draft for every shop (a dry run unless `service.live` is `true`) |
 | `searchlist` | write this week's `search-list.txt` for the helper to fetch |
-| `tick` | ingest, then research and run when a new export arrived, then the status files (`--force`: run even without a new upload; `--own-stats`: first read our own shop's stats, live mode only) |
+| `tick` | ingest, then research and run when a new export arrived, then tidy old files, write the status files and send one Discord message (`--force`: run even without a new upload; `--own-stats`: first read our own shop's stats, live mode only) |
 | `status` | rebuild `status.txt` and show it |
+| `digest [--hours N]` | write `daily-log.txt` (the overnight log) and post it to Discord |
+| `spend [--month YYYY-MM]` | this month's estimated API spending |
+| `notify-test` | send a test message to Discord and say whether it worked |
+| `cleanup` | remove old rejected uploads, old exports and old practice items now (every tick does this too) |
 
-The server runs these by itself: `tick` when an upload arrives, `tick --force --own-stats` every day at 06:17, and `searchlist` every Sunday at 18:07. Exit codes: 0 ok, 1 something failed (see `status.txt`), 2 setup problem, 3 another command was still running after 30 minutes.
+The server runs these by itself: `tick` when an upload arrives, `tick --force --own-stats` every day at 06:17, `digest` every day at 07:07, and `searchlist` every Sunday at 18:07. Exit codes: 0 ok, 1 something failed (see `status.txt`), 2 setup problem, 3 another command was still running after 30 minutes.
 
 ## Layout
 | Folder | Role |
@@ -166,9 +183,9 @@ The server runs these by itself: `tick` when an upload arrives, `tick --force --
 | `listing/` | Title, 13 tags, description, alt text, AI disclosure |
 | `publisher/` | Etsy Open API v3, own shop, drafts only |
 | `pipeline/` | Runs the stages in order; `python -m pipeline` |
-| `service/` | The 24/7 server: inbox, ticks, status files, weekly search list; `python -m service` |
+| `service/` | The 24/7 server: inbox, ticks, status files, weekly search list, daily log, Discord, cleanup; `python -m service` |
 | `deploy/lightsail/` | Server setup (`setup.sh`, installed as `botsy-setup`), SSH rules and systemd units |
 | `windows/` | The Botsy helper for your PC (`botsy_helper.py`) and its installer |
-| `core/` | Shared settings, compliance (blocklist, AI disclosure, brief checks), Etsy limits and item helpers |
+| `core/` | Shared settings, compliance (blocklist, AI disclosure, brief checks), Etsy limits, item helpers, the spending tracker and the event journal |
 | `config/` | `settings.yaml`, trademark blocklist, AI disclosure |
 | `data/samples/` | synthetic exports for dry runs and CI |

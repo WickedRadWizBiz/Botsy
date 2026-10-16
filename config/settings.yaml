@@ -72,7 +72,7 @@ research:
   briefs_dir: data/briefs
   source_tool: auto              # auto-detect eRank / EverBee columns via aliases (research/columns.py)
   min_listings_per_pattern: 10   # compliance: never brief from fewer than 10 listings (values < 10 are raised to 10)
-  min_shops_per_pattern: 3        # listing-level support must come from >= 3 different shops (counted, never saved)
+  min_shops_per_pattern: 3       # listing-level support must come from >= 3 different shops (counted, never saved); values below 3 are raised to 3
   briefs_per_niche: 5            # top N non-overlapping themes per niche become briefs
   keywords_per_brief: 10
   column_overrides: {}           # canonical column -> header(s), e.g. {search_volume: "Searches (US)", sales: ["Est. Mo. Sales"]}
@@ -96,6 +96,25 @@ research:
   history:
     min_rows: 3                  # a near-miss theme needs this many clean rows of one kind (listing rows, or counted keyword rows); empty = default
     max_themes: 200              # themes kept per snapshot, best demand first (qualified themes are never cut first); empty = default
+  # Evidence window (docs/SERVER.md section 12): briefs use only market exports and trend files
+  # received within window_days of the run date (date from the ingest name, else
+  # data/research_inputs/.ingested.json, else the file time). Own-shop stats are not windowed.
+  window_days: 35                # empty = default
+  keep_days: 180                 # the service deletes accepted exports received longer ago (never fewer
+                                 # days than window_days); their sha256 stays in .ingested.json marked "deleted"
+  # Research stage (docs/SERVER.md section 8): auto | discovery | refined. auto = refined once the
+  # shop has stages.refined.after_drafts real Etsy drafts (publish.json with listing_id, not dry_run).
+  # Discovery uses min_listings_per_pattern / min_shops_per_pattern / own_shop_boost above.
+  stage: auto
+  stages:
+    refined:
+      after_drafts: 20
+      min_listings: 15           # brief support, patterns and tags; never below 10 or min_listings_per_pattern
+      min_shops: 3               # never below 3 or min_shops_per_pattern
+      min_weeks_seen: 3          # briefs only: seen (fresh_rows >= history.min_rows) in this many ISO weeks, this run included
+      demand_not_falling: true   # briefs only: refuse when listing (or keyword) rows or demand rank fell by more than falling_tolerance
+      falling_tolerance: 0.10
+      own_shop_boost: 0.25       # used instead of research.own_shop_boost (0.1) in the refined stage
   # Not set here on purpose (lists in YAML replace the defaults): excluded_terms (platform and
   # planner brands), extra_blocked_terms / extra_review_terms (a stricter-only supplement to
   # config/trademark_blocklist.txt) live in research/defaults.py DEFAULTS.
@@ -138,9 +157,15 @@ pipeline:
   max_brief_age_days: 6          # live runs skip the newest brief file of a niche older than this (from the
                                  # date in its name), so the weekly Action drafts each committed brief file
                                  # once. Keep it below 7. null = off. Files named with --brief are exempt.
+  theme_cooldown_days: 60        # skip a brief when the shop already has an item with the same theme made
+                                 # within this many days, or one with a real Etsy draft at any age
+                                 # (docs/SERVER.md section 13). null or 0 = only real drafts block.
+                                 # --regenerate lifts the days, never a real draft. Not a number = 60.
 
-# --- 24/7 server: python -m service (docs/SERVER.md). Defaults: service/paths.py and
-# service/searchlist.py DEFAULTS. Research history folder: research.history_dir above. ---
+# --- 24/7 server: python -m service (docs/SERVER.md). Defaults: service/paths.py,
+# service/searchlist.py and service/cleanup.py DEFAULTS. Research history folder: research.history_dir above.
+# On the server, put server-only values (service.live: true, spend.monthly_cap_usd) in
+# config/settings.local.yaml, which setup.sh creates and never overwrites (docs/SERVER.md section 14). ---
 service:
   inbox_dir: /srv/botsy-inbox      # SFTP chroot of botsy-upload (root-owned, mode 755)
   incoming_subdir: incoming        # the Windows helper uploads <name>.part, then renames it
@@ -155,6 +180,15 @@ service:
   settle_max_s: 3600               # never wait longer than this
   max_rounds: 3                    # research + run again for uploads that finish during a run
   status_keep_days: 35             # tick records kept in outbox/status.json
+  rejected_max_mb: 200             # data/inbox_rejected/ holds at most this much; oldest removed first (0 = no cap)
+  rejected_keep_days: 30           # rejected uploads and their reason files older than this are removed (0 = keep).
+                                   # Only files ingest named <YYYY-MM-DD>-<name> are ever removed.
+  dry_run_keep_days: 14            # output/dry-run/ practice items and run summaries older than this are removed (0 = keep)
+  # Event journal and memories between ticks (docs/SERVER.md section 9; defaults: core/events.py, service/tick.py)
+  events_file: data/events.jsonl   # what the server did, one JSON line per event (the daily log is built from it)
+  events_max_mb: 5                 # rotate to events-1.jsonl ... events-5.jsonl at this size
+  events_keep: 5                   # rotated event files kept (copies beyond this are removed at the next rotation)
+  state_file: data/.service_state.json   # last research stage, spending messages, review holds and problems already sent to Discord
   search_list:                     # outbox/search-list.txt, written every Sunday (docs/SERVER.md section 4)
     max_per_niche: 6               # search lines per niche; empty = default
     recheck_weeks: 2               # a qualified theme not seen in history for this long goes back on the list
@@ -168,6 +202,53 @@ service:
       activity_sheets: activity sheets
 # The Windows helper has no section here: it runs on the PC and reads %APPDATA%\Botsy\helper.json
 # (defaults: DEFAULTS in windows/botsy_helper.py; see windows/README.md).
+
+# --- Discord messages and the daily log (docs/SERVER.md section 11; defaults: service/notify.py) ---
+notify:
+  discord:
+    enabled: true                  # also needs DISCORD_WEBHOOK_URL in .env (deploy/lightsail/README.md, step 11)
+    events: [draft_created, held_for_review, export_rejected, budget_reached, spend_warning,
+             token_expiring, stage_changed, error, search_list_written]   # kinds that post right away (one message per tick)
+    digest: true                   # post the daily log (python -m service digest, every day at 07:07)
+    timeout_s: 10
+    max_retry_wait_s: 60           # longest wait for Discord's retry_after on HTTP 429
+  quiet_hours: ["22:00", "07:00"]  # server local time; other messages wait for the morning's daily log
+  urgent: [budget_reached, error]  # sent even during quiet hours
+
+# --- Spending tracker (docs/SERVER.md section 10; defaults: core/spend.py). Costs are estimates;
+# your provider bills are what count. ---
+spend:
+  ledger_file: data/spend/ledger.jsonl   # one line per paid API call (gitignored)
+  monthly_cap_usd: null          # dollars per calendar month (UTC), for example 25. null or 0 = no cap.
+                                 # At the cap, paid AI calls stop until next month or until you raise it.
+                                 # With a cap set, paid calls also pause if the ledger cannot be written.
+                                 # On the server, set it in config/settings.local.yaml.
+  warn_at: 0.8                   # a warning goes out once a month when spending passes 80% of the cap
+  prices_max_age_days: 180       # the log warns when prices.checked is older than this
+  prices:
+    checked: "2026-10-16"        # the date the prices below were last checked (YYYY-MM-DD)
+    # A dated snapshot of a listed model (claude-opus-5-5-20261001) uses that model's price.
+    # Any other model not listed here is charged at the highest rates listed for its provider.
+    # Anthropic, USD per million tokens. Source: platform.claude.com/docs/en/about-claude/pricing
+    # and the claude-api skill model table, checked 2026-10-16. Thinking tokens are billed as output
+    # tokens (usage.output_tokens includes them). Opus 5.5 cache reads are $0.20 per million; the
+    # listing stage sends no cache_control, so cache prices never apply. With the refusal fallback,
+    # each model that ran is recorded at its own price (usage.iterations).
+    anthropic:
+      claude-opus-5-5: {input_per_mtok: 4.00, output_per_mtok: 20.00}
+      claude-opus-5: {input_per_mtok: 5.00, output_per_mtok: 25.00}     # possible refusal fallback
+      claude-opus-4-8: {input_per_mtok: 5.00, output_per_mtok: 25.00}   # possible refusal fallback
+      claude-fable-5-1: {input_per_mtok: 10.00, output_per_mtok: 50.00}
+      claude-sonnet-5-5: {input_per_mtok: 2.00, output_per_mtok: 10.00}
+      claude-haiku-5-5: {input_per_mtok: 0.10, output_per_mtok: 0.50}   # prompts up to 100K tokens
+    # Google, USD. Source: ai.google.dev/gemini-api/docs/pricing (Gemini API paid tier, standard,
+    # not batch), checked 2026-10-16. Images are $30 per million output tokens: 1,120 / 1,680 /
+    # 3,780 tokens per 1K / 2K / 4K image. Vertex AI prices may differ.
+    google:
+      gemini-nano-banana-2.1:
+        input_per_mtok: 1.50     # text prompt
+        output_per_mtok: 7.50    # text and thinking output
+        per_image: {"1K": 0.0336, "2K": 0.0504, "4K": 0.1134}   # Google rounds 4K to $0.113
 
 # --- Per-stage tuning. Defaults live in each module's DEFAULTS dict; these override them. ---
 

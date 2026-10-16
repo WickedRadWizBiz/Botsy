@@ -32,11 +32,16 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Server working state (docs/SERVER.md): research history, rejected uploads, lock
+# Server working state (docs/SERVER.md): research history, rejected uploads, lock,
+# spending ledger, event journal and the service's memories between ticks
 data/history/
 data/inbox_rejected/
 data/.service.lock
 data/research_inputs/.ingested.json
+data/spend/
+data/events.jsonl
+data/events-*.jsonl
+data/.service_state.json
 
 # Server-only settings overrides (docs/SERVER.md section 14)
 config/settings.local.yaml

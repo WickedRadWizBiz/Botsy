@@ -590,5 +590,7 @@ def test_brief_doc_shop_minimum():
     assert problems == ["brief 'b1' has shop_count 2 < 3"]  # b2 is keyword-backed: no shops
     doc["min_shops_per_pattern"] = 0
     assert any("min_shops_per_pattern" in p for p in doc_problems(doc, guard))
+    doc["min_shops_per_pattern"] = 2                 # below the user's 3-shop floor
+    assert any("min_shops_per_pattern is 2" in p for p in doc_problems(doc, guard))
     del doc["min_shops_per_pattern"]  # older brief files are not checked for shops
     assert doc_problems(doc, guard) == []

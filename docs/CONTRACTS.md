@@ -17,11 +17,14 @@ Shared helpers live in `core/`. Use them instead of local copies:
 - `core.compliance`: `Blocklist.load().check(*texts)` / `.check_obj(obj)` → `ComplianceResult(blocked, flagged)` (each string is checked on its own, so a term never spans two fields), `normalize(text)` (the text form the blocklist matches on: lowercase, no accents, ™/℠/©/® as spaces, no zero-width or soft-hyphen characters, every Unicode dash as `-`, Cyrillic/Greek look-alikes as Latin, single spaces), `iter_strings(obj)`, `find_urls(obj)`, `load_ai_disclosure(shop_name)`, `has_ai_disclosure(text, shop_name)`.
 - `core.briefs`: the brief-document check research runs before writing and the generators and pipeline rerun on every brief file they read: `HARD_FLOOR` (10), `Guard(shop_names, titles, blocklist)`, `doc_problems(doc, guard)`, `validate_brief_doc(...)` (raises `BriefComplianceError` with `.problems`). `research.guard` re-exports it.
 - `core.etsy`: Etsy's limits, shared by every stage: `MAX_FILES` 5, `MAX_FILE_BYTES` 20,000,000, `MAX_FILE_NAME_CHARS` 70, `FILE_NAME_RE`, `TITLE_MAX_CHARS` 140, `TAGS_MAX` 13, `TAG_MAX_CHARS` 20, `ALT_TEXT_MAX_CHARS` 500, `title_char_problems()`, `tag_char_problems()`. The settings keys that repeat them (`qa.etsy_*`, `publisher.max_file*`, `listing.*_max_chars`) default to these.
+- `core.spend` (docs/SERVER.md section 10): `check_budget(kind, settings)` before every paid call (raises `BudgetExceeded`, or `LedgerUnavailable` when a cap is set and the ledger cannot be written), `record(...)` after it, `budget_state()`, `month_to_date()`, `entries()`, `summarize()`, `table()`. Dry runs and fake clients never record.
+- `core.events` (docs/SERVER.md section 9): `emit(kind, *, settings=None, **fields)` (never raises) and `read(since, until=None, kinds=None, *, settings=None, path=None)`, the event journal the service's daily log is built from.
 - `core.items`:
   - ids and dates: `slugify(text)`, `check_date()` (from `core.config`), `new_item_id(date, niche, theme, salt)` (`<date>-<niche>-<theme-slug>-<4 hex>`; generators pass the `brief_id` as salt), `ITEM_ID_RE` / `valid_item_id(id)`.
   - folders: `output_root(settings)`, `dry_run_root(settings)`, `stage_out_root(out, settings, dry_run=)` (`--out`, else the dry-run folder for a dry run, else `output_root`), `review_root(settings)`, `item_dir(item_id, root)`, `iter_item_dirs(root)` (folders with a `manifest.json`, sorted), `review_dir_for_root(out_root, settings)` (settings `paths.review_dir` for the configured output dir, else `<out_root>/review`), `review_dir_for(item_dir, settings)` (the same rule for one item), `review_entry_path(item_id, review_dir)` (refuses ids that could leave the folder), `repo_relative(path)` (POSIX path relative to the repo, else absolute).
   - JSON: `read_json()`, `write_json()` (atomic: temp file `.<name>.*.tmp` + rename), `read_manifest()`, `write_manifest()`, `set_status()`.
   - `content_count(manifest, fallback=None)`: how many designs the buyer gets (pack `activity_pages` / `pages` / `stickers`; for stickers without `pack.stickers`, the transparent PNG assets, else the ZIP `count`s summed over all parts; else the first PDF's pages). QA's photos and the listing copy both use it.
+  - `count_drafts(out_root=None, settings=None)`: real Etsy drafts (item folders under the configured output dir whose `publish.json` has a `listing_id` and is not a dry run); the research stage uses it.
   - `clear_downstream(item_dir)`: after an item is regenerated, removes `qa_report.json`, `listing.json`, `mockups/` and a dry-run `publish.json`, and sets an `approved` review entry back to `pending` (`previous_status`, `reopened`, `content_digest: null`); a rejection stays. Refuses (RuntimeError) once a real `publish.json` exists (an unreadable one counts as real).
 
 Rules that apply to all stages:
@@ -41,7 +44,8 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
   "niche": "coloring_pages",
   "created": "2026-10-15",
   "shop_id": "main",
-  "sources": [{"tool": "erank", "file": "erank-keywords-2026-10-14.csv", "rows": 250}],
+  "stage": "discovery",
+  "sources": [{"tool": "erank", "file": "erank-2026-10-14-1a2b3c4d.csv", "rows": 250, "received": "2026-10-14"}],
   "listing_count": 250,
   "min_listings_per_pattern": 10,
   "min_shops_per_pattern": 3,
@@ -72,14 +76,16 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
 }
 ```
 - Every `patterns.*` entry and every brief has `listing_count >= min_listings_per_pattern` (from settings, at least 10).
-- Support from listing rows must also span `min_shops_per_pattern` different shops (settings `research.min_shops_per_pattern`, 3). Shops are counted through an opaque hash in memory; only the count (`shop_count`) is written. Support from keyword-tool rows (competition >= 10 listings each) carries no shop count.
+- Support from listing rows must also span `min_shops_per_pattern` different shops (settings `research.min_shops_per_pattern`, at least 3; lower values are raised to 3, and `core.briefs` refuses a file that declares fewer). Shops are counted through an opaque hash in memory; only the count (`shop_count`) is written. Support from keyword-tool rows (competition >= 10 listings each) carries no shop count.
+- `stage` is the research stage that wrote the file, `discovery` or `refined` (docs/SERVER.md section 8). A refined file uses that stage's thresholds (`min_listings_per_pattern` 15) and also records `min_weeks_seen` (3); each refined brief's `evidence` gains `weeks_seen` (ISO weeks with fresh rows, this run included) and `trend` (listing-row change against the newest earlier history snapshot, or null).
+- `sources[].received` is the day the export arrived (docs/SERVER.md section 12); only exports received within `research.window_days` (35) of `created` count.
 - A brief with any blocked term is dropped. A brief with a flagged term is kept with `needs_review: true`.
 - `activity_types` is used only for `activity_sheets` and holds a subset of `[maze, word_search, tracing, dot_to_dot]`.
 - A keyword-level export without a competition (matching listings) column counts no listings, so such a file alone produces no briefs (research logs a warning).
 
 ## 2. Item manifest: `output/<item_id>/manifest.json`
 
-Written by the generators: `generators.generate(brief, brief_file=..., shop_id=..., out_root=..., date=..., dry_run=..., client=...) -> list[Path]` returns item dirs. `generators.ImageCapExceeded` (the run's image budget is spent) and `generators.ImageGenerationError` are the errors a caller may handle. `core.render` has `page_size_points()`, `pdf_info()` and `render_pdf_pages()` for PDF work.
+Written by the generators: `generators.generate(brief, brief_file=..., shop_id=..., out_root=..., date=..., dry_run=..., client=...) -> list[Path]` returns item dirs. `generators.ImageCapExceeded` (the run's image budget is spent), `generators.ImageGenerationError`, and from the Gemini client `core.spend.BudgetExceeded` (the monthly spending cap) and `core.spend.LedgerUnavailable` are the errors a caller may handle. `core.render` has `page_size_points()`, `pdf_info()` and `render_pdf_pages()` for PDF work.
 
 ```json
 {
@@ -220,10 +226,13 @@ Written by `pipeline.run(...)` (`python -m pipeline run`) after every run; earli
                                               "publish": {"ok": true, "detail": "needs review ...", "skipped": true}}},
  "errors": [], "setup_errors": [], "notes": ["max_items=10: 5 brief(s) not used this run"],
  "awaiting_review": {"2026-10-15-stickers-frogs-2f05": "needs review (review status: pending); approve with ..."},
+ "budget_reached": false,
  "path": "output/runs/run-2026-10-15-131702.json"}
 ```
 - `items.<id>.<stage>` has `ok`, `detail` and, for an item the stage left alone (reused, rejected, waiting for review, a listing preview on a real item in a dry run), `skipped: true`. A broken item folder gets a `manifest` record.
+- Theme cooldown (docs/SERVER.md section 13): a brief skipped because the shop already has an item of the same theme gets a `generate` record under the id it would have made, with `skipped: true`, `cooldown: <blocking item id>` and the detail `theme cooldown: <item id>` (`format_summary` shows `generate: skip (theme cooldown: <item id>)`). It uses no `max_items` slot.
+- Spending cap (docs/SERVER.md section 10): `budget_reached` is always present. When a stage raises `core.spend.BudgetExceeded`, that item's record has `ok: false` and `budget: true` (`format_summary` shows `wait`), `budget_reached` becomes true and no new paid work (images, model listing copy) starts for the rest of the run; QA and drafts of finished items go on. `core.spend.LedgerUnavailable` is a setup error (that stage stops).
 - `errors` are brief or stage failures, `setup_errors` are missing secrets, Etsy auth or safety-layer refusals (the stage stopped), and `notes` are informational.
 - The listing step lists what `listing.needs_listing()` selects; the publish step asks `publisher.review_wait()` first and records waiting items under `awaiting_review`.
 - Live runs skip a niche's newest brief file when it is older than `pipeline.max_brief_age_days` (6) days; files named with `--brief` are exempt.
-- `pipeline.exit_code(summary)`: 2 with any `setup_errors`, 1 with any `errors` or any `ok: false` record, else 0.
+- `pipeline.exit_code(summary)`: 2 with any `setup_errors` (including a spending log that cannot be written, and unreadable settings in the CLI), 1 with any `errors` or any `ok: false` record except `budget: true` ones, else 0. A run stopped only by the spending cap exits 0.
