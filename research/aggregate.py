@@ -3,7 +3,10 @@
 Support rule (compliance, CLAUDE.md): a pattern counts only rows that stand for
 real listings.
 - Listing-level rows (one row per competitor listing) always count. A pattern
-  needs >= T distinct listing rows.
+  needs >= T distinct listing rows from >= S distinct shops (S is
+  research.min_shops_per_pattern), so one seller's catalog is never a pattern.
+  Shops are compared by an opaque hash of the name, never written out; rows from an
+  export without shop names belong to no shop and cannot meet S > 1.
 - Keyword-level rows (one row per search term, no listings) count only when the
   row's competition (number of listings matching the term) is known and >= T. A row
   with unknown competition does not count, and neither does any row of an export
@@ -62,6 +65,7 @@ class Row:
     favorites: float | None = None
     reviews: float | None = None
     search_volume: float | None = None
+    shop: str = ""                            # opaque hash of the shop name ("" = unknown); never written out
 
 
 @dataclass
@@ -89,6 +93,10 @@ class Theme:
         return sum(1 for r in self.rows if r.kind == "keyword")
 
     @property
+    def shop_count(self) -> int:
+        return shop_count(self.rows)
+
+    @property
     def needs_review(self) -> bool:
         return bool(self.flagged)
 
@@ -106,10 +114,20 @@ class Phrase:
     from_keyword_tool: bool = False
 
 
-def supported(rows, threshold: int) -> bool:
-    listing = sum(1 for r in rows if r.kind == "listing")
+def shop_count(rows) -> int:
+    """Distinct known shops among listing rows."""
+    return len({r.shop for r in rows if r.kind == "listing" and r.shop})
+
+
+def listing_supported(rows, threshold: int, min_shops: int = 1) -> bool:
+    listing = [r for r in rows if r.kind == "listing"]
+    return len(listing) >= threshold and (min_shops <= 1 or shop_count(listing) >= min_shops)
+
+
+def supported(rows, threshold: int, min_shops: int = 1) -> bool:
+    rows = list(rows)
     keyword = sum(1 for r in rows if r.kind == "keyword")
-    return listing >= threshold or keyword >= threshold
+    return listing_supported(rows, threshold, min_shops) or keyword >= threshold
 
 
 def median(values) -> float | None:
@@ -139,7 +157,7 @@ def find_themes(rows: list[Row], threshold: int, cfg: dict, guard: Guard, rules:
     for key in sorted(index):
         support = index[key]
         clean_rows = [r for r in support if not r.blocked]
-        if not supported(clean_rows, threshold):
+        if not supported(clean_rows, threshold, cfg["min_shops_per_pattern"]):
             continue
         name = _surface(surfaces[key])
         if not guard.ok(name) or rules.has_excluded(name):
@@ -221,13 +239,13 @@ def select_distinct(themes: list[Theme], limit: int) -> list[Theme]:
 
 # ---------------------------------------------------------------- other patterns
 
-def tally(rows: list[Row], labels_of, threshold: int) -> list[tuple[str, int]]:
+def tally(rows: list[Row], labels_of, threshold: int, min_shops: int = 1) -> list[tuple[str, int]]:
     """[(label, supporting rows)] for labels that meet the support rule."""
     by_label: dict[str, list[Row]] = defaultdict(list)
     for r in rows:
         for label in labels_of(r):
             by_label[label].append(r)
-    out = [(label, len(rs)) for label, rs in by_label.items() if supported(rs, threshold)]
+    out = [(label, len(rs)) for label, rs in by_label.items() if supported(rs, threshold, min_shops)]
     return sorted(out, key=lambda x: (-x[1], x[0]))
 
 
@@ -240,14 +258,14 @@ def bucket_label(n: int, edges: list[int]) -> str:
     return f"{lo}+"
 
 
-def page_count_patterns(rows, threshold, edges) -> list[dict]:
+def page_count_patterns(rows, threshold, edges, min_shops: int = 1) -> list[dict]:
     order = {bucket_label(e, edges): i for i, e in enumerate(edges)}
-    counted = tally(rows, lambda r: [bucket_label(r.count, edges)] if r.count else [], threshold)
+    counted = tally(rows, lambda r: [bucket_label(r.count, edges)] if r.count else [], threshold, min_shops)
     return [{"bucket": b, "listing_count": n}
             for b, n in sorted(counted, key=lambda x: order.get(x[0], len(order)))]
 
 
-def price_band_patterns(rows, threshold, edges) -> list[dict]:
+def price_band_patterns(rows, threshold, edges, min_shops: int = 1) -> list[dict]:
     """Bands [edges[i], edges[i+1]) in USD; the last band is open-ended."""
     bands = list(zip(edges, list(edges[1:]) + [None]))
 
@@ -259,7 +277,7 @@ def price_band_patterns(rows, threshold, edges) -> list[dict]:
                 return [_band_name(lo, hi)]
         return []
 
-    counts = dict(tally(rows, band_of, threshold))
+    counts = dict(tally(rows, band_of, threshold, min_shops))
     out = []
     for lo, hi in bands:
         name = _band_name(lo, hi)
@@ -276,8 +294,9 @@ def _band_name(lo, hi) -> str:
 # ---------------------------------------------------------------- keywords
 
 def collect_phrases(rows: list[Row], threshold: int, guard: Guard, rules: TextRules,
-                    max_words: int = 8) -> list[Phrase]:
-    """Keyword-tool phrases, plus tags used by >= threshold distinct listing rows.
+                    max_words: int = 8, min_shops: int = 1) -> list[Phrase]:
+    """Keyword-tool phrases, plus tags used by >= threshold distinct listing rows
+    from >= min_shops shops.
 
     Keyword-tool phrases are rows of a keyword-level export. A keyword column in a
     listing-level export holds per-listing data, so the pipeline passes it as a tag
@@ -307,7 +326,7 @@ def collect_phrases(rows: list[Row], threshold: int, guard: Guard, rules: TextRu
     keep = []
     for text in sorted(phrases):
         p = phrases[text]
-        if not p.from_keyword_tool and sum(1 for r in p.rows.values() if r.kind == "listing") < threshold:
+        if not p.from_keyword_tool and not listing_supported(p.rows.values(), threshold, min_shops):
             continue
         if len(text.split()) > max_words or len(text) > 60:
             continue
@@ -324,7 +343,7 @@ def phrase_order(p: Phrase):
 
 
 def keyword_clusters(themes: list[Theme], phrases: list[Phrase], threshold: int,
-                     limit: int, per_cluster: int) -> list[dict]:
+                     limit: int, per_cluster: int, min_shops: int = 1) -> list[dict]:
     """Group phrases by the head word (last word) of a theme they contain.
 
     "farm animal coloring pages" and "barn animals" share the head "animal", so
@@ -340,12 +359,13 @@ def keyword_clusters(themes: list[Theme], phrases: list[Phrase], threshold: int,
         seen_heads.add(h)
         members = sorted((p for p in phrases if h in p.grams), key=phrase_order)
         rows = {k: r for p in members for k, r in p.rows.items()}
-        if not members or not supported(rows.values(), threshold):
+        if not members or not supported(rows.values(), threshold, min_shops):
             continue
         clusters.append({
             "label": theme.name,
             "keywords": [p.text for p in members[:per_cluster]],
             "listing_count": len(rows),
+            "shop_count": shop_count(rows.values()),
             "search_volume": int(round(sum(p.search_volume for p in members))),
         })
     clusters.sort(key=lambda c: (-c["search_volume"], -c["listing_count"], c["label"]))

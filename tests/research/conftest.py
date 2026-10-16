@@ -31,13 +31,19 @@ def write_csv(path: Path, headers, rows, encoding="utf-8", preamble=(), delimite
 _ids = iter(range(5_000_000_000, 6_000_000_000))
 
 
-def listing_rows(theme_title: str, n: int, shop="MaplePrintCo", price="$3.99", sales=20,
+SHOPS = ("MaplePrintCo", "BirchPaperCo", "CedarInkShop")
+
+
+def listing_rows(theme_title: str, n: int, shop=None, price="$3.99", sales=20,
                  suffix="Coloring Pages for Kids, Printable PDF"):
-    """n EverBee-style rows whose titles differ only by a set number."""
+    """n EverBee-style rows whose titles differ only by a set number. By default the rows
+    rotate over three shops (research.min_shops_per_pattern is 3); pass `shop` to put
+    every row in one shop."""
     rows = []
     for i in range(1, n + 1):
         lid = next(_ids)
-        rows.append([f"{theme_title} {suffix}, Set {i}", shop, price, sales, 5, "1,200",
+        row_shop = shop if shop is not None else SHOPS[i % len(SHOPS)]
+        rows.append([f"{theme_title} {suffix}, Set {i}", row_shop, price, sales, 5, "1,200",
                      "3 months", f"{theme_title.lower()} coloring", f"https://www.etsy.com/listing/{lid}/x",
                      f"https://i.etsystatic.com/1/il_570xN.{lid}.jpg"])
     return rows

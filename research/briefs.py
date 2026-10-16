@@ -83,20 +83,21 @@ def build_doc(niche: str, rows: list[Row], sources: list[dict], *, settings: dic
               shop: dict, shop_id: str, date: str, guard: Guard, rules: TextRules,
               own: list[Signal] = (), trends: list[Signal] = ()) -> dict:
     t = cfg["min_listings_per_pattern"]
+    s = cfg["min_shops_per_pattern"]
     own = [s for s in own if s.niche in (None, niche)]
     trends = [s for s in trends if s.niche in (None, niche)]
     themes = find_themes(rows, t, cfg, guard, rules, own, trends)
-    phrases = collect_phrases(rows, t, guard, rules)
+    phrases = collect_phrases(rows, t, guard, rules, min_shops=s)
     total = len(rows)
 
     patterns = {
         "themes": [_theme_entry(th, total) for th in themes[: cfg["themes_in_patterns"]]],
         "formats": [{"name": n, "listing_count": c}
-                    for n, c in tally(rows, lambda r: sorted(r.formats), t)],
-        "page_counts": page_count_patterns(rows, t, cfg["page_buckets"]),
-        "price_bands": price_band_patterns(rows, t, cfg["price_bands_usd"]),
+                    for n, c in tally(rows, lambda r: sorted(r.formats), t, s)],
+        "page_counts": page_count_patterns(rows, t, cfg["page_buckets"], s),
+        "price_bands": price_band_patterns(rows, t, cfg["price_bands_usd"], s),
         "keyword_clusters": keyword_clusters(themes, phrases, t, cfg["keyword_clusters"],
-                                             cfg["keywords_per_cluster"]),
+                                             cfg["keywords_per_cluster"], s),
     }
 
     default_price = float((shop.get("default_price_usd") or {}).get(niche)
@@ -124,7 +125,8 @@ def build_doc(niche: str, rows: list[Row], sources: list[dict], *, settings: dic
             "style_notes": cfg["style_notes"].get(niche, cfg["default_style_notes"]),
             "activity_types": theme_activities(theme, allowed) if niche == "activity_sheets" else [],
             "evidence": {"listing_count": len(theme.rows), "listing_rows": theme.listing_rows,
-                         "keyword_rows": theme.keyword_rows, "score": theme.demand},
+                         "keyword_rows": theme.keyword_rows, "shop_count": theme.shop_count,
+                         "score": theme.demand},
         }
         result = guard.blocklist.check_obj(brief)
         if result.blocked:
@@ -144,6 +146,7 @@ def build_doc(niche: str, rows: list[Row], sources: list[dict], *, settings: dic
         "sources": sources,
         "listing_count": total,
         "min_listings_per_pattern": t,
+        "min_shops_per_pattern": s,
         "patterns": patterns,
         "briefs": briefs,
     }
@@ -155,6 +158,7 @@ def _theme_entry(theme: Theme, total: int) -> dict:
         "listing_count": len(theme.rows),
         "listing_rows": theme.listing_rows,
         "keyword_rows": theme.keyword_rows,
+        "shop_count": theme.shop_count,
         "share": round(len(theme.rows) / total, 3) if total else 0.0,
         "median_price_usd": theme.median_price,
         "demand": theme.demand,

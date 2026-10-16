@@ -63,7 +63,7 @@ Download CSV exports from eRank, EverBee or a similar licensed tool into `data/r
 - Name a file `<niche>__anything.csv` (for example `stickers__erank.csv`) to force its niche. Otherwise each row's niche comes from `research.niche_rules`.
 - `own_shop*.csv` holds our own shop's stats (`python -m publisher own-stats` writes one). `trends*.csv` holds off-Etsy trend signals. Both only boost demand and are never counted as listings.
 
-`python -m research [--niche N] [--inputs DIR] [--out DIR] [--date D] [--dry-run] [--demo]` writes `data/briefs/<niche>-<date>.json`. A brief pattern needs at least 10 listings, and briefs contain no shop names, listing URLs, images or verbatim titles. Commit the brief files.
+`python -m research [--niche N] [--inputs DIR] [--out DIR] [--date D] [--dry-run] [--demo]` writes `data/briefs/<niche>-<date>.json`. A brief pattern needs at least 10 listings from at least 3 different shops (`research.min_shops_per_pattern`), and briefs contain no shop names, listing URLs, images or verbatim titles. Commit the brief files.
 
 ## Stage commands
 Each stage runs on its own. The generator, QA, listing and `publisher publish` commands take `--out DIR` (default `output/`; with `--dry-run`, `output/dry-run/`) and `--settings FILE`. For `research`, `--out` is the briefs folder.

@@ -139,6 +139,7 @@ def doc_problems(doc: dict, guard: Guard) -> list[str]:
         n = (b.get("evidence") or {}).get("listing_count")
         if not isinstance(n, int) or n < floor:
             problems.append(f"brief {b.get('brief_id')!r} has evidence.listing_count {n!r} < {floor}")
+    problems += _shop_problems(doc, floor)
     for k in sorted(set(_keys(doc)) & FORBIDDEN_KEYS):
         problems.append(f"forbidden field {k!r}")
     for url in find_urls(doc):
@@ -155,6 +156,28 @@ def doc_problems(doc: dict, guard: Guard) -> list[str]:
     blocked = guard.blocklist.check_obj(doc).blocked
     if blocked:
         problems.append(f"blocked terms {blocked}")
+    return problems
+
+
+def _shop_problems(doc: dict, floor: int) -> list[str]:
+    """When the document declares min_shops_per_pattern, every theme and brief whose
+    support comes from listing rows (fewer than `floor` keyword rows) must show at
+    least that many shops. Older brief files without the field are not checked."""
+    shops = doc.get("min_shops_per_pattern")
+    if shops is None:
+        return []
+    if not isinstance(shops, int) or isinstance(shops, bool) or shops < 1:
+        return [f"min_shops_per_pattern is {shops!r}; it must be a whole number >= 1"]
+    problems = []
+    entries = [(f"patterns.themes entry {_label(e)!r}", e) for e in (doc.get("patterns") or {}).get("themes") or []]
+    entries += [(f"brief {b.get('brief_id')!r}", b.get("evidence") or {}) for b in doc.get("briefs") or []]
+    for where, e in entries:
+        keyword_rows = e.get("keyword_rows") if isinstance(e.get("keyword_rows"), int) else 0
+        if keyword_rows >= floor:
+            continue  # supported by keyword-tool rows, which carry no shops
+        n = e.get("shop_count")
+        if not isinstance(n, int) or n < shops:
+            problems.append(f"{where} has shop_count {n!r} < {shops}")
     return problems
 
 

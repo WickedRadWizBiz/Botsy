@@ -44,8 +44,9 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
   "sources": [{"tool": "erank", "file": "erank-keywords-2026-10-14.csv", "rows": 250}],
   "listing_count": 250,
   "min_listings_per_pattern": 10,
+  "min_shops_per_pattern": 3,
   "patterns": {
-    "themes":           [{"name": "farm animals", "listing_count": 23, "share": 0.092, "median_price_usd": 3.99, "demand": 0.81}],
+    "themes":           [{"name": "farm animals", "listing_count": 23, "listing_rows": 23, "keyword_rows": 0, "shop_count": 7, "share": 0.092, "median_price_usd": 3.99, "demand": 0.81}],
     "formats":          [{"name": "pdf", "listing_count": 180}],
     "page_counts":      [{"bucket": "11-20", "listing_count": 40}],
     "price_bands":      [{"band": "3-5", "min_usd": 3.0, "max_usd": 5.0, "listing_count": 60}],
@@ -63,7 +64,7 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
       "page_sizes": ["us_letter", "a4"],
       "style_notes": "bold thick outlines, large simple shapes, no shading",
       "activity_types": [],
-      "evidence": {"listing_count": 23, "score": 0.81},
+      "evidence": {"listing_count": 23, "listing_rows": 23, "keyword_rows": 0, "shop_count": 7, "score": 0.81},
       "compliance": {"blocked": [], "flagged": []},
       "needs_review": false
     }
@@ -71,6 +72,7 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
 }
 ```
 - Every `patterns.*` entry and every brief has `listing_count >= min_listings_per_pattern` (from settings, at least 10).
+- Support from listing rows must also span `min_shops_per_pattern` different shops (settings `research.min_shops_per_pattern`, 3). Shops are counted through an opaque hash in memory; only the count (`shop_count`) is written. Support from keyword-tool rows (competition >= 10 listings each) carries no shop count.
 - A brief with any blocked term is dropped. A brief with a flagged term is kept with `needs_review: true`.
 - `activity_types` is used only for `activity_sheets` and holds a subset of `[maze, word_search, tracing, dot_to_dot]`.
 - A keyword-level export without a competition (matching listings) column counts no listings, so such a file alone produces no briefs (research logs a warning).

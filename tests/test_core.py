@@ -577,3 +577,18 @@ def test_pipeline_publish_stage_requires_draft_only_mode(pipe):
     pipe.settings = {**pipe.settings, "compliance": {**pipe.settings["compliance"], "publisher_mode": "active"}}
     summary, code = pipe.run()
     assert code == 2 and pipe.calls["publish"] == [] and "draft_only" in summary["setup_errors"][0]
+
+
+def test_brief_doc_shop_minimum():
+    from core.briefs import Guard, doc_problems
+    guard = Guard((), ())
+    doc = {"min_listings_per_pattern": 10, "min_shops_per_pattern": 3,
+           "patterns": {"themes": [{"name": "frogs", "listing_count": 12, "keyword_rows": 0, "shop_count": 3}]},
+           "briefs": [{"brief_id": "b1", "evidence": {"listing_count": 12, "keyword_rows": 0, "shop_count": 2}},
+                      {"brief_id": "b2", "evidence": {"listing_count": 12, "keyword_rows": 12}}]}
+    problems = doc_problems(doc, guard)
+    assert problems == ["brief 'b1' has shop_count 2 < 3"]  # b2 is keyword-backed: no shops
+    doc["min_shops_per_pattern"] = 0
+    assert any("min_shops_per_pattern" in p for p in doc_problems(doc, guard))
+    del doc["min_shops_per_pattern"]  # older brief files are not checked for shops
+    assert doc_problems(doc, guard) == []

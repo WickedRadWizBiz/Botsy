@@ -72,6 +72,7 @@ research:
   briefs_dir: data/briefs
   source_tool: auto              # auto-detect eRank / EverBee columns via aliases (research/columns.py)
   min_listings_per_pattern: 10   # compliance: never brief from fewer than 10 listings (values < 10 are raised to 10)
+  min_shops_per_pattern: 3        # listing-level support must come from >= 3 different shops (counted, never saved)
   briefs_per_niche: 5            # top N non-overlapping themes per niche become briefs
   keywords_per_brief: 10
   column_overrides: {}           # canonical column -> header(s), e.g. {search_volume: "Searches (US)", sales: ["Est. Mo. Sales"]}

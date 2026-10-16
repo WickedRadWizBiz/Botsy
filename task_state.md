@@ -1,5 +1,5 @@
 # Task State
-_Last updated: 2026-10-16 (user answered decisions 1, 2, 5; Lightsail plan proposed)_
+_Last updated: 2026-10-16 (3-shop minimum built; Lightsail plan awaiting 4 answers)_
 
 ## Current objective
 Pipeline is code-complete. Waiting on the user's answers under "Open decisions" and the setup items under "Waiting on the user".
@@ -23,7 +23,7 @@ User: answer "Open decisions" (start with the hard-blocked common words), fill i
 
 ## Open decisions (ask the user)
 - PROPOSED (awaiting go-ahead): host on AWS Lightsail, running 24/7. See "Lightsail plan" below.
-- `min_shops_per_pattern`: explained to the user 2026-10-16; recommended as part of the stricter "refined" research stage. Awaiting answer.
+- EverBee export cadence and how exports reach the server (user asked 2026-10-16; answered in chat, awaiting their 4 Lightsail answers).
 - `listings_d` scope (lets `python -m publisher discard` delete our own failed drafts): keep or drop?
 - Primary listing photo: fanned-pages hero (current) or single-page close-up first?
 - Tracing font: Helvetica (current) or embed a school-style font (e.g. Andika, OFL)?
@@ -40,6 +40,7 @@ User: answer "Open decisions" (start with the hard-blocked common words), fill i
 - Hard-blocked common words stay hard-blocked (user: fine as is).
 - Competitor tags shared by 10+ listings may be used as brief keywords (user: OK).
 - Duplicate Etsy-limit settings keys removed; limits live only in `core/etsy.py`.
+- `research.min_shops_per_pattern: 3` (user): listing-backed themes, tags and patterns need 3+ different shops (hashed in memory, only the count is written). Applies from the first batch.
 
 ## Waiting on the user
 - [ ] Shop display name in `config/settings.yaml` (`YOUR_SHOP_NAME`; real drafts are blocked until set) and default prices.

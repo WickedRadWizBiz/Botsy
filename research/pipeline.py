@@ -126,11 +126,18 @@ def load_market_file(path: Path, cfg: dict, niche_rules, known_niches) -> Market
     records = df.to_dict("records")
     df["_niche"] = [niche_of(r) for r in records]
     df["_key"] = [_row_key(r, export.shape) for r in records]
+    # Shop diversity is counted on an opaque hash; the name itself is dropped below.
+    df["_shop"] = [_key("shop", normalize(str(r["shop_name"])).strip()) if str(r["shop_name"]).strip()
+                   else "" for r in records]
     shop_names = {s for s in df["shop_name"].astype(str).str.strip() if s} | export.shop_names
     titles = {t for t in df["title"].astype(str).str.strip() if t}
     # Identifying columns end here: nothing below can see a shop, URL, id or image.
     df = df.drop(columns=[c for c in columns.IDENTIFYING if c in df])
     has_competition = "competition" in export.mapping
+    if export.shape == "listing" and not df["_shop"].any() and cfg["min_shops_per_pattern"] > 1:
+        log.warning("%s: listing export has no shop names, so its rows cannot show the %d "
+                    "different shops a pattern needs. Export it with the shop name column.",
+                    path.name, cfg["min_shops_per_pattern"])
     if export.shape == "keyword" and not has_competition:
         log.warning("%s: keyword export has no competition (matching listings) column, so no "
                     "row can show >= %d listings; none of its rows count. Export it with the "
@@ -146,7 +153,7 @@ def _num(rec: dict, col: str) -> float | None:
 
 
 def rows_for_niche(files: list[MarketFile], niche: str, threshold: int,
-                   rules: TextRules) -> tuple[list[Row], list[dict]]:
+                   rules: TextRules, min_shops: int = 1) -> tuple[list[Row], list[dict]]:
     """Counted rows for one niche (deduped across files, first file wins) and sources."""
     rows: dict[str, Row] = {}
     sources = []
@@ -177,13 +184,13 @@ def rows_for_niche(files: list[MarketFile], niche: str, threshold: int,
                 phrase=None if listing else (phrase(rec["keyword"]) or None), tags=tags,
                 price=_num(rec, "price"), sales=_num(rec, "sales"),
                 favorites=_num(rec, "favorites"), reviews=_num(rec, "reviews"),
-                search_volume=_num(rec, "search_volume"),
+                search_volume=_num(rec, "search_volume"), shop=rec["_shop"],
             )
-        sources.append(_source_entry(f, len(sub), counted, threshold))
+        sources.append(_source_entry(f, len(sub), counted, threshold, min_shops))
     return list(rows.values()), sources
 
 
-def _source_entry(f: MarketFile, rows: int, counted: int, threshold: int) -> dict:
+def _source_entry(f: MarketFile, rows: int, counted: int, threshold: int, min_shops: int = 1) -> dict:
     entry = {"tool": f.tool, "file": f.name, "shape": f.shape, "rows": rows, "counted_rows": counted}
     if f.shape == "keyword":
         entry["rule"] = (
@@ -191,7 +198,8 @@ def _source_entry(f: MarketFile, rows: int, counted: int, threshold: int) -> dic
             f"competition >= {threshold} listings"
             + ("" if f.has_competition else " (no competition column: no row counted)"))
     else:
-        entry["rule"] = f"listing-level: a pattern needs >= {threshold} distinct listing rows"
+        entry["rule"] = (f"listing-level: a pattern needs >= {threshold} distinct listing rows"
+                         + (f" from >= {min_shops} shops" if min_shops > 1 else ""))
     return entry
 
 
@@ -328,7 +336,7 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
 
     docs: dict[str, dict] = {}
     for n in targets:
-        rows, sources = rows_for_niche(market, n, threshold, rules)
+        rows, sources = rows_for_niche(market, n, threshold, rules, cfg["min_shops_per_pattern"])
         if not rows:
             log.info("%s: no rows in the research exports; no brief file", n)
             continue

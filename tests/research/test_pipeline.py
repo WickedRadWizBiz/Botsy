@@ -68,8 +68,9 @@ def test_blocked_theme_dropped_and_flagged_theme_marked(dirs):
 
 def test_no_urls_shop_names_ids_or_verbatim_titles(dirs):
     inputs, out = dirs
-    rows = (listing_rows("SunnyDayPrints Octopus", 12, shop="SunnyDayPrints")
-            + listing_rows("Narwhal", 12, shop="TidePoolPress"))
+    shops = ("SunnyDayPrints", "TidePoolPress", "MaplePrintCo")  # 3 shops: research.min_shops_per_pattern
+    rows = [r for shop in shops for r in listing_rows("SunnyDayPrints Octopus", 4, shop=shop)]
+    rows += [r for shop in shops for r in listing_rows("Narwhal", 4, shop=shop)]
     rows += [["Narwhal Coloring Pages", "TidePoolPress", "$4", 3, 1, 9, "", "", "", ""]] * 1
     write_csv(inputs / "everbee.csv", EVERBEE, rows)
     doc = load(_run(inputs, out)[0])
@@ -245,3 +246,41 @@ def test_bad_date_and_niche_rejected(dirs):
 
 def test_package_exports():
     assert research.run is run and callable(research.validate_brief_doc)
+
+
+def test_three_shop_minimum(dirs, caplog):
+    """research.min_shops_per_pattern (3): one seller's catalog is never a pattern."""
+    inputs, out = dirs
+    two_shops = [r for shop in ("ShopOne", "ShopTwo") for r in listing_rows("Axolotl", 6, shop=shop)]
+    three_shops = [r for shop in ("ShopOne", "ShopTwo", "ShopThree")
+                   for r in listing_rows("Hedgehog", 4, shop=shop)]
+    one_shop = listing_rows("Platypus", 15, shop="ShopOne")
+    write_csv(inputs / "everbee-products.csv", EVERBEE, two_shops + three_shops + one_shop)
+    doc = load(_run(inputs, out, niche="coloring_pages")[0])
+    themes = _themes(doc)
+    assert doc["min_shops_per_pattern"] == 3
+    assert "hedgehog" in themes and themes["hedgehog"]["shop_count"] == 3
+    assert "axolotl" not in themes and "platypus" not in themes
+    brief = next(b for b in doc["briefs"] if b["theme"] == "hedgehog")
+    assert brief["evidence"]["shop_count"] == 3
+    assert "shopone" not in json.dumps(doc).lower()  # counted by hash, never written
+    assert "from >= 3 shops" in doc["sources"][0]["rule"]
+
+
+def test_listing_export_without_shop_names_cannot_meet_shop_minimum(dirs, caplog):
+    inputs, out = dirs
+    rows = [[r[0], r[2], r[3]] for r in listing_rows("Octopus", 12)]
+    write_csv(inputs / "everbee-products.csv", ["Product Name", "Price", "Mo. Sales"], rows)
+    with caplog.at_level("WARNING"):
+        paths = _run(inputs, out, niche="coloring_pages")
+    assert "no shop names" in caplog.text
+    assert all("octopus" not in _themes(load(p)) for p in paths)
+
+
+def test_min_shops_setting_is_never_below_one(dirs):
+    inputs, out = dirs
+    settings = pinned_settings()
+    settings["research"]["min_shops_per_pattern"] = 0
+    write_csv(inputs / "everbee-products.csv", EVERBEE, listing_rows("Octopus", 10, shop="OnlyShop"))
+    doc = load(_run(inputs, out, niche="coloring_pages", settings=settings)[0])
+    assert doc["min_shops_per_pattern"] == 1 and "octopus" in _themes(doc)

@@ -10,6 +10,7 @@ DEFAULTS: dict = {
     "briefs_dir": "data/briefs",
     "source_tool": "auto",              # auto | erank | everbee | <label>
     "min_listings_per_pattern": 10,     # compliance floor; values below 10 are raised to 10
+    "min_shops_per_pattern": 3,         # listing-level support must span >= this many shops (user, 2026-10-16)
     "briefs_per_niche": 5,
     "themes_in_patterns": 25,
     "keyword_clusters": 15,
@@ -80,4 +81,5 @@ def load_config(settings: dict) -> dict:
     """settings `research:` over DEFAULTS, with the compliance floor enforced."""
     cfg = section(settings, "research", DEFAULTS)
     cfg["min_listings_per_pattern"] = max(HARD_FLOOR, int(cfg["min_listings_per_pattern"]))
+    cfg["min_shops_per_pattern"] = max(1, int(cfg["min_shops_per_pattern"]))
     return cfg
