@@ -42,6 +42,9 @@ If the container restarts again: resume with Workflow(scriptPath=..., resumeFrom
 - Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
 
 ## Decisions made 2026-10-16
+- (latest) POD provider: PRINTFUL (user already has an account). Flow to build: Botsy creates the Etsy physical DRAFT itself via the Etsy API (production partner Printful, shipping profile) + print files at Printful print-area sizes + Printful Mockup Generator API; Printful imports Etsy drafts (daily); variants linked to Printful products/print files via Printful API if it supports Etsy-store sync variants, else the user links them in Printful. Verify in the POD build with one sticker. Printify dropped.
+- (latest) User agrees with all other POD/KDP defaults; questions "no kids' physical products": kept off until Printful confirms in writing it provides a Children's Product Certificate and CPSIA tracking labels for its decorated kids' items (draft support question given to user). Digital kids' products and KDP kids' books unaffected.
+- (latest) KDP research tool: BookBeam (user will send a sample export; instructions given). Later: extend research column aliases + Windows helper header sniff to BookBeam exports.
 - (latest) Pinterest: kept in the backlog, not the main focus. "Copy them" meant exactly what Botsy already does (original designs from selling themes). Scraping rule now per platform: check terms + robots.txt, record in config/platform_policies.yaml; Etsy/Amazon/Pinterest/Fiverr forbid it.
 - (latest) Build order (user: "after is fine per your suggestion"): 1) finish packs build, 2) embedded fonts + WATCHDOG (deterministic 24/7 health checks/auto-retry/alerts, added to answer "can Hermes oversee if last?"), 3) KDP coloring_50 then activity_100 then undated planner, 4) Etsy POD after a one-sticker Printify test, 5) Hermes overseer + safe menu (plugs into the watchdog).
 - (latest) Recommended defaults adopted pending user objection: Printful fallback if Printify publishes live; US-only POD; opt out of Offsite Ads under $10k/yr; free shipping built into price; no kids' physical products or phone cases; KDP RPG books system-neutral; disclose AI on KDP conservatively; one Etsy design set may seed one KDP book; one printed proof per new KDP template; Liberation Sans embedded font. KDP research tool: BookBeam recommended, user to choose.
@@ -69,6 +72,8 @@ If the container restarts again: resume with Workflow(scriptPath=..., resumeFrom
 - [ ] Register an Etsy developer app (personal use, own shop) with redirect `https://localhost:3003/callback`; run `python -m publisher auth`.
 - [ ] Taxonomy ids: `python -m publisher taxonomy --search sticker` (and coloring, activity) → `listing.taxonomy_ids` in settings.
 - [ ] One real eRank and one real EverBee export in `data/research_inputs/` to confirm column aliases.
+- [ ] One BookBeam export (coloring, activity, planner searches) to map its columns.
+- [ ] Ask Printful support about CPSIA documents for kids' items.
 - [ ] One live smoke test with `GOOGLE_API_KEY` (confirm the model accepts `generate_content` + `image_size: 4K`).
 - [ ] GitHub secrets for live runs: ANTHROPIC_API_KEY, GOOGLE_API_KEY, ETSY_API_KEYSTRING, ETSY_SHARED_SECRET, ETSY_SHOP_ID, ETSY_REFRESH_TOKEN.
 

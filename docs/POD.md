@@ -1,4 +1,6 @@
 # Etsy print-on-demand (physical products) plan
+
+> **Decision 2026-10-16 (user): Printful is the provider** (existing account). The Printify-first flow below is kept for reference; the build uses the Printful route: Botsy creates the Etsy draft via the Etsy API, Printful imports and links it. Kids' physical products stay off until Printful confirms CPSIA paperwork (Children's Product Certificate, tracking labels) for its decorated kids' items.
 _Researched 2026-10-16 from primary sources (links inline). Plan, not yet built. Decisions in task_state.md._
 
 ETSY PRINT-ON-DEMAND (POD) PLAN FOR BOTSY. All sources were read on 2026-10-16.
