@@ -5,6 +5,7 @@ _Last updated: 2026-10-16 (server build committed; phase-2 build running)_
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows upload helper, Lightsail deploy kit. Building now (workflow `botsy-phase2-build`): refined research stage + evidence window, spend tracker, events/Discord/overnight log, theme cooldown, server-only settings, disk caps (docs/SERVER.md sections 8-14).
 
 ## Next immediate action
+After phase 2 is committed: launch phase-3 build from docs/PACKS.md (research opportunity + pack sizes, pack engine, stationery + ttrpg generators, compliance/listing/QA/mockups).
 When `botsy-phase2-build` finishes: review, run `pytest -q`, commit, push, report to the user. Then the user deploys: `deploy/lightsail/README.md` (server) and `windows/README.md` (PC).
 
 ## Decisions made
@@ -38,6 +39,9 @@ When `botsy-phase2-build` finishes: review, run `pytest -q`, commit, push, repor
 - Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
 
 ## Decisions made 2026-10-16
+- Themed packs (user): every theme -> 5-page pack, 20-page pack, plus the top sellers' pack size; each pack its own listing. Biggest pack = fresh master set; smaller packs are curated subsets, except every 3rd 5-pack and every 6th 20-pack get fresh pages (interpretation of "one fresh pack for every 2 five-page and 5 twenty-page packs"; confirm). Spec: docs/PACKS.md.
+- New niches (user): stationery (ADHD/productivity planners etc.) and tabletop RPG papers, in shop `main` for now. Prefer niche, low-competition themes (opportunity score).
+- RPG listings may name the game system ("for D&D 5e") as a compatibility reference with an unofficial/not-affiliated line (user). CLAUDE.md exception added; `!term` blocklist marker. No medical claims for ADHD stationery.
 - Refined research stage (user): starts automatically after 20 real Etsy drafts. Needs 15+ listings from 3+ shops, theme seen in 3+ weekly exports, demand not falling, our own sales weighted in. Lightsail 4 GB plan OK.
 - Next build (user approved): Discord notifications (webhook), spending tracker with monthly cap, overnight log (daily digest to outbox + Discord). Ideas taken from androoAGI/starnet (MIT); StarNet itself is a general agent desktop app, not an Etsy pipeline.
 - Hard-blocked common words stay hard-blocked (user: fine as is).

@@ -2,7 +2,7 @@
 
 ## Purpose
 A pipeline that studies demand in digital-download niches, generates original products, writes SEO listings, and saves them as Etsy drafts for human approval.
-Niches: digital stickers, coloring pages, children's activity sheets. Supports more than one shop via config.
+Niches: digital stickers, coloring pages, children's activity sheets, stationery (planners, ADHD/productivity pages), tabletop RPG papers. Products are themed packs (5 pages, 20 pages, plus the size top sellers use), aimed at niche, low-competition markets. Supports more than one shop via config.
 
 ## Pipeline
 research → brief → generate → QA → listing → draft → human approval
@@ -23,6 +23,8 @@ research → brief → generate → QA → listing → draft → human approval
 - Never copy a specific listing. Never pass a competitor's image, file, title or description to any model.
 - Briefs are built from patterns aggregated across at least 10 listings and contain no shop names, listing URLs or images.
 - No trademarked or licensed characters, brands or franchises in designs, titles, tags or descriptions. Check every brief and listing against `config/trademark_blocklist.txt`, and flag anything uncertain for review.
+  - Exception (user, 2026-10-16): tabletop RPG listings may name the game system the sheets are made for, as a compatibility reference only ("Character Sheet for D&D 5e"). Allowed in that listing's title, tags and description; never in designs, image prompts, printed pages, file names or mockups; never logos, official art, settings or product-identity creatures; never implying the product is official. Every such listing carries an "unofficial, not affiliated with <owner>" line. These names are `!term` entries in the blocklist.
+- No medical or therapeutic claims in listings (e.g. stationery for ADHD may describe the layout, never claim to treat, cure or diagnose).
 - Every AI-assisted listing includes the text in `config/ai_disclosure.txt` and follows Etsy's Creativity Standards.
 - The publisher never activates a listing. The user approves in Etsy.
 - Secrets live only in `.env` (never committed). Keep `.env.example` current.
