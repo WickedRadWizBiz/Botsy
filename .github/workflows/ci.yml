@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch cancels the older run. Private repos get a
+# monthly allowance of free Actions minutes, so don't spend them on stale commits.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
