@@ -12,15 +12,16 @@ import pytest
 
 from core import config, items
 from core.spend import BudgetExceeded
+from generators import packs
 from pipeline import run as prun
 
 DATE = "2026-10-16"
 
 
-def brief_doc(niche: str, date: str, themes, prefix: str = "") -> dict:
+def brief_doc(niche: str, date: str, themes, prefix: str = "", **extra) -> dict:
     briefs = [{"brief_id": f"{niche}-{date}-{prefix}{i:02d}", "niche": niche, "theme": t, "keywords": [t],
                "evidence": {"listing_count": 12, "score": 0.5},
-               "compliance": {"blocked": [], "flagged": []}, "needs_review": False}
+               "compliance": {"blocked": [], "flagged": []}, "needs_review": False, **extra}
               for i, t in enumerate(themes, 1)]
     return {"schema": "brief/v1", "niche": niche, "created": date, "shop_id": "main",
             "sources": [{"tool": "erank", "file": "keywords.csv", "rows": 50}], "listing_count": 50,
@@ -45,22 +46,27 @@ def pipe(tmp_path, monkeypatch):
         out = tmp_path / "out"
         briefs = tmp_path / "briefs"
         calls = {"generate": [], "qa": [], "listing": [], "publish": []}
+        sizes: list = []                # the `sizes` each generate call asked for (None: all of them)
         generate_errors: dict = {}      # theme -> exception raised by the fake generator
         listing_errors: dict = {}       # item id -> exception raised by the fake listing stage
 
         def __init__(self):
             self.settings = settings
 
-        def write_brief(self, niche, themes, date=DATE, prefix=""):
-            return items.write_json(self.briefs / f"{niche}-{date}.json", brief_doc(niche, date, themes, prefix))
+        def write_brief(self, niche, themes, date=DATE, prefix="", **extra):
+            return items.write_json(self.briefs / f"{niche}-{date}.json",
+                                    brief_doc(niche, date, themes, prefix, **extra))
 
-        def make_item(self, niche, theme, created, *, shop_id="main", publish=None, status="drafted"):
-            """An item from an earlier brief, as the generators would have left it."""
+        def make_item(self, niche, theme, created, *, shop_id="main", publish=None, status="drafted", size=None):
+            """An item from an earlier brief, as the generators would have left it (an older
+            generator wrote no pack size: such an item stands for every size)."""
             bid = f"{niche}-{created}-old-{theme}"
-            d = items.item_dir(items.new_item_id(created, niche, theme, salt=bid), self.out)
-            items.write_manifest(d, {"item_id": d.name, "niche": niche, "shop_id": shop_id, "brief_id": bid,
-                                     "theme": theme, "created": created, "status": status,
-                                     "generator": {"name": niche, "dry_run": True}})
+            d = items.item_dir(items.new_item_id(created, niche, theme, salt=f"{bid}{size or ''}"), self.out)
+            m = {"item_id": d.name, "niche": niche, "shop_id": shop_id, "brief_id": bid, "theme": theme,
+                 "created": created, "status": status, "generator": {"name": niche, "dry_run": True}}
+            if size:
+                m["pack"] = {"size": size, "source": "master"}
+            items.write_manifest(d, m)
             if publish is not None:
                 items.write_json(d / "publish.json", publish)
             return d
@@ -78,16 +84,22 @@ def pipe(tmp_path, monkeypatch):
     p = P()
 
     def fake_generate(brief, *, brief_file=None, shop_id="main", out_root=None, date=None, dry_run=False,
-                      settings=None, client=None):
+                      settings=None, client=None, sizes=None):
+        """One item per planned pack, as the pack engine names them (no design sets)."""
         p.calls["generate"].append((brief["brief_id"], brief["theme"]))
+        p.sizes.append(sizes)
         if brief["theme"] in p.generate_errors:
             raise p.generate_errors[brief["theme"]]
-        d = items.item_dir(items.new_item_id(date, brief["niche"], brief["theme"], salt=brief["brief_id"]),
-                           out_root)
-        items.write_manifest(d, {"item_id": d.name, "niche": brief["niche"], "shop_id": shop_id,
-                                 "brief_id": brief["brief_id"], "theme": brief["theme"], "created": date,
-                                 "status": "generated", "generator": {"name": brief["niche"], "dry_run": dry_run}})
-        return [d]
+        dirs = []
+        for pk in packs.preview(brief, settings=settings, out_root=out_root, shop_id=shop_id, date=date,
+                                dry_run=dry_run, sizes=sizes):
+            d = items.item_dir(pk.item_id, out_root)
+            items.write_manifest(d, {"item_id": d.name, "niche": brief["niche"], "shop_id": shop_id,
+                                     "brief_id": brief["brief_id"], "theme": brief["theme"], "created": date,
+                                     "status": "generated", "generator": {"name": brief["niche"], "dry_run": dry_run},
+                                     "pack": {"size": pk.size, "source": pk.source, "set_id": pk.spec.set_id}})
+            dirs.append(d)
+        return dirs
 
     def fake_qa(d, *, settings=None, review_dir=None, mockups=True):
         p.calls["qa"].append(d.name)
@@ -117,9 +129,12 @@ def pipe(tmp_path, monkeypatch):
     return p
 
 
-def would_be(niche, theme, n=1, *, brief_date=DATE, prefix="", run_date=DATE):
-    """The id a brief would make (the run date, salted with the brief id)."""
-    return items.new_item_id(run_date, niche, theme, salt=f"{niche}-{brief_date}-{prefix}{n:02d}")
+def would_be(niche, theme, n=1, *, brief_date=DATE, prefix="", run_date=DATE, size=None, source="master", k=0):
+    """The id a brief's pack would make (the run date, salted with the brief id and the pack):
+    by default its only pack, the master of the niche's default size (stickers: 12)."""
+    size = size or {"stickers": 12, "coloring_pages": 10, "activity_sheets": 10}[niche]
+    return packs.item_id_for(run_date, niche, theme, f"{niche}-{brief_date}-{prefix}{n:02d}",
+                             packs.PackSpec(size, source, "", k))
 
 
 REAL_DRAFT = {"listing_id": 1234, "dry_run": False, "state": "draft", "complete": True}
@@ -133,10 +148,11 @@ def test_recent_item_with_the_same_theme_skips_the_brief(pipe):
     summary, code = pipe.run()
     assert code == 0 and pipe.generated_themes() == ["frogs"]
     rec = summary["items"][would_be("stickers", "farm-animals!")]["generate"]
-    assert rec == {"ok": True, "detail": f"theme cooldown: {old.name}", "skipped": True, "cooldown": old.name}
+    assert rec == {"ok": True, "detail": f"theme cooldown: {old.name}", "skipped": True, "cooldown": old.name,
+                   "size": 12, "source": "master"}
     text = prun.format_summary(summary)
     assert f"generate: skip (theme cooldown: {old.name})" in text
-    assert any("theme cooldown: 1 brief(s) skipped" in n and "60 days" in n for n in summary["notes"])
+    assert any("theme cooldown: 1 pack(s) skipped" in n and "60 days" in n for n in summary["notes"])
     assert not (pipe.out / would_be("stickers", "farm-animals!")).exists()
     # The old item is not a target of this run: no stage touched it.
     assert old.name not in pipe.calls["qa"] + pipe.calls["listing"] + pipe.calls["publish"]
@@ -256,6 +272,132 @@ def test_theme_key():
     assert prun.theme_key(long_a) != prun.theme_key(long_b)       # not cut short like item ids
     assert prun.theme_key(None) == ""
     assert prun.theme_key("Cat’s Pajamas") == prun.theme_key("cats pajamas") == "cats-pajamas"
+
+
+# ---------------------------------------------------------------- packs (docs/PACKS.md section 3)
+
+def test_one_brief_makes_one_item_per_pack_size(pipe):
+    pipe.write_brief("stickers", ["frogs"], pack_sizes=[5, 20, 30], page_count=30)
+    summary, code = pipe.run()
+    assert code == 0 and pipe.sizes == [None]                     # one call, every pack
+    made = {(r["size"], r["source"]) for r in summary["packs"]}
+    assert made == {(30, "master"), (5, "derived"), (20, "derived")}
+    assert all(r["generate"] == "generated" for r in summary["packs"])
+    master = would_be("stickers", "frogs", size=30)
+    assert summary["items"][master]["generate"] == {"ok": True, "detail": "generated", "size": 30,
+                                                    "source": "master"}
+    assert len(pipe.calls["publish"]) == 3
+    text = prun.format_summary(summary)
+    assert f"{master} [pack of 30, master]" in text
+
+
+def test_max_items_counts_packs_masters_of_every_niche_first(pipe):
+    pipe.write_brief("stickers", ["frogs", "cats"], pack_sizes=[5, 20, 30], page_count=30)
+    pipe.write_brief("coloring_pages", ["owls"], pack_sizes=[5, 20, 30], page_count=30)
+    summary, _ = pipe.run(stages=("generate",), max_items=3)
+    # The first brief of each niche gets its master, then the first of them a derived pack.
+    assert pipe.calls["generate"] == [("coloring_pages-2026-10-16-01", "owls"), ("stickers-2026-10-16-01", "frogs")]
+    assert pipe.sizes == [[30, 5], [30]]
+    assert sorted(d.name for d in items.iter_item_dirs(pipe.out)) == sorted(
+        [would_be("coloring_pages", "owls", size=30), would_be("coloring_pages", "owls", size=5, source="derived",
+                                                               k=1),
+         would_be("stickers", "frogs", size=30)])
+    assert any("max_items=3: 1 brief(s) not used" in n for n in summary["notes"])
+    assert any("max_items=3: 3 more pack(s) of 2 brief(s) not made" in n for n in summary["notes"])
+    # The next run reuses those three (they still count) and finishes both briefs before cats.
+    pipe.calls["generate"].clear()
+    pipe.sizes.clear()
+    summary, _ = pipe.run(stages=("generate",), max_items=6)
+    assert pipe.sizes == [[20], [5, 20]]
+    assert sum(1 for r in summary["packs"] if r["generate"] == "reused") == 3
+    assert len(list(items.iter_item_dirs(pipe.out))) == 6
+
+
+def test_a_brief_finishes_its_packs_before_the_next_brief_of_its_niche(pipe):
+    pipe.write_brief("stickers", ["frogs", "cats"], pack_sizes=[5, 20], page_count=20)
+    summary, _ = pipe.run(stages=("generate",), max_items=3)
+    assert pipe.calls["generate"] == [("stickers-2026-10-16-01", "frogs"), ("stickers-2026-10-16-02", "cats")]
+    assert pipe.sizes == [None, [20]]       # frogs: both packs (no sizes: all of them); cats: its master
+
+
+def test_rerun_reuses_every_pack(pipe):
+    pipe.write_brief("stickers", ["frogs"], pack_sizes=[5, 20], page_count=20)
+    pipe.run()
+    summary, code = pipe.run()
+    assert code == 0 and len(pipe.calls["generate"]) == 1
+    assert {r["generate"] for r in summary["packs"]} == {"reused"} and len(summary["packs"]) == 2
+
+
+def test_theme_cooldown_is_per_pack_size(pipe):
+    old20 = pipe.make_item("stickers", "frogs", "2026-10-10", size=20)
+    pipe.write_brief("stickers", ["frogs"], pack_sizes=[5, 20], page_count=20)
+    summary, code = pipe.run(stages=("generate",))
+    assert code == 0 and pipe.sizes == [[5]]                     # the 20-page pack waits, the 5-page one is made
+    cooled = summary["items"][would_be("stickers", "frogs", size=20)]["generate"]
+    assert cooled["cooldown"] == old20.name and cooled["size"] == 20
+    assert [r["size"] for r in summary["packs"]] == [5]
+    assert any("theme cooldown: 1 pack(s) skipped" in n for n in summary["notes"])
+
+
+def test_a_cooled_master_size_plans_the_other_sizes_without_it(pipe):
+    """The brief's largest size waits (an older item of that size), so its smaller sizes are
+    planned without a master of their own: with no master set of the theme they are fresh,
+    and every record carries the id and source the generator gives them."""
+    old30 = pipe.make_item("stickers", "frogs", "2026-10-10", size=30)      # made before design sets
+    pipe.write_brief("stickers", ["frogs"], pack_sizes=[5, 20, 30], page_count=30)
+    pipe.generate_errors["frogs"] = cap_error()
+    summary, code = pipe.run(stages=("generate",))
+    assert code == 0 and pipe.sizes == [[5, 20]]
+    assert summary["items"][would_be("stickers", "frogs", size=30)]["generate"]["cooldown"] == old30.name
+    for size in (5, 20):
+        rec = summary["items"][would_be("stickers", "frogs", size=size, source="fresh", k=1)]["generate"]
+        assert rec["budget"] is True and rec["size"] == size and rec["source"] == "fresh"
+    pipe.generate_errors.clear()
+    summary, code = pipe.run(stages=("generate",))
+    assert code == 0 and {(r["size"], r["source"]) for r in summary["packs"]} == {(5, "fresh"), (20, "fresh")}
+    assert {r["item_id"] for r in summary["packs"]} == {
+        would_be("stickers", "frogs", size=s, source="fresh", k=1) for s in (5, 20)}
+
+
+def test_an_item_of_unknown_size_blocks_every_size(pipe):
+    pipe.make_item("stickers", "frogs", "2026-10-10")              # made before packs: no size
+    pipe.write_brief("stickers", ["frogs"], pack_sizes=[5, 20], page_count=20)
+    summary, _ = pipe.run(stages=("generate",))
+    assert pipe.calls["generate"] == []
+    assert sum(1 for st in summary["items"].values() if st["generate"].get("cooldown")) == 2
+
+
+def test_same_theme_and_size_twice_in_one_run_is_made_once(pipe):
+    pipe.write_brief("stickers", ["frogs"], pack_sizes=[5, 20], page_count=20)
+    pipe.write_brief("stickers", ["Frogs"], date="2026-10-15", prefix="b", pack_sizes=[5, 12, 20], page_count=20)
+    summary, code = pipe.run(stages=("generate",),
+                             brief_files=[pipe.briefs / f"stickers-{DATE}.json",
+                                          pipe.briefs / "stickers-2026-10-15.json"])
+    assert code == 0 and pipe.sizes == [None, [12]]                # only the second brief's new size
+    second = would_be("stickers", "Frogs", brief_date="2026-10-15", prefix="b", size=20)
+    assert summary["items"][second]["generate"]["cooldown"] == would_be("stickers", "frogs", size=20)
+
+
+def test_packs_made_before_a_failure_still_go_on(pipe, monkeypatch):
+    pipe.write_brief("stickers", ["frogs"], pack_sizes=[5, 20], page_count=20)
+    master = would_be("stickers", "frogs", size=20)
+
+    def half(brief, **kw):
+        d = items.item_dir(master, kw["out_root"])
+        items.write_manifest(d, {"item_id": d.name, "niche": "stickers", "shop_id": "main",
+                                 "brief_id": brief["brief_id"], "theme": brief["theme"], "created": DATE,
+                                 "status": "generated", "pack": {"size": 20, "source": "master"}})
+        e = BudgetExceeded("Monthly spending cap reached", kind="image", month="2026-10", mtd=25.0, cap=25.0)
+        e.pack_dirs = [d]
+        raise e
+
+    import generators
+    monkeypatch.setattr(generators, "generate", half)
+    summary, code = pipe.run()
+    assert code == 0 and summary["budget_reached"] is True
+    assert summary["items"][master]["generate"]["detail"] == "generated" and master in pipe.calls["qa"]
+    derived = would_be("stickers", "frogs", size=5, source="derived", k=1)
+    assert summary["items"][derived]["generate"]["budget"] is True
 
 
 # ---------------------------------------------------------------- monthly spending cap

@@ -6,17 +6,26 @@ recorded and does not stop the others. A setup problem (a missing secret, no Ets
 a safety-layer refusal) stops that stage instead, because every item would fail the same
 way and the publisher would retry the bad credentials once per item.
 
-Reruns are cheap: an item that already exists for a brief (same shop and brief_id, any
-run date) is reused at its current status instead of being generated and paid for again;
-`regenerate=True` rebuilds it in its own folder. Items with an Etsy draft or rejected in
-the review queue are never rebuilt.
+Packs (docs/PACKS.md section 3): a brief makes one item per pack size (brief.pack_sizes),
+master first; max_items counts packs, reused ones included: the first brief of every niche
+gets its master before any of them gets a second pack, then those briefs' other packs, then
+the next briefs. The summary lists each pack (`packs`, and `size` / `source` on its
+generate record).
 
-Theme cooldown (docs/SERVER.md section 13): a brief with no item of its own is skipped when
-the same shop and niche already has an item in this run's output folder with the same
-theme (core.compliance.normalize plus slug) made within pipeline.theme_cooldown_days (60),
-or one with a real Etsy draft at any age. `regenerate=True` lifts the 60 days but never a
-real draft, so no second product of a theme already on Etsy is made. A skip is recorded
-under the id the brief would have made: `generate: skip (theme cooldown: <item_id>)`.
+Reruns are cheap: an item that already exists for a brief's pack (same shop, brief_id and
+pack size, any run date) is reused at its current status instead of being generated and paid
+for again; `regenerate=True` rebuilds it in its own folder. Items with an Etsy draft or
+rejected in the review queue are never rebuilt.
+
+Theme cooldown (docs/SERVER.md section 13, keyed on (shop, niche, theme, pack size)): a
+pack with no item of its own is skipped when the same shop and niche already has an item of
+that size in this run's output folder with the same theme (core.compliance.normalize plus
+slug) made within pipeline.theme_cooldown_days (60), or one with a real Etsy draft at any
+age (an item whose size is unknown counts as every size). `regenerate=True` lifts the 60
+days but never a real draft, so no second product of a theme already on Etsy is made. A skip
+is recorded under the id the pack would have made: `generate: skip (theme cooldown: <item_id>)`.
+A new pack size of a theme whose master set is within the cooldown is cut from that set
+(derived) instead of paying for new pages.
 
 Spending cap (docs/SERVER.md section 10): when the generators or the listing stage raise
 core.spend.BudgetExceeded, that item gets a plain error, summary["budget_reached"] is
@@ -34,6 +43,7 @@ import datetime as _dt
 import logging
 import re
 import traceback
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from core import items
@@ -219,7 +229,7 @@ def run(
     summary = {"date": date, "shop_id": shop["id"], "dry_run": dry_run, "stages": list(stages),
                "started": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
                "briefs": [], "items": {}, "errors": [], "setup_errors": [], "notes": [],
-               "awaiting_review": {}, "budget_reached": False}
+               "awaiting_review": {}, "budget_reached": False, "packs": []}
 
     # 1. research: CSV exports -> brief files. The exports are licensed and stay local,
     # so in CI this stage is usually not run and the committed briefs are used.
@@ -324,13 +334,26 @@ def _load_brief_queue(summary: dict, bf: Path, blocklist: Blocklist) -> list[tup
     return [(bf, b) for b in doc.get("briefs") or [] if isinstance(b, dict)]
 
 
+def _item_size(m: dict) -> int | None:
+    """The pack size of an existing item: manifest pack.size, else (items made before packs)
+    the page or sticker count the brief asked for, else what the buyer gets; None when the
+    manifest does not say (such an item stands for every size of its theme)."""
+    pack = m.get("pack") if isinstance(m.get("pack"), dict) else {}
+    for key in ("size", "requested_pages", "requested_stickers"):
+        v = pack.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    return items.content_count(m)
+
+
 def _index_existing(existing: list[tuple[Path, dict]]) -> dict[tuple, tuple[Path, dict]]:
-    """(shop_id, brief_id) -> the most advanced existing item made from that brief."""
+    """(shop_id, brief_id, pack size) -> the most advanced existing item made from that
+    brief for that size (size None: the manifest does not say)."""
     found: dict[tuple, tuple[Path, dict]] = {}
     for d, m in existing:
         if not m.get("brief_id"):
             continue
-        key = (m.get("shop_id"), m["brief_id"])
+        key = (m.get("shop_id"), m["brief_id"], _item_size(m))
         old = found.get(key)
         if old is None or _STATUS_RANK.get(m.get("status"), -1) >= _STATUS_RANK.get(old[1].get("status"), -1):
             found[key] = (d, m)
@@ -384,11 +407,23 @@ def _created(d: Path, m: dict) -> _dt.date | None:
         return None
 
 
-def _cooldown_block(brief: dict, themes: dict, *, date: str, days: int, regenerate: bool) -> Path | None:
-    """The existing item that keeps this brief from being made (docs/SERVER.md section
-    13), or None. A real Etsy draft blocks at any age and even with --regenerate; any
-    other item blocks while it is younger than `days` (an undated one counts as young)."""
-    same = themes.get((brief.get("niche"), theme_key(brief.get("theme"))), [])
+def _same_size(m: dict, size: int | None) -> bool:
+    """The theme cooldown keys on (shop, niche, theme, pack size); an item or a brief whose
+    size is unknown counts as every size."""
+    if size is None:
+        return True
+    have = _item_size(m)
+    return have is None or have == size
+
+
+def _cooldown_block(brief: dict, themes: dict, *, date: str, days: int, regenerate: bool,
+                    size: int | None = None) -> Path | None:
+    """The existing item that keeps this brief's pack of `size` from being made
+    (docs/SERVER.md section 13, keyed per pack size: docs/PACKS.md section 3), or None. A
+    real Etsy draft blocks at any age and even with --regenerate; any other item blocks
+    while it is younger than `days` (an undated one counts as young)."""
+    same = [(d, m) for d, m in themes.get((brief.get("niche"), theme_key(brief.get("theme"))), [])
+            if _same_size(m, size)]
     for d, _ in same:
         if _has_real_draft(d):
             return d
@@ -403,19 +438,112 @@ def _cooldown_block(brief: dict, themes: dict, *, date: str, days: int, regenera
 
 
 def _item_date(d: Path, manifest: dict, brief: dict, run_date: str) -> str:
-    """The date that rebuilds `d` in place (its id is derived from it), else the run date."""
+    """The date that rebuilds `d` in place (item ids start with their date and are derived
+    from it), else the run date."""
     created = manifest.get("created")
     try:
-        theme = str(brief.get("theme") or "").strip()
-        if items.new_item_id(created, brief.get("niche", ""), theme, salt=brief.get("brief_id") or "") == d.name:
+        if check_date(created) and d.name.startswith(f"{created}-"):
             return created
     except (ValueError, TypeError):
         pass
     return run_date
 
 
+@dataclass
+class _Pack:
+    """One pack a brief would make: its size and source (None when the plan is unknown, for
+    a brief the generator will refuse) and the item id it would get."""
+    size: int | None
+    source: str | None
+    item_id: str | None
+
+
+@dataclass
+class _Slot:
+    kind: str                       # "reuse" (an existing item), "new" or "rebuild" (generate)
+    pack: _Pack
+    date: str | None = None         # the generate date ("new": the run date; "rebuild": the item's)
+    dir: Path | None = None
+    manifest: dict | None = None
+    why: str = ""
+
+
+@dataclass
+class _Entry:
+    bf: Path
+    brief: dict
+    sizes: list[int] | None         # every pack size of the brief, None when unknown
+    tier: int = 0                   # the brief's position in its brief file (round-robin tier)
+    slots: list[_Slot] = field(default_factory=list)
+    taken: list[_Slot] = field(default_factory=list)
+
+
+def _pack_state(settings, *, out_root, shop_id, date, dry_run):
+    """The pack engine's state for this output root, read once per run (None when the pack
+    engine cannot be loaded: every brief is then handed to its generator as one pack)."""
+    try:
+        from generators import packs
+        return packs.load_state(settings, out_root=out_root, shop_id=shop_id, date=date, dry_run=dry_run)
+    except Exception as e:  # pragma: no cover - the generator then reports the real problem
+        log.debug("pack state unavailable: %s", e)
+        return None
+
+
+def _brief_packs(brief: dict, *, settings, out_root: Path, shop_id: str, date: str, dry_run: bool,
+                 state, sizes=None) -> tuple[list[_Pack], list[int] | None]:
+    """The packs the brief would make on `date` (only `sizes` when given), master first
+    (generators.packs.preview), and their sizes. A brief the planner refuses is one pack of
+    unknown size under the id an older generator would have given it; its generator reports
+    why."""
+    try:
+        from generators import packs
+        if state is None:
+            raise ValueError("no pack state")
+        planned = packs.preview(brief, settings=settings, out_root=out_root, shop_id=shop_id, date=date,
+                                dry_run=dry_run, state=state, sizes=sizes)
+        return [_Pack(p.size, p.source, p.item_id) for p in planned], sorted(p.size for p in planned)
+    except Exception as e:
+        log.debug("cannot plan the packs of brief %r: %s", brief.get("brief_id"), e)
+    try:
+        legacy = items.new_item_id(date, str(brief.get("niche", "")), str(brief.get("theme") or "").strip(),
+                                   salt=brief.get("brief_id") or "")
+    except (ValueError, TypeError):
+        legacy = None
+    return [_Pack(None, None, legacy)], None
+
+
+def _pack_fields(pack: _Pack | None, m: dict | None = None) -> dict:
+    """{"size", "source"} for a summary record: the manifest's pack, else the plan's."""
+    got = (m or {}).get("pack") if isinstance((m or {}).get("pack"), dict) else {}
+    size = got.get("size") if isinstance(got.get("size"), int) else (pack.size if pack else None)
+    source = got.get("source") if isinstance(got.get("source"), str) else (pack.source if pack else None)
+    return {k: v for k, v in (("size", size), ("source", source)) if v is not None}
+
+
+def _list_pack(summary: dict, item_id: str, rec: dict, how: str) -> None:
+    summary["packs"].append({"item_id": item_id, "size": rec.get("size"), "source": rec.get("source"),
+                             "generate": how})
+
+
 def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path, date, dry_run, settings,
               cap, max_age, regenerate, cooldown_days: int = 0) -> list[Path]:
+    """Briefs -> packs -> items (docs/PACKS.md section 3).
+
+    1. Every brief's packs (generators.packs.preview: master first) are matched with existing
+       items: an item of the same brief and size is reused (or rebuilt with --regenerate), a
+       pack whose (shop, niche, theme, size) has a recent item or a real draft is skipped by
+       the theme cooldown (no max_items slot), the rest are new. When the brief's master
+       size waits, its other sizes are planned without it: cut from the theme's master set
+       within the cooldown, else fresh.
+    2. max_items counts packs, reused ones included, tier by tier (the first brief of every
+       niche file, then the second, ...): first one pack per brief of the tier (its master,
+       when that is new), then the tier's other packs, so a small max_items still covers every
+       niche and a brief's nearly free derived packs come before another brief's paid master.
+       Packs left out are made by a later run, cut from the same master set (a master set
+       within the cooldown feeds new derived packs).
+    3. One generate call per brief with the packs it got (`sizes` only when that is not all of
+       them); the generator reuses design sets, so a rerun pays for nothing twice.
+    """
     import generators
 
     budget_error, ledger_error = _budget_exceeded(), _ledger_unavailable()
@@ -425,92 +553,182 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
     blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
     queues = [q for q in (_load_brief_queue(summary, bf, blocklist) for bf in files) if q]
     # Round-robin across brief files (one per niche) so a small max_items still
-    # covers every niche instead of filling up from the first file.
-    order = [q[i] for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)]
+    # covers every niche instead of filling up from the first file. Tier i holds the
+    # i-th brief of every file.
+    tiered = [(i, q[i]) for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)]
+    order = [bb for _, bb in tiered]
     if files and not order and not summary["errors"]:
         summary["errors"].append("the brief files hold no briefs; nothing to generate")
 
+    shop_id = shop["id"]
     found = [(d, m) for d in items.iter_item_dirs(out_root) if (m := _manifest(d)) is not None]
     existing = _index_existing(found)
-    themes = _index_themes(found, shop["id"])
-    targets: list[Path] = []
-    taken = not_taken = cooled = held = 0  # reused items count too, so a rerun retries instead of spending more
-    for bf, brief in order:
-        if taken >= cap:
-            not_taken += 1
-            continue
+    themes = _index_themes(found, shop_id)
+    state = _pack_state(settings, out_root=out_root, shop_id=shop_id, date=date, dry_run=dry_run) if order else None
+
+    # 1. what each brief's packs are: reused, cooled down or to be made
+    entries: list[_Entry] = []
+    claimed: set[Path] = set()
+    cooled = 0
+    for tier, (bf, brief) in tiered:
         bid = brief.get("brief_id")
-        prior = existing.get((shop["id"], bid)) if bid else None
-        d = None
-        if prior is None:
-            try:
-                d = items.item_dir(items.new_item_id(date, str(brief.get("niche", "")),
-                                                     str(brief.get("theme") or "").strip(), salt=bid or ""), out_root)
-            except ValueError:
-                d = None  # the generator reports the bad brief
-            m = _manifest(d) if d else None
-            prior = (d, m) if m else None
-        if prior is None and d is not None:
-            blocker = _cooldown_block(brief, themes, date=date, days=cooldown_days, regenerate=regenerate)
-            if blocker is not None:
-                _record(summary, d.name, "generate", True, f"theme cooldown: {blocker.name}", skipped=True,
-                        cooldown=blocker.name)
-                cooled += 1
+        packs, sizes = _brief_packs(brief, settings=settings, out_root=out_root, shop_id=shop_id, date=date,
+                                    dry_run=dry_run, state=state)
+        entry = _Entry(bf, brief, sizes, tier)
+        cooled_master = False
+        for pk in packs:
+            prior = None
+            if pk.item_id:
+                try:
+                    d0 = items.item_dir(pk.item_id, out_root)
+                except ValueError:
+                    d0 = None
+                m0 = _manifest(d0) if d0 is not None else None
+                prior = (d0, m0) if m0 else None
+            if prior is None and bid:
+                prior = existing.get((shop_id, bid, pk.size))
+                if prior is None and (pk.size is None or pk.size == max(sizes or [pk.size])):
+                    prior = existing.get((shop_id, bid, None))      # an item whose size is unknown
+            if prior is None:
+                blocker = _cooldown_block(brief, themes, date=date, days=cooldown_days, regenerate=regenerate,
+                                          size=pk.size)
+                if blocker is not None:
+                    _record(summary, pk.item_id or str(bid or bf.name), "generate", True,
+                            f"theme cooldown: {blocker.name}", skipped=True, cooldown=blocker.name,
+                            **_pack_fields(pk))
+                    cooled += 1
+                    cooled_master = cooled_master or pk.source == "master"
+                    continue
+                entry.slots.append(_Slot("new", pk, date))
                 continue
-        gen_date = date
-        if prior is not None:
             d, m = prior
-            if d in targets:
+            if d in claimed:
                 continue
+            claimed.add(d)
             if _review_entry(d, settings).get("status") == "rejected":
                 summary["awaiting_review"][d.name] = "rejected in the review queue"
-                _record(summary, d.name, "generate", True, "rejected in the review queue; not rebuilt", skipped=True)
+                _record(summary, d.name, "generate", True, "rejected in the review queue; not rebuilt", skipped=True,
+                        **_pack_fields(pk, m))
                 continue
             drafted = _has_real_draft(d)
             if not regenerate or drafted:
                 why = "has an Etsy draft; not rebuilt" if regenerate else "reused; --regenerate rebuilds it"
-                _record(summary, d.name, "generate", True, f"{m.get('status')} ({why})", skipped=True)
-                targets.append(d)
+                entry.slots.append(_Slot("reuse", pk, None, d, m, why))
+            else:
+                entry.slots.append(_Slot("rebuild", pk, _item_date(d, m, brief, date), d, m))
+        new = [s for s in entry.slots if s.kind == "new"]
+        if cooled_master and new and sizes is not None:
+            # Without its own master, the brief's other sizes are cut from the theme's master
+            # set within the cooldown, or are fresh when there is none: plan them as such.
+            again, _ = _brief_packs(brief, settings=settings, out_root=out_root, shop_id=shop_id, date=date,
+                                    dry_run=dry_run, state=state, sizes=[s.pack.size for s in new])
+            by_size = {p.size: p for p in again if p.size is not None}
+            for s in new:
+                s.pack = by_size.get(s.pack.size, s.pack)
+        for s in new:
+            if s.pack.item_id:  # a later brief with the same theme and size waits for this one
+                _add_theme(themes, out_root / s.pack.item_id,
+                           {"niche": brief.get("niche"), "theme": brief.get("theme"), "shop_id": shop_id,
+                            "created": date, "pack": {"size": s.pack.size} if s.pack.size else {}}, shop_id)
+        entries.append(entry)
+
+    # 2. max_items counts packs. Tier by tier (the first brief of every niche, then the
+    # second, ...): first each brief's first pack (its master when that is new), then the
+    # tier's other packs (derived ones cost no images), in brief order.
+    taken = 0
+    for tier in dict.fromkeys(e.tier for e in entries):
+        group = [e for e in entries if e.tier == tier]
+        for entry in group:
+            if entry.slots and taken < cap:
+                entry.taken.append(entry.slots[0])
                 taken += 1
-                continue
-            gen_date = _item_date(d, m, brief, date)
+        for entry in group:
+            for slot in entry.slots[1:]:
+                if taken >= cap:
+                    break
+                entry.taken.append(slot)
+                taken += 1
+    unused = sum(1 for e in entries if e.slots and not e.taken)
+    partial = [e for e in entries if e.taken and len(e.taken) < len(e.slots)]
+
+    # 3. reuse or generate, in brief order
+    targets: list[Path] = []
+    held = 0
+    for entry in entries:
+        if not entry.taken:
+            continue
+        brief, bf = entry.brief, entry.bf
+        bid = brief.get("brief_id")
+        for slot in entry.taken:
+            if slot.kind == "reuse" and slot.dir not in targets:
+                rec = _pack_fields(slot.pack, slot.manifest)
+                _record(summary, slot.dir.name, "generate", True, f"{slot.manifest.get('status')} ({slot.why})",
+                        skipped=True, **rec)
+                _list_pack(summary, slot.dir.name, rec, "reused")
+                targets.append(slot.dir)
+        make = [s for s in entry.taken if s.kind != "reuse"]
+        if not make:
+            continue
         if summary["budget_reached"]:  # no new paid work; reused items above still go on
             held += 1
             continue
-        try:
-            dirs = generators.generate(brief, brief_file=items.repo_relative(bf), shop_id=shop["id"],
-                                       out_root=out_root, date=gen_date, dry_run=dry_run, settings=settings)
-        except (MissingSecretError, ledger_error) as e:
-            summary["setup_errors"].append(f"generate: {e}; no further briefs were generated")
-            break
-        except budget_error as e:
-            _budget_stop(summary, e)
-            _record(summary, d.name if d is not None else str(bid or bf.name), "generate", False,
-                    BUDGET_GENERATE, budget=True)
-            continue
-        except generators.ImageCapExceeded as e:
-            summary["errors"].append(f"generate[{bid}]: {e}; the remaining briefs were not generated")
-            break
-        except Exception as e:
-            summary["errors"].append(f"generate[{bid}]: {type(e).__name__}: {e}")
-            log.debug(traceback.format_exc())
-            continue
-        taken += 1
-        for d in dirs:
-            if d not in targets:
+        stop = False
+        for gen_date in dict.fromkeys(s.date for s in make):
+            group = [s for s in make if s.date == gen_date]
+            kw = {}
+            sizes = [s.pack.size for s in group]
+            if entry.sizes is not None and None not in sizes and sorted(sizes) != entry.sizes:
+                kw["sizes"] = sizes
+            made: list[Path] = []
+            try:
+                made = generators.generate(brief, brief_file=items.repo_relative(bf), shop_id=shop_id,
+                                           out_root=out_root, date=gen_date, dry_run=dry_run, settings=settings,
+                                           **kw)
+            except (MissingSecretError, ledger_error) as e:
+                summary["setup_errors"].append(f"generate: {e}; no further briefs were generated")
+                made = list(getattr(e, "pack_dirs", None) or [])
+                stop = True
+            except budget_error as e:
+                _budget_stop(summary, e)
+                made = list(getattr(e, "pack_dirs", None) or [])
+                for s in group:
+                    rid = s.dir.name if s.dir is not None else (s.pack.item_id or str(bid or bf.name))
+                    if not any(d.name == rid for d in made):
+                        _record(summary, rid, "generate", False, BUDGET_GENERATE, budget=True, **_pack_fields(s.pack))
+            except generators.ImageCapExceeded as e:
+                summary["errors"].append(f"generate[{bid}]: {e}; the remaining briefs were not generated")
+                made = list(getattr(e, "pack_dirs", None) or [])
+                stop = True
+            except Exception as e:
+                summary["errors"].append(f"generate[{bid}]: {type(e).__name__}: {e}")
+                log.debug(traceback.format_exc())
+                made = list(getattr(e, "pack_dirs", None) or [])
+            for d in made:
+                if d in targets:
+                    continue
                 targets.append(d)
-                _record(summary, d.name, "generate", True, "generated")
                 m = _manifest(d)
-                if m is not None:  # a later brief with the same theme waits too
-                    _add_theme(themes, d, m, shop["id"])
-    if not_taken:
-        summary["notes"].append(f"max_items={cap}: {not_taken} brief(s) not used this run")
+                pk = next((s.pack for s in group if s.pack.item_id == d.name), None)
+                rec = _pack_fields(pk, m)
+                _record(summary, d.name, "generate", True, "generated", **rec)
+                _list_pack(summary, d.name, rec, "generated")
+            if stop or summary["budget_reached"]:
+                break
+        if stop:
+            break
+    if unused:
+        summary["notes"].append(f"max_items={cap}: {unused} brief(s) not used this run")
+    if partial:
+        left = sum(len(e.slots) - len(e.taken) for e in partial)
+        summary["notes"].append(f"max_items={cap}: {left} more pack(s) of {len(partial)} brief(s) not made "
+                                "this run; a later run makes them")
     if held:
         summary["notes"].append(f"monthly spending cap reached: {held} more brief(s) not made this run")
     if cooled:
         why = (f"made in the last {cooldown_days} days or already has an Etsy draft" if cooldown_days and
                not regenerate else "already has an Etsy draft")
-        summary["notes"].append(f"theme cooldown: {cooled} brief(s) skipped because the same theme was {why}")
+        summary["notes"].append(f"theme cooldown: {cooled} pack(s) skipped because the same theme and pack size "
+                                f"was {why}")
     return targets
 
 
@@ -650,13 +868,21 @@ def _cell(rec: dict) -> str:
     return "skip" if rec.get("skipped") else "ok" if rec["ok"] else "wait" if rec.get("budget") else "FAIL"
 
 
+def _pack_label(rec: dict) -> str:
+    """" [pack of 20, master]" for a pack record, "" when the record does not say."""
+    size, source = rec.get("size"), rec.get("source")
+    if not isinstance(size, int):
+        return ""
+    return f" [pack of {size}, {source}]" if source else f" [pack of {size}]"
+
+
 def format_summary(summary: dict) -> str:
     lines = [f"run {summary['date']} shop={summary['shop_id']} dry_run={summary['dry_run']}",
              f"briefs: {', '.join(summary['briefs']) or '(none)'}"]
     for item_id, stages in summary["items"].items():
         cells = [f"{st}={_cell(rec)}" for st, rec in stages.items()
                  if st != "generate" or not rec["ok"] or rec.get("skipped")]
-        lines.append(f"  {item_id}: {' '.join(cells) or 'generated'}")
+        lines.append(f"  {item_id}{_pack_label(stages.get('generate') or {})}: {' '.join(cells) or 'generated'}")
         lines += [f"      {st}: skip ({rec['detail']})" if rec.get("cooldown") else f"      {st}: {rec['detail']}"
                   for st, rec in stages.items() if (not rec["ok"] or rec.get("skipped")) and rec["detail"]]
     if summary.get("budget_reached"):

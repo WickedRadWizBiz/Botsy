@@ -386,7 +386,8 @@ def test_a_settings_mistake_in_one_rule_does_not_stop_the_others(tmp_path):
 def test_nothing_to_do_on_a_fresh_server(env):
     settings, _ = env
     res = run(settings)
-    assert res == {"rejected_uploads": [], "old_exports": [], "practice_items": [], "practice_run_summaries": []}
+    assert res == {"rejected_uploads": [], "old_exports": [], "practice_items": [], "practice_run_summaries": [],
+                   "practice_sets": []}
     assert res.freed_bytes == 0 and res.problems == [] and cleanup.describe(res) == ""
 
 
@@ -403,3 +404,49 @@ def test_result_holds_only_removals(tmp_path):
 def test_defaults():
     assert cleanup.DEFAULTS == {"rejected_max_mb": 200, "rejected_keep_days": 30, "dry_run_keep_days": 14}
     assert cleanup.RESEARCH_DEFAULTS["keep_days"] == 180
+
+
+# ---------------------------------------------------------------- practice design sets
+
+def practice_set(root, created: str, theme: str = "frogs", *, dry: bool = True, used=()):
+    set_id = items.new_item_id(created, "stickers", theme, salt=f"set-{theme}")
+    d = root / "sets" / set_id
+    (d / "pages").mkdir(parents=True)
+    (d / "pages" / "p1.png").write_bytes(b"p" * 3000)
+    items.write_json(d / "set.json", {
+        "schema": "set/v1", "set_id": set_id, "niche": "stickers", "theme": theme, "created": created,
+        "kind": "master", "dry_run": dry, "items": [{"item_id": i, "size": 5, "source": "master"} for i in used],
+        "pages": [{"page_id": f"{set_id}-p1", "used_in": list(used)}]})
+    return d
+
+
+def test_unused_old_practice_sets_are_removed(env):
+    """A dry-run design set goes once none of its items is left and it is older than
+    dry_run_keep_days; sets in use, recent sets, real sets and the state file stay."""
+    settings, _ = env
+    dry = items.dry_run_root(settings)
+    gone = practice_item(dry, days_ago(20), "frogs")                     # removed by this run
+    kept_item = practice_item(dry, days_ago(3), "cats")
+    orphan = practice_set(dry, days_ago(20), "frogs", used=[gone.name])
+    in_use = practice_set(dry, days_ago(20), "cats", used=[kept_item.name])
+    recent = practice_set(dry, days_ago(5), "owls")
+    real = practice_set(dry, days_ago(90), "bees", dry=False)
+    items.write_json(dry / "sets" / "packs_state.json", {"schema": "packs_state/v1"})
+    res = run(settings)
+    assert res["practice_items"] == [gone.name]
+    assert res["practice_sets"] == [orphan.name] and not orphan.exists()
+    assert in_use.is_dir() and recent.is_dir() and real.is_dir()
+    assert (dry / "sets" / "packs_state.json").is_file()
+    assert "unused practice design set" in cleanup.describe(res)
+
+
+def test_practice_set_cleanup_skips_links_and_unreadable_sets(env, tmp_path):
+    settings, _ = env
+    dry = items.dry_run_root(settings)
+    bad = practice_set(dry, days_ago(40), "frogs")
+    (bad / "set.json").write_text("{not json", encoding="utf-8")
+    outside = practice_set(tmp_path / "elsewhere", days_ago(40), "cats")
+    link = dry / "sets" / outside.name
+    link.symlink_to(outside, target_is_directory=True)
+    res = run(settings)
+    assert res["practice_sets"] == [] and bad.is_dir() and outside.is_dir() and link.is_symlink()

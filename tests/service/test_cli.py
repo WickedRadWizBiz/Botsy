@@ -15,6 +15,7 @@ from service.paths import service_paths
 
 from ._support import (
     DATE,
+    SHOP_NICHES,
     FakePipeline,
     FakeResearch,
     everbee_csv,
@@ -92,7 +93,7 @@ def test_research_command_passes_history_dir(env, monkeypatch, capsys):
     fake = FakeResearch()
     monkeypatch.setattr(research, "run", fake)
     assert cli.main(["research", "--settings", str(path), "--date", DATE]) == 0
-    assert [c["history_dir"] for c in fake.calls] == [paths.history] * 3
+    assert [c["history_dir"] for c in fake.calls] == [paths.history] * len(SHOP_NICHES)
     assert "1 brief file(s), 2 design brief(s)" in capsys.readouterr().out
     monkeypatch.setattr(research, "run", FakeResearch(fail={"stickers"}))
     assert cli.main(["research", "--settings", str(path), "--date", DATE]) == 1

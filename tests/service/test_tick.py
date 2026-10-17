@@ -14,6 +14,7 @@ from service.paths import service_paths
 
 from ._support import (
     DATE,
+    SHOP_NICHES,
     FakePipeline,
     FakeResearch,
     fake_summary,
@@ -22,7 +23,8 @@ from ._support import (
     upload,
 )
 
-NICHES = ["stickers", "coloring_pages", "activity_sheets"]
+NICHES = SHOP_NICHES
+N = len(NICHES)
 
 
 @pytest.fixture
@@ -112,7 +114,7 @@ def test_force_runs_without_upload_but_does_not_rebuild_unchanged_briefs(tmp_pat
     assert r.niches() == NICHES and len(p.calls) == 1 and first["research"]["ran"]
 
     second = tick.tick(settings, force=True, date="2026-10-17")
-    assert len(r.calls) == 3                                  # research skipped: same inputs
+    assert len(r.calls) == N                                  # research skipped: same inputs
     assert len(p.calls) == 2                                  # the pipeline still runs (reviews, retries)
     assert not second["research"]["ran"]
     assert any("research skipped" in n for n in second["research"]["notes"])
@@ -121,7 +123,7 @@ def test_force_runs_without_upload_but_does_not_rebuild_unchanged_briefs(tmp_pat
     paths.inputs.mkdir(parents=True, exist_ok=True)
     (paths.inputs / "erank-manual.csv").write_bytes(everbee_csv(seed=5))
     tick.tick(settings, force=True, date="2026-10-18")
-    assert len(r.calls) == 6
+    assert len(r.calls) == 2 * N
 
 
 def test_force_with_no_brief_files_skips_the_pipeline(tmp_path, monkeypatch):
@@ -130,7 +132,7 @@ def test_force_with_no_brief_files_skips_the_pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(prun, "run", p)
     settings, _ = setup(tmp_path)
     rec = tick.tick(settings, force=True, date=DATE)
-    assert len(r.calls) == 3 and p.calls == []
+    assert len(r.calls) == N and p.calls == []
     assert rec["exit_code"] == 0 and any("no brief files yet" in n for n in rec["run"]["notes"])
     assert any("no brief file yet" in n for n in rec["research"]["notes"])
 
@@ -157,7 +159,7 @@ def test_research_error_is_recorded_and_retried_next_time(tmp_path, monkeypatch)
     _, text = read_status(paths)
     assert "Problems: 1" in text and "boom in coloring_pages" in text
     tick.tick(settings, force=True, date=DATE)
-    assert len(r.calls) == 6                                  # inputs unchanged, but last research failed
+    assert len(r.calls) == 2 * N                              # inputs unchanged, but last research failed
 
 
 def test_pipeline_setup_error_gives_exit_2(tmp_path, monkeypatch):
@@ -208,7 +210,7 @@ def test_upload_during_the_run_gets_another_round(tmp_path, monkeypatch):
     monkeypatch.setattr(prun, "run", p)
     upload(paths.incoming, "first.csv", everbee_csv(seed=1))
     rec = tick.tick(settings, date=DATE)
-    assert len(rec["ingest"]["accepted"]) == 2 and len(p.calls) == 2 and len(r.calls) == 6
+    assert len(rec["ingest"]["accepted"]) == 2 and len(p.calls) == 2 and len(r.calls) == 2 * N
     assert list(paths.incoming.iterdir()) == []
 
 
@@ -240,7 +242,7 @@ def test_settle_waits_for_the_rest_of_a_batch(tmp_path, fakes):
     upload(paths.incoming, "first.csv", everbee_csv(seed=1))
     rec = tick.tick(settings, date=DATE, sleep=sleep)
     assert len(rec["ingest"]["accepted"]) == 2
-    assert len(r.calls) == 3 and len(p.calls) == 1            # one research run for the whole batch
+    assert len(r.calls) == N and len(p.calls) == 1            # one research run for the whole batch
     assert len(slept) >= 2
 
 

@@ -22,7 +22,10 @@ Three folders, each with its own rule:
 - Practice items (pipeline.dry_run_output_dir, output/dry-run/): item folders made in
   a dry run (manifest generator.dry_run true) and created more than
   service.dry_run_keep_days (14) days ago, with their review entries, plus run summaries
-  in runs/ older than that.
+  in runs/ older than that, plus practice design sets (sets/<set_id>/, docs/PACKS.md
+  section 3) made in a dry run (set.json dry_run true) more than that many days ago once
+  none of the items in their set.json items[] is left. A set with dry_run false, or
+  whose set.json cannot be read, is never removed; sets/packs_state.json stays.
 
 A days or MB setting of 0 switches that rule off; an empty one means the default.
 
@@ -74,12 +77,12 @@ _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLL
 
 class CleanupResult(dict):
     """What run() removed, one list per rule (the keys of KEYS):
-    rejected_uploads (each with its reason file), old_exports, practice_items (item ids)
-    and practice_run_summaries. Only removals are dict items, so a caller that counts the
+    rejected_uploads (each with its reason file), old_exports, practice_items (item ids),
+    practice_run_summaries and practice_sets (design set ids). Only removals are dict items, so a caller that counts the
     values (status.txt: "Old files tidied away") counts nothing else. `freed_bytes` and
     `problems` (plain text, e.g. a folder that is a link) are attributes."""
 
-    KEYS = ("rejected_uploads", "old_exports", "practice_items", "practice_run_summaries")
+    KEYS = ("rejected_uploads", "old_exports", "practice_items", "practice_run_summaries", "practice_sets")
 
     def __init__(self):
         super().__init__({k: [] for k in self.KEYS})
@@ -113,7 +116,8 @@ def describe(result: dict) -> str:
     parts = []
     for key, what in (("rejected_uploads", "rejected upload(s)"), ("old_exports", "old export(s)"),
                       ("practice_items", "practice item(s)"),
-                      ("practice_run_summaries", "old practice run summary(s)")):
+                      ("practice_run_summaries", "old practice run summary(s)"),
+                      ("practice_sets", "unused practice design set(s)")):
         if result.get(key):
             parts.append(f"{len(result[key])} {what}")
     if not parts:
@@ -509,6 +513,77 @@ def _dry_run(settings: dict, today: _dt.date, result: dict) -> None:
         if removed:
             _drop_review_entries(root, removed, settings, result)
         _drop_run_summaries(root, today, keep_days, result)
+        _drop_unused_sets(root, today, keep_days, result)
+    finally:
+        os.close(fd)
+
+
+SETS_DIR = "sets"                        # generators/packs/sets.py SETS_DIR (set ids are shaped like item ids)
+
+
+def _unused_practice_set(sets: Path, name: str, root: Path, today: _dt.date, keep_days: int) -> tuple[bool, str]:
+    """(removable, why kept) for one folder in <dry-run root>/sets/."""
+    try:
+        fd = _open_dir(sets / name)
+    except _LinkedFolder:
+        return False, "a link"
+    if fd is None:
+        return False, "not a folder"
+    try:
+        try:
+            doc = _read_regular_json(fd, "set.json")
+        except FileNotFoundError:
+            return False, "no set.json"
+        except (OSError, ValueError):
+            return False, "its set.json could not be read"
+    finally:
+        os.close(fd)
+    if not isinstance(doc, dict) or doc.get("schema") != "set/v1" or doc.get("set_id") != name:
+        return False, "not a design set"
+    if doc.get("dry_run") is not True:
+        return False, "not made in a dry run"
+    created = _day(doc.get("created")) or _day(name[:10])
+    if created is None or (today - created).days <= keep_days:
+        return False, "recent"
+    used = [it.get("item_id") for it in doc.get("items") or [] if isinstance(it, dict)]
+    for page in doc.get("pages") or []:
+        if isinstance(page, dict):
+            used += list(page.get("used_in") or [])
+    for item_id in used:
+        if not isinstance(item_id, str) or not items.valid_item_id(item_id) \
+                or os.path.lexists(root / item_id):
+            return False, "an item made from it is still there"
+    return True, ""
+
+
+def _drop_unused_sets(root: Path, today: _dt.date, keep_days: int, result: dict) -> None:
+    """Practice design sets (docs/PACKS.md section 3) no practice item uses any more."""
+    folder = root / SETS_DIR
+    try:
+        fd = _open_dir(folder)
+    except _LinkedFolder:
+        result.problems.append(_link_problem(folder))
+        return
+    if fd is None:
+        return
+    try:
+        with os.scandir(fd) as it:
+            names = sorted(e.name for e in it if not e.name.startswith(".")
+                           and e.is_dir(follow_symlinks=False) and items.valid_item_id(e.name))
+        for name in names:
+            removable, why = _unused_practice_set(folder, name, root, today, keep_days)
+            if not removable:
+                if why not in ("recent", "an item made from it is still there"):
+                    log.info("cleanup: kept design set %s: %s", name, why)
+                continue
+            size = _dir_size(folder / name)
+            try:
+                shutil.rmtree(name, dir_fd=fd)
+            except OSError as e:
+                result.problems.append(f"could not remove practice design set {name}: {e.strerror or e}")
+                continue
+            result.freed_bytes += size
+            result["practice_sets"].append(name)
     finally:
         os.close(fd)
 

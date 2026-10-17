@@ -13,9 +13,11 @@ from pathlib import Path
 
 import yaml
 
-from core.config import deep_merge, load_settings
+from core.config import deep_merge, get_shop, load_settings
 
 DATE = "2026-10-16"
+# The niches of shop "main" in config/settings.yaml: research runs once per niche.
+SHOP_NICHES = list(get_shop(load_settings(), "main")["niches"])
 EVERBEE_HEADERS = ["Product Name", "Shop Name", "Price", "Mo. Sales", "Reviews", "Favorites",
                    "Listing Age", "Tags", "Link"]
 ERANK_KW_HEADERS = ["Keywords", "Avg. Searches", "Avg. Clicks", "Avg. CTR", "Etsy Competition",
@@ -35,6 +37,7 @@ def make_settings(tmp_path: Path, service: dict | None = None, **sections) -> tu
         "paths": {"output_dir": str(tmp_path / "output"), "review_dir": str(tmp_path / "output" / "review")},
         "pipeline": {"dry_run_output_dir": str(tmp_path / "dry")},
         "spend": {"ledger_file": str(tmp_path / "data" / "spend" / "ledger.jsonl")},
+        "packs": {"state_file": str(tmp_path / "data" / "packs_state.json")},
         # Discord stays off unless a test switches it on (and then it passes a fake session).
         "notify": {"discord": {"enabled": False}},
     })

@@ -133,7 +133,9 @@ def test_three_weeks_cap_cleanup_and_refined_stage(world, tmp_path):
         assert rec["run"]["generated"] == 2
         if n > 1:
             assert rec["run"]["cooldown"] >= 1                      # the themes made before were skipped
-        themes = [(m["niche"], m["theme"]) for _, m in _items(dry)]
+        # Theme cooldown is per pack size (docs/PACKS.md section 3): a later week may make
+        # another size of a theme made before, never the same size again.
+        themes = [(m["niche"], m["theme"], (m.get("pack") or {}).get("size")) for _, m in _items(dry)]
         assert len(themes) == 2 * n and len(set(themes)) == len(themes)
 
     for niche in NICHES:

@@ -17,7 +17,10 @@ from core import events, spend
 from service import notify, status, tick
 from service.paths import service_paths
 
-from ._support import DATE, FakePipeline, FakeResearch, everbee_csv, fake_summary, make_settings, upload
+from ._support import (DATE, SHOP_NICHES, FakePipeline, FakeResearch, everbee_csv, fake_summary,
+                       make_settings, upload)
+
+N = len(SHOP_NICHES)            # research runs once per shop niche
 
 FROGS = f"{DATE}-stickers-frogs-aaaa"
 CATS = f"{DATE}-stickers-cats-bbbb"
@@ -245,11 +248,11 @@ def test_stage_changed_once_and_re_research_on_change(tmp_path, monkeypatch, sen
     monkeypatch.setattr(prun, "run", FakePipeline())
     settings, _ = setup(tmp_path)
     tick.tick(settings, force=True, date=DATE)
-    assert len(r.calls) == 3 and "stage_changed" not in kinds(settings)
+    assert len(r.calls) == N and "stage_changed" not in kinds(settings)
 
     stage.value = "refined"                     # 20 real drafts reached since the last tick
     rec = tick.tick(settings, force=True, date="2026-10-17")
-    assert len(r.calls) == 6 and all(c["stage"] == "refined" for c in r.calls[3:])   # inputs unchanged
+    assert len(r.calls) == 2 * N and all(c["stage"] == "refined" for c in r.calls[N:])   # inputs unchanged
     assert rec["research"]["ran"] and rec["research"]["stage"] == "refined"
     changed = [e for e in all_events(settings) if e["kind"] == "stage_changed"]
     assert [(e["from"], e["to"]) for e in changed] == [("discovery", "refined")]
@@ -257,7 +260,7 @@ def test_stage_changed_once_and_re_research_on_change(tmp_path, monkeypatch, sen
     assert any("refined stage" in t for t, _ in sent)
 
     tick.tick(settings, force=True, date="2026-10-18")
-    assert len(r.calls) == 6                                         # unchanged inputs, same stage
+    assert len(r.calls) == 2 * N                                     # unchanged inputs, same stage
     assert kinds(settings).count("stage_changed") == 1
     doc = status.load(service_paths(settings).outbox)
     assert doc["last_research"]["stage"] == "refined"

@@ -5,13 +5,17 @@ shops:
   - id: main                     # internal key used in output paths and logs
     name: "YOUR_SHOP_NAME"       # display name, used in {shop_name} in ai_disclosure.txt
     etsy_shop_id_env: ETSY_SHOP_ID   # env var holding this shop's numeric Etsy shop_id
-    niches: [stickers, coloring_pages, activity_sheets]
-    default_price_usd:
+    niches: [stickers, coloring_pages, activity_sheets, stationery, ttrpg]
+    default_price_usd:           # every pack size of a theme gets this price for now (no per-size rule yet)
       stickers: 3.50
       coloring_pages: 4.00
       activity_sheets: 4.00
+      stationery: 4.50           # suggested; please confirm
+      ttrpg: 4.50                # suggested; please confirm
 
-# niches.*.generator and niches.*.output only document each niche; no code reads them.
+# settings.niches decides which niches research knows, and QA's manifest_schema check refuses
+# items whose niche is not listed here. generator / output only document each niche.
+# pages_per_pack[0]: the pack size for a brief with neither pack_sizes nor page_count (older briefs).
 niches:
   stickers:
     generator: image_api
@@ -25,6 +29,14 @@ niches:
     types: [maze, word_search, tracing, dot_to_dot]
     output: [pdf]
     pages_per_pack: [10, 20, 30]
+  stationery:
+    generator: procedural        # reportlab layouts; optional AI line-art accents (stationery.ai_accents)
+    output: [pdf]
+    pages_per_pack: [5, 20]
+  ttrpg:
+    generator: procedural        # reportlab only; optional AI line-art accents (ttrpg.ai_accents)
+    output: [pdf]
+    pages_per_pack: [5, 20, 30]
 
 models:
   text:
@@ -83,9 +95,20 @@ research:
     coloring_pages: ['\bcolou?ring\b', '\bcolou?r (by|in) (numbers?|the)\b']
     activity_sheets: ['\bmazes?\b', '\bword ?(search|find)(es)?\b', '\btracing\b', '\bdot ?to ?dots?\b',
                       '\bconnect the dots\b', '\bworksheets?\b', '\bactivit(y|ies)\b', '\bbusy book\b']
+  # niche_rules lists 3 niches; stationery and ttrpg rules come from research/niches.py
+  # DEFAULT_RULES (deep-merged per niche). Do not add shorter copies of them here.
   extra_stopwords: []            # words/phrases never used as themes, on top of research/text.py
-  pack_sizes: {stickers: [6, 12, 20, 30, 50]}   # stickers per pack (other niches use niches.<niche>.pages_per_pack)
-  default_pack: {stickers: 12, coloring_pages: 20, activity_sheets: 20}   # when the data states no counts
+  # Pack sizes (docs/PACKS.md section 2): every brief gets base_pack_sizes plus the top sellers'
+  # sizes, each kept within packs.min_size / packs.max_size.<niche> (the packs: block below).
+  base_pack_sizes: [5, 20]
+  top_sellers: {quantile: 0.75, min_rows: 5, second_share: 0.3}   # top quartile by sales (else favorites), 5+ rows
+  opportunity_weights: {demand: 0.4, sales_per_listing: 0.3, low_competition: 0.3}   # renormalized over the metrics the data has
+  system_share: 0.5              # ttrpg: brief "system" = the registry id named by >= this share of the theme's
+                                 # clean rows, else "generic" (the brief stores the id, never the name)
+  # Not set here on purpose (YAML lists replace defaults): niche_stopwords, niche_keep_words,
+  # niche_connectors, excluded_terms and medical_terms live in research/defaults.py
+  # (medical_terms: settings can add, never remove). Research reads listing.medical_ok_phrases
+  # when it is set, else its own copy of the listing defaults.
   price_clamp: {min_factor: 0.75, max_factor: 1.5, step_usd: 0.25}       # median price clamped to x shop default
   own_shop_boost: 0.1            # own_shop*.csv: closes up to 10% of a theme's gap to demand 1.0 (never counted)
   trend_boost: 0.1               # trends*.csv: same, from interest 0-100 (never counted)
@@ -140,6 +163,10 @@ listing:
     stickers: null
     coloring_pages: null
     activity_sheets: null
+    stationery: null
+    ttrpg: null
+  # medical_terms / misleading_phrases can only be added to and medical_ok_phrases can only
+  # shrink (listing.listing_config); their lists live in listing DEFAULTS.
   max_retries: 2                 # times the model is asked again with the rule errors before the code repairs the draft
   effort: low                    # Opus 5.5 always thinks, and thinking counts toward models.text.max_tokens
   refusal_fallback: true         # server-side fallback model if a request is declined (beta server-side-fallback-2026-07-01, fallbacks: default)
@@ -161,6 +188,28 @@ pipeline:
                                  # within this many days, or one with a real Etsy draft at any age
                                  # (docs/SERVER.md section 13). null or 0 = only real drafts block.
                                  # --regenerate lifts the days, never a real draft. Not a number = 60.
+
+# --- Themed packs: generators/packs (docs/PACKS.md section 3). Defaults: generators/packs/model.py
+# DEFAULTS; research keeps brief pack sizes within min_size / max_size (research/defaults.py PACK_BOUNDS). ---
+packs:
+  min_size: 5                      # smallest pack a brief may name
+  max_size: {stickers: 60, coloring_pages: 50, activity_sheets: 50, stationery: 60, ttrpg: 40}
+  fresh_every: {5: 3, 20: 6}       # out of every N packs of a size, the Nth gets new pages; the others are cut
+                                   # from the theme's master set (the brief's largest size: always new pages)
+  fresh_every_default: 0           # other sizes: never forced fresh
+  state_file: data/packs_state.json   # pack counters for paths.output_dir (gitignored); other output roots
+                                      # (dry runs, --out) keep <out>/sets/packs_state.json, so a dry run
+                                      # never moves the real counters
+  min_quality: 0.5                 # curation: weaker pages are picked only when nothing else is left
+  preview_pages: 8                 # page previews per item (QA's mockup grid shows up to 8)
+  dry_run_fake_long_side_px: 640   # dry runs: FakeImageClient size (the smaller of this and imaging.fake_long_side_px)
+  subjects:                        # subject planning with the text model (models.text.model)
+    use_model: true                # false: built-in subject tables only (dry runs always use the tables)
+    effort: low
+    refusal_fallback: true         # server-side fallback (fallbacks: "default") when the request is declined
+    extra: 6                       # ask for this many more than needed (some are filtered out)
+    max_chars: 80
+    max_tokens: 8000
 
 # --- 24/7 server: python -m service (docs/SERVER.md). Defaults: service/paths.py,
 # service/searchlist.py and service/cleanup.py DEFAULTS. Research history folder: research.history_dir above.
@@ -196,10 +245,14 @@ service:
       coloring_pages: ["coloring pages for kids", "printable coloring pages"]
       stickers: ["digital stickers", "digital planner stickers"]
       activity_sheets: ["kids activity sheets", "printable mazes for kids"]
+      stationery: ["adhd planner printable", "productivity planner pages"]
+      ttrpg: ["ttrpg character sheet", "hex map paper printable"]
     nouns:                         # added after a theme name: "axolotl" -> "axolotl coloring pages"
       coloring_pages: coloring pages
       stickers: stickers
       activity_sheets: activity sheets
+      stationery: planner pages
+      ttrpg: rpg sheets
 # The Windows helper has no section here: it runs on the PC and reads %APPDATA%\Botsy\helper.json
 # (defaults: DEFAULTS in windows/botsy_helper.py; see windows/README.md).
 
@@ -293,7 +346,6 @@ imaging:
 coloring_pages:
   default_pages: 20             # brief has no page_count and niches.coloring_pages.pages_per_pack is unset
   max_pages: 50
-  dry_run_max_pages: 6          # dry runs only, for speed; null = full pack
   spare_subjects: 3             # extra planned subjects that replace refused or blank images
   max_failures: 3               # more refused/blank images than this fails the item
   pad_frac: 0.03                # white margin kept around the art when cropping
@@ -306,7 +358,6 @@ stickers:
   default_count: 12             # brief has no page_count (= sticker count)
   max_count: 60                 # textured 2K art is ~1-2.5 MB per PNG; past ~24 stickers the ZIP parts plus
                                 # sheet PDFs can exceed Etsy's 5 files (item is then marked needs_review)
-  dry_run_max_stickers: 6       # dry runs only; null = full pack
   spare_subjects: 3
   max_failures: 3
   sticker_px: 1500              # long side of the artwork before the border (5 in at 300 dpi)
@@ -328,6 +379,53 @@ stickers:
   preview_px: 800
   footer_text: ""
 
+# --- Procedural planner pages (generators/stationery) and tabletop RPG sheets (generators/ttrpg).
+# Defaults live in each package's DEFAULTS; packs.max_size.<niche> wins over max_pages when set.
+# Printed text never below 7 pt and writing lines never closer than 6 mm (QA checks both). ---
+stationery:
+  max_pages: 60                  # largest pack
+  min_font_pt: 7.0               # smallest printed text (never below 7)
+  min_line_gap_mm: 6.0           # writing lines, rows and grids at least this far apart (never below 6)
+  light_line_pt: 0.6             # writing and grid lines (never below 0.5)
+  structural_line_pt: 0.0        # box borders; 0 = print.min_line_weight_pt
+  color_zones: true              # light print-friendly tints in zone headers (false: light gray)
+  week_start: auto               # auto (US Letter: Sunday, A4: Monday) | monday | sunday
+  clock: 12h                     # schedule labels: 12h ("7 am") | 24h ("07:00")
+  day_start_hour: 7              # first hour on schedules
+  grid_pitch_mm: 6.35            # dot and square grids (a quarter inch)
+  unique_type_share: 0.8         # share of a pack's pages that are different page types
+  preview_dpi: 150
+  footer_text: "For personal use only. Please do not share or resell this file."
+  ai_accents: false              # optional AI line-art accents (real runs only, uses the image client)
+  accent_images: 2               # accent images per design set
+  accent_image_size: "1K"
+  accent_max_failures: 2
+  accent_box_in: 0.95            # printed accent size (also the procedural motif slot)
+  accent_threshold: 180
+  accent_despeckle_px: 12
+
+ttrpg:
+  systems_file: config/ttrpg_systems.yaml   # game-system registry (core/systems.py): names, owner, disclaimer, sheet fields
+  max_pages: 40
+  min_font_pt: 7.0               # never below 7
+  min_line_gap_mm: 6.0           # never below 6
+  line_gap_mm: 7.0
+  row_gap_mm: 6.4
+  light_line_pt: 0.6             # never below 0.5
+  structural_line_pt: 1.0
+  frame_line_pt: 1.6
+  tints: true
+  default_genre: classic_fantasy
+  preview_dpi: 150
+  footer_text: "For personal use only. Please do not share or resell this file."
+  ai_accents: false              # optional AI line-art accents (real runs only)
+  accent_images: 2
+  accent_image_size: "1K"
+  accent_max_failures: 2
+  accent_box_in: 0.36
+  accent_threshold: 180
+  accent_despeckle_px: 12
+
 # Existing key, now documented: vectorize.stickers.background_removal accepts rembg | floodfill
 # (floodfill suits the "plain solid white background" prompt and needs no model download).
 
@@ -342,6 +440,19 @@ qa:
   line_check_max_pages: 40
   gray_max_fraction: 0.005       # coloring pages: share of mid-gray pixels allowed
   min_regions: 3                 # enclosed areas to color per page (warning only)
+  packs:                         # perceptual-hash distance out of 64 bits (image niches)
+    duplicate_distance: 3        # this close or closer: the pack fails (duplicate page)
+    near_distance: 6             # this close or closer: the item goes to review
+  print_rules:                   # stationery and ttrpg (docs/PACKS.md section 5)
+    min_font_pt: 7.0
+    font_tolerance_pt: 0.05
+    min_line_gap_mm: 6.0
+    line_gap_tolerance_mm: 0.4
+    dpi: 150                     # render for the writing-line spacing estimate
+    dark_level: 235
+    light_level: 90              # writing lines are light gray; darker lines are borders
+    min_run_mm: 20
+    max_pages: 60
   mockups:
     enabled: true
     width: 2700                  # 4:3; Etsy recommends at least 2000 px on both sides
@@ -350,6 +461,8 @@ qa:
     max_bytes: 1000000           # Etsy Help Center: listing images over 1 MB may not finish uploading
     min_count: 5
     fonts: []                    # optional .ttf/.otf paths tried before the system fonts (never downloaded)
+    pack_badge: true             # "20 PAGES" / "SET OF 5" on the cover photo (on the title card's corner)
+    desk_niches: [stationery, ttrpg]   # sixth photo: printed pages on a desk
 
 publisher:
   # Etsy Open API v3, our own shop, DRAFTS ONLY (all keys and defaults: publisher/defaults.py)

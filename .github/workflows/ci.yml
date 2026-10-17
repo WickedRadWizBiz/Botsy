@@ -29,6 +29,7 @@ jobs:
         run: pip install -q -r requirements.txt
       - name: Tests (offline)
         run: pytest -q
+      # 10 packs reach every niche (stickers, coloring, activity, stationery, ttrpg): about a minute.
       - name: End-to-end dry run on sample data
         if: hashFiles('data/samples/**') != ''
-        run: python -m pipeline run --dry-run --inputs data/samples --briefs-dir "$RUNNER_TEMP/briefs" --out "$RUNNER_TEMP/out" --max-items 3
+        run: python -m pipeline run --dry-run --inputs data/samples --briefs-dir "$RUNNER_TEMP/briefs" --out "$RUNNER_TEMP/out" --max-items 10
