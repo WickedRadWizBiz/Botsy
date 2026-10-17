@@ -1,0 +1,177 @@
+# Game systems a tabletop RPG sheet can be made for (docs/PACKS.md section 1).
+# Read and validated by core/systems.py; the ttrpg generator, research and the listing stage
+# use it through that module only.
+#
+# CLAUDE.md exception (user, 2026-10-16): a ttrpg listing may name the game system its sheets
+# are made for, as a compatibility reference only ("Character Sheet for D&D 5e"), in that
+# listing's title, tags and description, never on printed pages, file names, prompts or
+# mockups, and always with the system's "unofficial, not affiliated with <owner>" disclaimer.
+#
+# Each system:
+#   id           stable id stored in briefs and manifests (never trademark text)
+#   label        how a listing names the system ("... for D&D 5e")
+#   names        how the system may appear in listing text (detection; the label first)
+#   owner        the trademark owner, named in the disclaimer
+#   owner_names  other spellings of the owner (detection)
+#   disclaimer   appended to every listing that names the system
+#   sheet_fields OUR OWN field list, from the game mechanics only, in generic wording. It
+#                only decides which fields a sheet has; layouts, art and wording are ours.
+#                Never official sheet layouts, logos, art, setting names or product-identity
+#                creatures. A missing group (core, details, spells, combat, currency,
+#                spell_card) is taken from the default system.
+#
+# Section kinds (generators/ttrpg/flow.py): lines (write-in lines with labels under them),
+# scores (big score boxes, optional sub boxes), boxes (small labeled boxes), checklist (a
+# bubble, a label and value boxes per row; marks = proficiency letters), track (rows of
+# checkboxes), table (columns and writing rows), slots (per-level checkboxes), notes (lined
+# area), prompts (labeled lined fields). span: full = across the page.
+schema: ttrpg_systems/v1
+default: generic
+
+systems:
+  - id: generic
+    label: System-Neutral
+    names: []
+    owner: null
+    disclaimer: ""
+    sheet_fields:
+      combat: {order: Initiative, defense: Defense, health: Health}
+      currency: [Coins, Gems, Trade Goods, Other]
+      spell_card: [Tier, Cost, Range, Duration]
+      core:
+        - {kind: lines, fields: [Character Name, Role or Class, Level, Origin, Player, Campaign], cols: 3}
+        - {kind: scores, title: Attributes, fields: [Might, Agility, Endurance, Intellect, Insight, Presence], sub: [Modifier]}
+        - {kind: boxes, title: Vitals, fields: [Health, Defense, Speed, Initiative, Resolve, Experience], cols: 3}
+        - {kind: track, title: Conditions, fields: [{label: Wounds, count: 5}, {label: Fatigue, count: 5}]}
+        - {kind: table, title: Skills and Talents, columns: [Skill, Rank, Bonus], weights: [4, 1, 1], rows: 9}
+        - {kind: table, title: Attacks and Actions, columns: [Action, Bonus, Effect], weights: [3, 1, 3], rows: 4}
+        - {kind: notes, title: Abilities and Traits}
+      details:
+        - {kind: lines, fields: [Character Name, Player], cols: 2}
+        - {kind: notes, title: Proficiencies and Languages, lines: 4}
+        - {kind: boxes, title: Wealth, fields: [Coins, Gems, Trade Goods, Other], cols: 4}
+        - {kind: table, title: Equipment, columns: [Item, Qty, Notes], weights: [4, 1, 3], rows: 8}
+        - {kind: prompts, title: Personality, fields: [Traits, Goals, Bonds, Fears], lines: 2}
+        - {kind: notes, title: Features and Traits}
+        - {kind: notes, title: Allies and Contacts}
+      spells:
+        - {kind: lines, fields: [Character Name, Power Source], cols: 2}
+        - {kind: boxes, title: Power Stats, fields: [Power Stat, Save Target, Power Bonus, Power Points], span: full}
+        - {kind: slots, title: Uses by Tier, levels: 5, boxes: 4, label: Tier, span: full}
+        - {kind: table, title: Abilities and Powers, columns: [Tier, Name, Cost, Notes], weights: [1, 4, 1, 4], rows: 8, span: full}
+
+  - id: dnd5e
+    label: "D&D 5e"
+    names: ["D&D 5e", "Dungeons & Dragons 5e", "5e", "DnD 5e", "Fifth Edition", "D&D Fifth Edition",
+            "Dungeons and Dragons 5e", "D&D", "DnD", "Dungeons & Dragons", "Dungeons and Dragons"]
+    owner: Wizards of the Coast
+    owner_names: ["Wizards of the Coast", "WotC"]
+    disclaimer: "Unofficial fan-made product, not affiliated with or endorsed by Wizards of the Coast. Dungeons & Dragons and D&D are trademarks of Wizards of the Coast."
+    sheet_fields:
+      combat: {order: Initiative, defense: Armor Class, health: Hit Points}
+      currency: [Copper, Silver, Electrum, Gold, Platinum]
+      spell_card: [Level, Casting Time, Range, Components, Duration]
+      core:
+        - {kind: lines, fields: [Character Name, Class and Level, Background, Heritage, Alignment, Player Name, Experience Points], cols: 4}
+        - {kind: scores, title: Ability Scores, fields: [Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma], sub: [Modifier]}
+        - {kind: boxes, title: Combat, fields: [Armor Class, Initiative, Speed, Proficiency Bonus, Passive Perception, Inspiration], cols: 3}
+        - {kind: checklist, title: Saving Throws, fields: [Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma]}
+        - {kind: boxes, title: Hit Points, fields: [Hit Point Maximum, Current Hit Points, Temporary Hit Points, Hit Dice], cols: 2}
+        - {kind: track, title: Death Saves, fields: [{label: Successes, count: 3}, {label: Failures, count: 3}]}
+        - {kind: notes, title: Features and Traits}
+        - {kind: checklist, title: Skills, fields: ["Acrobatics (Dex)", "Animal Handling (Wis)", "Arcana (Int)", "Athletics (Str)",
+                                                    "Deception (Cha)", "History (Int)", "Insight (Wis)", "Intimidation (Cha)",
+                                                    "Investigation (Int)", "Medicine (Wis)", "Nature (Int)", "Perception (Wis)",
+                                                    "Performance (Cha)", "Persuasion (Cha)", "Religion (Int)",
+                                                    "Sleight of Hand (Dex)", "Stealth (Dex)", "Survival (Wis)"]}
+        - {kind: table, title: Attacks, columns: [Attack, Bonus, Damage and Type], weights: [3, 1, 3], rows: 4}
+      details:
+        - {kind: lines, fields: [Character Name, Player Name], cols: 2}
+        - {kind: notes, title: Proficiencies and Languages, lines: 4}
+        - {kind: boxes, title: Coins, fields: [Copper, Silver, Electrum, Gold, Platinum], cols: 5}
+        - {kind: table, title: Equipment, columns: [Item, Qty, Weight], weights: [5, 1, 1], rows: 8}
+        - {kind: prompts, title: Personality, fields: [Personality Traits, Ideals, Bonds, Flaws], lines: 2}
+        - {kind: notes, title: Features and Traits}
+        - {kind: notes, title: Allies and Organizations}
+      spells:
+        - {kind: lines, fields: [Character Name, Spellcasting Class], cols: 2}
+        - {kind: boxes, title: Spellcasting, fields: [Spellcasting Ability, Spell Save DC, Spell Attack Bonus], span: full}
+        - {kind: slots, title: Spell Slots, levels: 9, boxes: 4, label: Level, span: full}
+        - {kind: table, title: Spells, columns: [Level, Spell, Prepared, Notes], weights: [1, 4, 1, 4], rows: 8, span: full}
+
+  - id: pf2e
+    label: Pathfinder 2e
+    names: ["Pathfinder 2e", "Pathfinder Second Edition", "Pathfinder 2nd Edition", "PF2e", "Pathfinder"]
+    owner: Paizo Inc.
+    owner_names: ["Paizo", "Paizo Inc."]
+    disclaimer: "Unofficial fan-made product, not affiliated with or endorsed by Paizo Inc. Pathfinder is a registered trademark of Paizo Inc."
+    sheet_fields:
+      combat: {order: Initiative, defense: Armor Class, health: Hit Points}
+      currency: [Copper, Silver, Gold, Platinum]
+      spell_card: [Rank, Actions, Range, Targets, Duration]
+      core:
+        - {kind: lines, fields: [Character Name, Ancestry and Heritage, Background, Class, Level, Player Name, Experience Points], cols: 4}
+        - {kind: scores, title: Attributes, fields: [Strength, Dexterity, Constitution, Intelligence, Wisdom, Charisma], sub: [Partial Boost]}
+        - {kind: boxes, title: Defenses, fields: [Armor Class, Shield, Hit Point Maximum, Current Hit Points, Temporary Hit Points, Speed], cols: 3}
+        - {kind: checklist, title: Saving Throws, fields: [Fortitude, Reflex, Will], marks: [T, E, M, L]}
+        - {kind: boxes, title: Awareness, fields: [Perception, Class DC, Hero Points], cols: 3}
+        - {kind: track, title: Conditions, fields: [{label: Dying, count: 4}, {label: Wounded, count: 3}, {label: Doomed, count: 3}]}
+        - {kind: table, title: Strikes, columns: [Strike, Bonus, Damage, Traits], weights: [3, 1.4, 2, 2], rows: 3}
+        - {kind: checklist, title: Skills, marks: [T, E, M, L],
+           fields: [Acrobatics, Arcana, Athletics, Crafting, Deception, Diplomacy, Intimidation, "Lore (Topic 1)",
+                    "Lore (Topic 2)", Medicine, Nature, Occultism, Performance, Religion, Society, Stealth, Survival,
+                    Thievery]}
+        - {kind: notes, title: Notes}
+      details:
+        - {kind: lines, fields: [Character Name, Player Name], cols: 2}
+        - {kind: table, title: Feats and Features, columns: [Level, Feat or Feature, Notes], weights: [1, 4, 3], rows: 8}
+        - {kind: boxes, title: Coins, fields: [Copper, Silver, Gold, Platinum], cols: 4}
+        - {kind: table, title: Equipment, columns: [Item, Qty, Bulk], weights: [5, 1, 1], rows: 8}
+        - {kind: notes, title: Languages, lines: 2}
+        - {kind: prompts, title: Personality, fields: [Beliefs, Likes, Dislikes, Catchphrases], lines: 2}
+        - {kind: notes, title: Allies and Notes}
+      spells:
+        - {kind: lines, fields: [Character Name, Spellcasting Tradition], cols: 2}
+        - {kind: boxes, title: Spellcasting, fields: [Spell Attack Bonus, Spell DC, Focus Points], span: full}
+        - {kind: slots, title: Spell Slots, levels: 10, boxes: 4, label: Rank, span: full}
+        - {kind: table, title: Spells, columns: [Rank, Spell, Actions, Notes], weights: [1, 4, 1, 4], rows: 8, span: full}
+
+  - id: coc7e
+    label: Call of Cthulhu 7e
+    names: ["Call of Cthulhu 7e", "Call of Cthulhu 7th Edition", "Call of Cthulhu Seventh Edition", "CoC 7e",
+            "CoC 7th Edition", "Call of Cthulhu"]
+    owner: Chaosium Inc.
+    owner_names: ["Chaosium", "Chaosium Inc."]
+    disclaimer: "Unofficial fan-made product, not affiliated with or endorsed by Chaosium Inc. Call of Cthulhu is a registered trademark of Chaosium Inc."
+    sheet_fields:
+      combat: {order: Dexterity, defense: Dodge, health: Hit Points}
+      currency: [Spending Level, Cash, Assets]
+      spell_card: [Cost, Casting Time, Range, Notes]
+      core:
+        - {kind: lines, fields: [Investigator Name, Occupation, Age, Pronouns, Residence, Birthplace, Player Name], cols: 4}
+        - {kind: scores, title: Characteristics, fields: [Strength, Constitution, Size, Dexterity, Appearance, Intelligence, Power, Education], sub: [Half, Fifth]}
+        - {kind: boxes, title: Derived Values, fields: [Hit Points, Magic Points, Luck, Sanity, Move Rate, Build, Damage Bonus], cols: 7, span: full}
+        - {kind: track, title: Status, span: full,
+           fields: [{label: Temporary Madness, count: 1}, {label: Lasting Madness, count: 1}, {label: Major Wound, count: 1},
+                    {label: Unconscious, count: 1}, {label: Dying, count: 1}]}
+        - {kind: checklist, title: Skills, cols: 3, span: full,
+           fields: [Accounting, Anthropology, Appraise, Archaeology, Art and Craft, Charm, Climb, Credit Rating,
+                    Disguise, Dodge, Drive, Electrical Repair, Fast Talk, "Fighting (Brawl)", "Firearms (Handgun)",
+                    "Firearms (Rifle)", First Aid, History, Intimidate, Jump, "Language (Other)", "Language (Own)",
+                    Law, Library Use, Listen, Locksmith, Mechanical Repair, Medicine, Mythos Lore, Natural World,
+                    Navigate, Occult, Operate Heavy Machinery, Persuade, Pilot, Psychology, Ride, Science,
+                    Sleight of Hand, Spot Hidden, Stealth, Survival, Swim, Throw, Track]}
+      details:
+        - {kind: lines, fields: [Investigator Name, Player Name], cols: 2}
+        - {kind: table, title: Weapons, columns: [Weapon, Skill, Damage, Range, Attacks, Ammo], weights: [3, 1, 2, 1, 1, 1], rows: 5, span: full}
+        - {kind: boxes, title: Combat, fields: [Damage Bonus, Build, Dodge], cols: 3}
+        - {kind: boxes, title: Cash and Assets, fields: [Spending Level, Cash, Assets], cols: 3}
+        - {kind: prompts, title: Background, fields: [Personal Description, Ideology and Beliefs, Significant People, Meaningful Locations], lines: 2}
+        - {kind: prompts, title: History, fields: [Treasured Possessions, Traits, Injuries and Scars, Phobias and Manias], lines: 2}
+        - {kind: notes, title: Gear and Possessions}
+        - {kind: notes, title: Strange Encounters}
+      spells:
+        - {kind: lines, fields: [Investigator Name, Player Name], cols: 2}
+        - {kind: boxes, title: Magic and Sanity, fields: [Magic Points Maximum, Current Magic Points, Starting Sanity, Current Sanity], span: full}
+        - {kind: table, title: Spells and Rituals, columns: [Spell, Cost, Casting Time, Notes], weights: [3, 1, 1, 4], rows: 8, span: full}
+        - {kind: table, title: Tomes and Artifacts, columns: [Item, Language, Study Time, Notes], weights: [3, 1, 1, 4], rows: 4, span: full}

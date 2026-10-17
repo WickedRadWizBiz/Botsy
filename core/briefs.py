@@ -3,7 +3,8 @@ the generators and the pipeline.
 
 A brief may hold only aggregated patterns: no shop names, URLs, listing ids,
 images or verbatim competitor titles, nothing hard-blocked by the trademark
-blocklist, and every pattern backed by at least `min_listings_per_pattern`
+blocklist, no game-system name in any spelling the systems registry knows ("DnD5e",
+"PF2e"; a ttrpg brief names its system only by id, in "system"), and every pattern backed by at least `min_listings_per_pattern`
 (never below 10) distinct rows. Research's builder filters candidates with
 `Guard.text_problems`; `validate_brief_doc` re-checks the finished document and
 is called before every write, so a builder bug cannot leak data to disk. The
@@ -22,7 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Iterator
 
-from core.compliance import Blocklist, find_urls, normalize
+from core.compliance import Blocklist, find_urls, normalize, system_mentions
 
 HARD_FLOOR = 10          # CLAUDE.md: briefs come from patterns across >= 10 listings
 SHOPS_FLOOR = 3          # user rule (2026-10-16): listing-backed support spans >= 3 shops
@@ -115,6 +116,20 @@ def _values(obj) -> Iterator[str]:
             yield from _values(v)
 
 
+def _values_but_system(obj) -> Iterator[str]:
+    """String values except a "system" field's own value (a registry id such as "dnd5e",
+    which spells a system name on purpose and is checked by research and the generators)."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            if not (k == "system" and isinstance(v, str)):
+                yield from _values_but_system(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _values_but_system(v)
+
+
 def _keys(obj) -> Iterator[str]:
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -157,6 +172,10 @@ def doc_problems(doc: dict, guard: Guard) -> list[str]:
     blocked = guard.blocklist.check_obj(doc).blocked
     if blocked:
         problems.append(f"blocked terms {blocked}")
+    # Spellings of a game system that no "!" line covers ("DungeonsAndDragons", "DnD5e").
+    named = system_mentions(_values_but_system(doc))
+    if named:
+        problems.append(f"game system named in the text {named} (briefs name a system only by id)")
     return problems
 
 

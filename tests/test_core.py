@@ -256,6 +256,264 @@ def test_review_dir_for_root_and_entry_path(tmp_path):
             items.review_entry_path(bad, tmp_path)
 
 
+# ------------------------------------------------------------------ game-system ("!") terms
+# docs/PACKS.md section 4: a `!term` is blocked everywhere unless the caller allows its
+# system (only a ttrpg listing's title, tags and description, for an item with that system).
+
+SYSTEMS_CATALOG = {
+    "dnd5e": {"id": "dnd5e", "names": ["D&D 5e", "5e", "Fifth Edition", "D&D", "DnD", "Dungeons & Dragons"],
+              "owner": "Wizards of the Coast", "owner_names": ["WotC"]},
+    "pf2e": {"id": "pf2e", "names": ["Pathfinder 2e", "Pathfinder"], "owner": "Paizo Inc.", "owner_names": ["Paizo"]},
+    "coc7e": {"id": "coc7e", "names": ["Call of Cthulhu"], "owner": "Chaosium Inc.", "owner_names": ["Chaosium"]},
+    "generic": {"id": "generic", "names": [], "owner": None, "owner_names": []},
+}
+NEW_HARD = ["Beholder", "Mind Flayer", "Illithid", "Displacer Beast", "Githyanki", "Githzerai", "Forgotten Realms",
+            "Baldur's Gate", "Waterdeep", "Drizzt", "Critical Role", "Vox Machina", "Mighty Nein", "Exandria",
+            "Golarion", "Warhammer", "Magic: The Gathering"]
+NEW_SYSTEMS = ["Dungeons & Dragons", "D&D", "DnD", "5e", "Fifth Edition", "Pathfinder", "Starfinder",
+               "Call of Cthulhu", "Wizards of the Coast", "Paizo", "Chaosium", "D'n'D",
+               # Added at integration: owner and edition spellings (never a registry id such as
+               # "pf2e" or "coc7e", which briefs and manifests store).
+               "WotC", "CoC 7th Edition"]
+# Added at review: more product identity, settings, characters and tabletop franchises.
+MORE_HARD = ["Umber Hulk", "Yuan-ti", "Carrion Crawler", "Gauth", "Tanar'ri", "Baatezu", "Ravenloft", "Eberron",
+             "Greyhawk", "Dragonlance", "Planescape", "Spelljammer", "Mystara", "Faerun", "Neverwinter",
+             "Icewind Dale", "Sword Coast", "Candlekeep", "Underdark", "Strahd", "Vecna", "Acererak", "Lolth",
+             "Xanathar", "Mordenkainen", "Elminster", "Shadowrun", "Vampire: The Masquerade", "World of Darkness",
+             "Arkham Horror", "Delta Green", "Games Workshop", "Cyberpunk 2077", "Gloomhaven", "Savage Worlds"]
+MORE_REVIEW = ["Cyberpunk Red", "Dark Sun", "Blades in the Dark",
+               # Added at integration: productivity-method trademarks.
+               "Pomodoro", "Pomodoro Technique", "Getting Things Done", "GTD"]
+NEW_REVIEW = ["Passion Planner", "Panda Planner", "Clever Fox", "Bullet Journal", "BuJo", "Happy Planner",
+              "Erin Condren", "Hobonichi"]
+
+
+@pytest.fixture(scope="module")
+def sys_bl():
+    """The repo's blocklist file with our own test catalog of systems."""
+    return Blocklist.load(catalog=SYSTEMS_CATALOG)
+
+
+def test_blocklist_has_the_ttrpg_and_planner_lines(bl):
+    hard = {t for t, _ in bl.hard}
+    review = {t for t, _ in bl.review}
+    systems = {t for t, _ in bl.system_rx}
+    assert set(NEW_HARD) <= hard and set(MORE_HARD) <= hard
+    assert set(NEW_SYSTEMS) == systems
+    assert set(NEW_REVIEW) <= review and set(MORE_REVIEW) <= review
+    assert not systems & (hard | review)  # a "!" term is never also a plain or "?" term
+
+
+def test_blocklist_terms_have_one_marker_each():
+    """A term is listed as exactly one kind (plain, "?" or "!"): the same spelling under two
+    markers would make its meaning depend on the order of the checks."""
+    lines = (config.CONFIG_DIR / "trademark_blocklist.txt").read_text(encoding="utf-8").splitlines()
+    kinds: dict[str, set[str]] = {}
+    for line in (l.strip() for l in lines):
+        if line and not line.startswith("#"):
+            marker = line[0] if line[0] in "?!" else ""
+            kinds.setdefault(compliance.normalize(line.lstrip("?!").strip()), set()).add(marker)
+    assert not {k: v for k, v in kinds.items() if len(v) > 1}
+
+
+@pytest.mark.parametrize("text, term", [
+    ("Character Sheet for D&D", "D&D"),
+    ("d & d session notes", "D&D"),
+    ("Dungeons and Dragons tracker", "Dungeons & Dragons"),
+    ("DUNGEONS & DRAGONS", "Dungeons & Dragons"),
+    ("dnd character sheet", "DnD"),
+    ("for 5E games", "5e"),
+    ("fifth-edition sheets", "Fifth Edition"),
+    ("Pathfinder tracker", "Pathfinder"),
+    ("Starfinder log", "Starfinder"),
+    ("call of cthulhu investigator", "Call of Cthulhu"),
+    ("Wizards of the Coast", "Wizards of the Coast"),
+    ("Paizo", "Paizo"),
+    ("Chaosium", "Chaosium"),
+])
+def test_system_terms_are_blocked_by_default(bl, text, term):
+    r = bl.check(text)
+    assert term in r.blocked and not r.allowed
+    assert term in bl.check_obj({"briefs": [{"theme": text}]}).blocked
+
+
+@pytest.mark.parametrize("text, term", [
+    ("Magic: The Gathering deck box", "Magic: The Gathering"),
+    ("magic the gathering", "Magic: The Gathering"),
+    ("Baldurs Gate map", "Baldur's Gate"),
+    ("mind-flayer lair", "Mind Flayer"),
+    ("beholders", "Beholder"),
+    ("Yuan Ti warrior", "Yuan-ti"),
+    ("vampire the masquerade sheet", "Vampire: The Masquerade"),
+    ("Faerûn map", "Faerun"),
+    ("Icewind-Dale", "Icewind Dale"),
+    ("tanarri", "Tanar'ri"),
+    ("players handbook tabs", "Player's Handbook"),
+    ("Player’s Handbook", "Player's Handbook"),
+    ("dungeon masters guide insert", "Dungeon Master's Guide"),
+    ("monster-manual cards", "Monster Manual"),
+    ("adventurers league log", "Adventurers League"),
+])
+def test_new_hard_terms_match_their_spellings(bl, text, term):
+    assert term in bl.check(text).blocked
+    assert term in bl.check(text, allow_systems=("dnd5e",)).blocked  # never allowed by a system
+
+
+@pytest.mark.parametrize("text", [
+    "date: dd/mm/yyyy",          # two one-letter words need something between them to be "D&D"
+    "dd-mm",
+    "a dungeon and a dragon",
+    "fifth grade edition",
+    "path finder game",          # not the joined name
+    "dnd5e",                     # a registry id (stored in briefs and manifests), not listing text
+    "pf2e coc7e generic",
+    "Bullet points and a clever plan",
+])
+def test_system_terms_do_not_match_ordinary_text(bl, text):
+    r = bl.check(text)
+    assert r.ok and not r.flagged, r
+
+
+def test_dungeon_master_is_a_review_term_and_game_master_is_clean(bl):
+    r = bl.check("dungeon master screen inserts")
+    assert r.ok and r.flagged == ["Dungeon Master"]
+    r = bl.check("game master tools", "gm screen", "monster tracker", "player handout")
+    assert r.ok and not r.flagged, r
+
+
+@pytest.mark.parametrize("text", ["D'n'D night", "d 'n' d", "D-n-D", "d_n_d"])
+def test_dnd_with_apostrophes_is_never_allowed(sys_bl, text):
+    """"D'n'D" belongs to no system in the registry: blocked even for a D&D listing."""
+    assert sys_bl.check(text, allow_systems=("dnd5e",)).blocked == ["D'n'D"]
+
+
+@pytest.mark.parametrize("text", ["d n d n d", "Dark sunset", "a cyberpunk city at night", "red cyberpunk robot"])
+def test_review_additions_leave_ordinary_text(sys_bl, text):
+    r = sys_bl.check(text)
+    assert r.ok and not r.flagged, r
+
+
+def test_system_terms_allowed_only_for_their_own_system(sys_bl):
+    title = "Fantasy Campaign Tracker for D&D 5e, 20 Pages"
+    assert sys_bl.check(title).blocked == ["5e", "D&D"]
+    r = sys_bl.check(title, allow_systems=("dnd5e",))
+    assert r.ok and r.allowed == ["5e", "D&D"]
+    # never across systems: a Pathfinder item may not name D&D, nor a D&D item Pathfinder
+    assert sys_bl.check(title, allow_systems=("pf2e",)).blocked == ["5e", "D&D"]
+    r = sys_bl.check("for D&D and Pathfinder", allow_systems="dnd5e")   # a single id as a string
+    assert r.blocked == ["Pathfinder"] and r.allowed == ["D&D"]
+    # the generic (system-neutral) id and unknown ids allow nothing
+    assert sys_bl.check(title, allow_systems=("generic",)).blocked == ["5e", "D&D"]
+    assert sys_bl.check(title, allow_systems=("nope", "")).blocked == ["5e", "D&D"]
+    # a "!" term no system lists (Starfinder here) can never be allowed
+    assert sys_bl.check("Starfinder log", allow_systems=("pf2e", "dnd5e")).blocked == ["Starfinder"]
+    # owners belong to their system: the disclaimer text passes for that system only
+    disclaimer = ("Unofficial fan-made product, not affiliated with or endorsed by Wizards of the Coast. "
+                  "Dungeons & Dragons and D&D are trademarks of Wizards of the Coast.")
+    assert sys_bl.check(disclaimer, allow_systems=("dnd5e",)).ok
+    assert not sys_bl.check(disclaimer, allow_systems=("pf2e",)).ok
+    # hard and review terms are unchanged by allow_systems
+    r = sys_bl.check("Beholder sheet for D&D", "Bullet Journal", allow_systems=("dnd5e",))
+    assert r.blocked == ["Beholder"] and r.flagged == ["Bullet Journal"] and r.allowed == ["D&D"]
+
+
+def test_system_terms_map_to_ids(sys_bl):
+    terms = sys_bl.system_terms
+    assert terms["D&D"] == terms["5e"] == terms["Wizards of the Coast"] == "dnd5e"
+    assert terms["Paizo"] == terms["Pathfinder"] == "pf2e"
+    assert terms["Starfinder"] is None
+    assert set(sys_bl.system_names("dnd5e")) == {"Dungeons & Dragons", "D&D", "DnD", "5e", "Fifth Edition",
+                                                 "Wizards of the Coast", "WotC"}
+    assert terms["D'n'D"] is None   # no system lists it: never allowed, not even for dnd5e
+    assert sys_bl.system_names("generic") == [] and sys_bl.system_names(None) == []
+
+
+def test_owner_shared_by_two_systems_is_allowed_for_both():
+    cat = {"pf2e": {"names": ["Pathfinder"], "owner": "Paizo"}, "sf": {"names": ["Starfinder"], "owner": "Paizo"}}
+    bl = Blocklist([], [], ["Pathfinder", "Starfinder", "Paizo"], catalog=cat)
+    assert bl.check("Paizo Starfinder", allow_systems=("sf",)).ok
+    assert bl.check("Paizo Pathfinder", allow_systems=("pf2e",)).ok
+    assert bl.check("Pathfinder", allow_systems=("sf",)).blocked == ["Pathfinder"]
+
+
+def test_explicit_system_ids_and_fail_closed_without_a_catalog(monkeypatch):
+    bl = Blocklist([], [], {"D&D": "dnd5e", "Paizo": ["pf2e", "sf"], "Other": None})
+    assert bl.check("D&D", allow_systems=("dnd5e",)).ok
+    assert bl.check("Paizo", allow_systems=("sf",)).ok
+    assert bl.check("Other", allow_systems=("dnd5e",)).blocked == ["Other"]
+    # core.systems missing or broken: every system term stays blocked
+    import core.systems
+
+    def broken(*a, **k):
+        raise core.systems.SystemsError("no file")
+
+    monkeypatch.setattr(core.systems, "load_systems", broken)
+    lazy = Blocklist([], [], ["D&D"])
+    assert lazy.check("D&D", allow_systems=("dnd5e",)).blocked == ["D&D"]
+    assert lazy.system_terms == {"D&D": None}
+    assert Blocklist([], [], ["D&D"], catalog={}).check("D&D", allow_systems=("dnd5e",)).blocked == ["D&D"]
+
+
+def test_system_ids_resolve_lazily_from_core_systems(monkeypatch):
+    import core.systems
+
+    calls = []
+    monkeypatch.setattr(core.systems, "load_systems", lambda *a, **k: calls.append(1) or SYSTEMS_CATALOG)
+    bl = Blocklist([], [], ["D&D", "Paizo"])
+    assert bl.check("D&D").blocked == ["D&D"] and not calls   # no lookup without allow_systems
+    assert bl.check("D&D", allow_systems=("dnd5e",)).ok and calls == [1]
+    assert bl.check("Paizo", allow_systems=("pf2e",)).ok and calls == [1]   # resolved once
+
+
+def test_registry_disclaimers_pass_for_their_own_system_only(bl):
+    """The real config/ttrpg_systems.yaml: every disclaimer passes with its system allowed,
+    and names a system's trademarks, so it never passes for another niche."""
+    systems = pytest.importorskip("core.systems")
+    catalog = systems.load_systems()
+    real = Blocklist.load(catalog=catalog)
+    for sid, entry in catalog.items():
+        text = entry.get("disclaimer") or ""
+        if not text:
+            continue
+        assert real.check(text, allow_systems=(sid,)).ok, (sid, real.check(text, allow_systems=(sid,)))
+        assert real.check(text).blocked, sid
+        for other in catalog:
+            if other != sid and real.check(text, allow_systems=(other,)).ok:
+                pytest.fail(f"{sid} disclaimer passes for {other}")
+
+
+def test_system_mentions_find_every_registry_spelling():
+    assert compliance.system_mentions(["Sheets for D&D5e"], SYSTEMS_CATALOG) == ["dnd5e"]
+    assert compliance.system_mentions(["pathfinder 2e notes", "d & d"], SYSTEMS_CATALOG) == ["dnd5e", "pf2e"]
+    assert compliance.system_mentions(["Call of Cthulhu", "Chaosium"], SYSTEMS_CATALOG) == ["coc7e"]
+    # letter-tracing rows, date fields and the generic system name nothing
+    assert compliance.system_mentions(["d d d d", "dd/mm", "DD", "System-Neutral"], SYSTEMS_CATALOG) == []
+    assert compliance.system_mentions(["D&D"], {}) == []
+
+
+def test_one_letter_words_keep_their_joiner(bl):
+    for text in ("D&D", "d & d", "D and D", "d&d's", "D–D", "d_d_character_sheet.pdf", "D.&D."):
+        assert "D&D" in bl.check(text).blocked, text
+    for text in ("d d d d", "dd", "D.D.", "add dd", "dd-mm-yyyy"):
+        assert "D&D" not in bl.check(text).blocked, text
+
+
+def test_compliance_result_records_allowed_terms():
+    a = compliance.ComplianceResult(["X"], [], ["D&D"])
+    b = compliance.ComplianceResult([], ["Y"], ["5e"])
+    m = a.merge(b)
+    assert m.to_dict() == {"blocked": ["X"], "flagged": ["Y"], "allowed": ["5e", "D&D"]}
+    assert compliance.ComplianceResult().to_dict() == {"blocked": [], "flagged": []}
+
+
+def test_term_punctuation_rules_unchanged_for_plain_terms():
+    bl = Blocklist(["Toy Story", "K-Pop Demon Hunters", "Tom and Jerry"])
+    assert bl.check("toy - story party").blocked == ["Toy Story"]
+    assert bl.check("toy: story").ok                     # ":" only where the term itself has one
+    assert bl.check("kpop demon hunters").blocked == ["K-Pop Demon Hunters"]
+    assert bl.check("Tom and Jerry").blocked == ["Tom and Jerry"]
+
+
 def test_placeholder_shop_name():
     assert config.is_placeholder_shop_name({"name": " YOUR_SHOP_NAME "})
     assert config.is_placeholder_shop_name({})
@@ -594,3 +852,39 @@ def test_brief_doc_shop_minimum():
     assert any("min_shops_per_pattern is 2" in p for p in doc_problems(doc, guard))
     del doc["min_shops_per_pattern"]  # older brief files are not checked for shops
     assert doc_problems(doc, guard) == []
+
+
+def test_no_system_line_matches_a_registry_id():
+    """Registry ids (dnd5e, pf2e, coc7e) are stored in briefs and manifests and checked with
+    the blocklist, so no "!" line may match one; core.compliance.system_mentions catches the
+    spellings that look like ids ("PF2e", "CoC 7e") in text."""
+    from core.systems import load_systems
+
+    bl = Blocklist.load()
+    for sid in load_systems():
+        assert not bl.check(sid).blocked, sid
+    assert bl.system_terms["CoC 7th Edition"] == bl.system_terms["Chaosium"] == "coc7e"
+    assert bl.system_terms["WotC"] == "dnd5e"
+    assert compliance.system_mentions(["PF2e sheet", "CoC 7e handout"]) == ["pf2e", "coc7e"]
+
+
+@pytest.mark.parametrize("text", ["DungeonsAndDragons", "dungeonsanddragons sheet", "Dungeons-and-Dragons"])
+def test_joined_and_spellings_are_blocked(text):
+    assert Blocklist.load().check(text).blocked == ["Dungeons & Dragons"]
+
+
+def test_two_letter_and_spelling_needs_a_separator():
+    bl = Blocklist([], [], ["D&D"], catalog={})
+    assert bl.check("d and d").blocked == ["D&D"] and bl.check("dandd").blocked == []
+
+
+def test_brief_guard_refuses_system_spellings_but_not_the_system_id():
+    from core import briefs
+
+    guard = briefs.Guard(blocklist=Blocklist.load())
+    doc = {"schema": "brief/v1", "niche": "ttrpg", "min_listings_per_pattern": 10, "patterns": {},
+           "briefs": [{"brief_id": "ttrpg-2026-10-16-01", "theme": "classic fantasy", "system": "dnd5e",
+                       "keywords": ["classic fantasy rpg sheets"], "evidence": {"listing_count": 12}}]}
+    assert briefs.doc_problems(doc, guard) == []
+    doc["briefs"][0]["keywords"].append("dnd5e character sheet")
+    assert any("game system named" in p for p in briefs.doc_problems(doc, guard))

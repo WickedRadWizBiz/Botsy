@@ -3,6 +3,8 @@
 # against briefs, prompts, titles, tags and descriptions.
 #   plain line  -> hard block (item is rejected)
 #   ?term       -> flag for human review (not auto-rejected)
+#   !term       -> game-system name: blocked, except in a ttrpg listing's title, tags and
+#                  description for an item made for that system (docs/PACKS.md section 4)
 # Seed list only. Add terms as you find them; when in doubt, add it.
 
 # --- Studios / brands ---
@@ -249,3 +251,119 @@ Disneyland
 Disney World
 Grinchmas
 Mc Donald's
+
+# --- Added 2026-10-16 (docs/PACKS.md section 4): tabletop RPG settings, product-identity
+# creatures and franchises. Hard block everywhere, ttrpg listings included.
+Beholder
+Mind Flayer
+Illithid
+Displacer Beast
+Githyanki
+Githzerai
+Forgotten Realms
+Baldur's Gate
+Waterdeep
+Drizzt
+Critical Role
+Vox Machina
+Mighty Nein
+Exandria
+Golarion
+Warhammer
+Magic: The Gathering
+
+# --- Added 2026-10-16: game-system names (!term). Blocked everywhere (briefs, prompts,
+# designs, printed text, file names, mockups, alt text, other niches) except a ttrpg
+# listing's title, tags and description for an item made for that system
+# (config/ttrpg_systems.yaml), which also carries the system's disclaimer (CLAUDE.md).
+!Dungeons & Dragons
+!D&D
+!DnD
+!5e
+!Fifth Edition
+!Pathfinder
+!Starfinder
+!Call of Cthulhu
+!Wizards of the Coast
+!Paizo
+!Chaosium
+
+# --- Added 2026-10-16: planner and journaling brands (review)
+?Passion Planner
+?Panda Planner
+?Clever Fox
+?Bullet Journal
+?BuJo
+
+# --- Added 2026-10-16 (review of the packs build): more tabletop RPG product identity
+# (SRD 5.1 lists these creatures as product identity), official settings, places and
+# characters, and other tabletop game franchises. Hard block everywhere.
+Umber Hulk
+Yuan-ti
+Carrion Crawler
+Gauth
+Tanar'ri
+Baatezu
+Ravenloft
+Eberron
+Greyhawk
+Dragonlance
+Planescape
+Spelljammer
+Mystara
+Faerun
+Neverwinter
+Icewind Dale
+Sword Coast
+Candlekeep
+Underdark
+Strahd
+Vecna
+Acererak
+Lolth
+Xanathar
+Mordenkainen
+Elminster
+Shadowrun
+Vampire: The Masquerade
+World of Darkness
+Arkham Horror
+Delta Green
+Games Workshop
+Cyberpunk 2077
+Gloomhaven
+Savage Worlds
+?Cyberpunk Red
+?Dark Sun
+?Blades in the Dark
+
+# --- Added 2026-10-16: another spelling of a game system (!term). "D'n'D" belongs to no
+# system in config/ttrpg_systems.yaml, so it is never allowed, not even in a ttrpg listing.
+# (Owner spellings such as "WotC" are caught from the registry by system_mentions.)
+!D'n'D
+
+# --- Added 2026-10-16 (compliance review): Wizards of the Coast rulebook titles and its
+# organized-play program are product names, never in designs or listings (hard). "Dungeon
+# Master" is a registered mark that is also everyday usage, so it goes to review; our copy
+# and sheets say "game master".
+Player's Handbook
+Dungeon Master's Guide
+Monster Manual
+Adventurers League
+?Dungeon Master
+
+# --- Added 2026-10-16 (packs integration): more spellings of game-system owners and
+# editions (!term; config/ttrpg_systems.yaml maps them to their system). "PF2e" and "CoC 7e"
+# stay out of this file on purpose: they spell the registry ids pf2e / coc7e that briefs and
+# manifests store; core.compliance.system_mentions (run by core.briefs, the generators,
+# listing, QA and the publisher) catches them in text.
+!WotC
+!CoC 7th Edition
+
+# --- Added 2026-10-16 (packs integration): productivity-method trademarks (review). The
+# Pomodoro Technique is a registered mark of Francesco Cirillo; Getting Things Done and GTD
+# are marks of the David Allen Company. Our pages say "focus session" and never use them.
+?Pomodoro
+?Pomodoro Technique
+?Getting Things Done
+?GTD
