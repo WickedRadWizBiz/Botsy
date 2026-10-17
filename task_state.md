@@ -1,16 +1,13 @@
 # Task State
-_Last updated: 2026-10-16 23:10 UTC_
+_Last updated: 2026-10-17 05:00 UTC_
 
 ## Current objective
-Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Next: phase 3 themed packs + stationery + TTRPG niches + low-competition scoring (docs/PACKS.md).
+Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Phase 3 themed packs + stationery + TTRPG niches + opportunity scoring (docs/PACKS.md) DONE and pushed 2026-10-17 (2116 tests, 5-niche CI dry run ~70 s). Next: round-2 build steps below.
 
 ## Next immediate action
-- 2026-10-16 ~20:45 UTC the session limit was hit again (reset 22:50). Resumed 23:10 UTC:
-  - packs build `wf_bbcab72a-afa` (task wzc1yrui0): 9/11 agents cached; re-running review:compliance-listing-qa (its partial fixes are on disk) and integrate.
-  - answers design `wf_31245900-d0b` (task w0vy8twp3): 4 designers + 4 skeptics (low-cost research data, SNN adjacency, Hermes scale-up + Sunday 8 pm ET plan, medical vs lifestyle terms). Read-only on the repo.
-- If the limit hits again: resume each with Workflow(scriptPath=<script>, resumeFromRunId=<run>) after the reset (scripts in ~/.claude/projects/.../workflows/scripts/).
-- When packs finish: full suite, 5-niche dry run, logical commits, push, CI. When the design finishes: write docs (KDP_RESEARCH/OVERSEER/SNN updates + term policy), report the low-cost path to the user.
-- KDP/Hermes/SNN proposal committed (f377599); user's answers recorded below.
+- Packs build landed (commits d519dd1..b66b783). Round-2 designs written from the user's answers: docs/RESEARCH_COSTS.md, docs/SNN.md (rewritten: adjacency role), docs/OVERSEER.md "Scale-ups and the Sunday plan", docs/HEALTH_TERMS.md; open choices + repo changes + sources in docs/PROPOSAL_2026-10-16.md "Round 2". config/platform_policies.yaml updated (bookbeam, google_trends, amazon/everbee/erank sources; the user's accepted risk recorded; BookBeam background fetch still open). Fixed: 'Search Results' column read as search demand (research/columns.py).
+- Report round 2 to the user and get the open choices answered (see PROPOSAL "Round 2"), above all: BookBeam background-fetch clause (default: not yet, manual template), '8 pm EST' = New York time, New York times for all timers, transactions_r, health-term defaults, SNN inputs option A.
+- Build order next (docs/PROPOSAL_2026-10-16.md): step 2 rule set-up incl. health terms (config/health_terms.txt, core/health.py), Etsy insights template + helper + search-list wording, KDP-file guard in service/inbox.py; then fonts + watchdog + hourly record + own-listing snapshots; Sunday plan timers (New York time) + plan mode; then KDP research (manual template reader), KDP books, POD, Hermes foundation, SNN package.
 
 ## Decisions made
 - Image API: Google Gemini `gemini-nano-banana-2.1` via `generate_content` (Gemini API route; Vertex optional).
@@ -43,6 +40,7 @@ Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list
 - Two-stage research: "discovery" (current rules) for the first batch, then "refined" (e.g. 25+ listings, 3+ shops, seen in 3+ weekly snapshots, demand not falling, our own sales of similar items considered) before a candidate is generated.
 
 ## Decisions made 2026-10-16
+- (latest) Round-2 skeptic findings adopted as defaults until the user says otherwise: BookBeam CE Lite not used yet (its terms let the extension fetch Amazon pages in the background, which CLAUDE.md does not cover); start research at $0 (Etsy Marketplace Insights typed into a Botsy template; KDP manual template when the KDP reader exists); first paid step eRank Basic $5.99/mo once live; BookBeam Basic is $47/mo now; health terms: medical topics hard-blocked, borderline to review, lifestyle allowed with layout-only wording; 'stress relief' out everywhere; SNN learns from own-shop data + Botsy's own yes/no theme facts only (no export numbers) until EverBee/eRank confirm in writing.
 - (latest) User answers to the proposal (2026-10-16): (1) make the GitHub repo PRIVATE (user does it in GitHub settings); (2) accepts the Amazon-account risk of the BookBeam extension (record in platform_policies.yaml); (3) minimize upfront costs: review free/low-cost research options (BookBeam free tier etc.) before paying; (4) Hermes design approved (code per approval, batch codes ok) PLUS Hermes may scale up winning products ("more of this") when limits allow and Botsy has spare capacity; (5) weekly plan posts Sunday 8 pm US Eastern; user approves each plan for the first month, then automatic; (6) SNN included, role revisited: find ADJACENT things to make from trending sales, doing useful work from day one while gathering history and watching; (7) leave out medical log books; lifestyle journals/logs are fine (meditation, stress, exercise). Follow-up design running: workflow `wf_31245900-d0b` (script botsy-answers-design-wf_31245900-d0b.js).
 - (latest) KDP/Hermes/SNN proposal written (docs/PROPOSAL_2026-10-16.md). Repo found PUBLIC: KDP briefs git-ignored (data/briefs/kdp/); user asked to make the repo private or stop committing Etsy briefs.
 - User asks: KDP research must study kinds of top-selling stationery/productivity/niche log books (on top of themes); Hermes must actively direct production and support, not just report; find roles for an SNN (SpikingJelly, likely what "Jellyspike" meant, and/or BindsNET). Proposal pending.
