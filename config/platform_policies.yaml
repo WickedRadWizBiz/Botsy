@@ -33,7 +33,7 @@ platforms:
         note: "Creators API prerequisites: Associates enrollment and 'at least 10 qualifying sales within the past 30 days'."
       - url: https://affiliate-program.amazon.com/creatorsapi/docs/en-us/paapiv5-deprecation
         note: "PA-API 5 'has been deprecated and is being replaced by the Creators API'; calls 'receive an HTTP 403 Forbidden response'."
-    user_decision: "2026-10-16: the user accepts the Amazon-account risk of running the BookBeam extension on Amazon pages ('Yeah I guess, people use bookbeam so it must be allowed'). See bookbeam.user_decision for what is still open."
+    user_decision: "2026-10-16: the user accepts the Amazon-account risk of running the BookBeam extension on Amazon pages. 2026-10-17: also accepts that copying a few public fields by hand into Botsy's KDP template is their own risk. Third-party scraping services (Apify, TinyFish or similar) against Amazon are NOT allowed: Amazon forbids it and CLAUDE.md allows no automated access to a platform that forbids it; a change needs the user's explicit written decision here and in CLAUDE.md."
     checked: "2026-10-16"
   bookbeam:
     scraping: forbidden
@@ -49,7 +49,7 @@ platforms:
         note: "Basic $47/mo, $141 a quarter or $348 a year; Publisher $69/mo or $576 a year; Publisher Pro $119/mo or $984 a year. 'We do not offer a free trial'; 7-day money-back guarantee. (prod.bookbeam.io/pricing still shows an older list with a $24 Starter plan; treat bookbeam.io as current and check at checkout.)"
       - url: https://chromewebstore.google.com/detail/mbchdidopjakdkjkekaogajhcdekciop
         note: "'BookBeam: Extension' v1.4.6, updated October 9, 2026, 30,000 users. Store privacy panel: handles 'Personally identifiable information', 'Authentication information', 'Website content'."
-    user_decision: "2026-10-16: the user accepts the Amazon-account risk of the BookBeam extension. NOT yet decided: the Data Synchronization clause (the extension fetching Amazon pages in the background over the user's connection). CLAUDE.md allows Amazon only through official APIs or the user's own clicks, so CE Lite is not used until the user says yes and that exception is written into CLAUDE.md."
+    user_decision: "2026-10-16: the user accepts the Amazon-account risk of the BookBeam extension. 2026-10-17: the user also allows its background fetching of Amazon pages (Data Synchronization clause), in a separate browser profile never logged in to Amazon or KDP; written into CLAUDE.md as a dated exception. Botsy itself never opens BookBeam or Amazon."
     checked: "2026-10-16"
   everbee:
     scraping: forbidden
