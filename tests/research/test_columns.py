@@ -119,3 +119,13 @@ def test_load_export_utf16(tmp_path):
     p.write_bytes("Title\tPrice\nFrog Stickers\t$3.00\n".encode("utf-16"))
     e = load_export(p)
     assert e.frame["title"].tolist() == ["Frog Stickers"] and e.frame["price"].tolist() == [3.0]
+
+
+def test_search_results_is_competition_not_search_volume():
+    """Etsy's Marketplace Insights shows 'Searches' (demand) next to 'Search Results'
+    (competing listings). The second must never be read as demand, alone or together."""
+    assert map_columns(["Keyword", "Search Results"]) == {"keyword": "Keyword",
+                                                          "competition": "Search Results"}
+    m = map_columns(["Keyword", "Searches", "Search Results"])
+    assert m["search_volume"] == "Searches" and m["competition"] == "Search Results"
+    assert map_columns(["Keyword", "Results Count"])["competition"] == "Results Count"
