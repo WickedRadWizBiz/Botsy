@@ -1,12 +1,12 @@
 # Task State
-_Last updated: 2026-10-17 05:45 UTC_
+_Last updated: 2026-10-17 12:15 UTC_
 
 ## Current objective
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Phase 3 themed packs + stationery + TTRPG niches + opportunity scoring (docs/PACKS.md) DONE and pushed 2026-10-17 (2116 tests, 5-niche CI dry run ~70 s). Next: round-2 build steps below.
 
 ## Next immediate action
 - Packs build landed (commits d519dd1..b66b783). Round-2 designs written from the user's answers: docs/RESEARCH_COSTS.md, docs/SNN.md (rewritten: adjacency role), docs/OVERSEER.md "Scale-ups and the Sunday plan", docs/HEALTH_TERMS.md; open choices + repo changes + sources in docs/PROPOSAL_2026-10-16.md "Round 2". config/platform_policies.yaml updated (bookbeam, google_trends, amazon/everbee/erank sources; the user's accepted risk recorded; BookBeam background fetch still open). Fixed: 'Search Results' column read as search demand (research/columns.py).
-- Round 2 answered (see Decisions). TinyFish decided 2026-10-17 (see latest decision). Build step A running: workflow `wf_2b9388d9-acc` (script botsy-round2-step-a-wf_2b9388d9-acc.js) (health terms; $0 Etsy insights path + KDP-file guard; New York time + schedule settings; own-listing snapshots + transactions_r sales/reviews).
+- Round 2 answered (see Decisions). TinyFish decided 2026-10-17 (see latest decision). Build step A: workflow `wf_2b9388d9-acc` (script botsy-round2-step-a-wf_2b9388d9-acc.js) hit the session limit at ~06:30 UTC (zero-cost-research built; the other 3 builders, reviews and integrate failed), RESUMED 12:15 UTC. TinyFish/market-signals design `wf_d2dc453b-b1c` (draft done, skeptic failed) resumed at the same time. If cut off again: Workflow(scriptPath, resumeFromRunId) after the reset (health terms; $0 Etsy insights path + KDP-file guard; New York time + schedule settings; own-listing snapshots + transactions_r sales/reviews).
 - Build order next (docs/PROPOSAL_2026-10-16.md): step 2 rule set-up incl. health terms (config/health_terms.txt, core/health.py), Etsy insights template + helper + search-list wording, KDP-file guard in service/inbox.py; then fonts + watchdog + hourly record + own-listing snapshots; Sunday plan timers (New York time) + plan mode; then KDP research (manual template reader), KDP books, POD, Hermes foundation, SNN package.
 
 ## Decisions made
