@@ -1,7 +1,8 @@
 # Writes the daily log (outbox/daily-log.txt: what happened in the last 24 hours) and
 # posts it to Discord when DISCORD_WEBHOOK_URL is set in /opt/botsy/.env. The Windows
 # helper copies the log to Documents\Botsy. It only reads Botsy's records, so it does not
-# wait for a check that is running.
+# wait for a check that is running. Started by botsy-digest.timer every day at 07:07
+# New York time, just after the quiet hours end.
 [Unit]
 Description=Botsy: write the daily log and post it to Discord
 After=network-online.target

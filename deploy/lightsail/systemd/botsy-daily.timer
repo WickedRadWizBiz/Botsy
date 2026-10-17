@@ -1,10 +1,12 @@
-# Every day at 06:17 server time (UTC unless you changed the server's time zone).
+# Every day at 06:17 New York time (America/New_York: EDT in summer, EST in winter),
+# whatever the server's own time zone is. systemd 235+ reads the zone name in OnCalendar
+# (Ubuntu 24.04 has 255). Check: systemd-analyze calendar "*-*-* 06:17:00 America/New_York"
 # Persistent=true: a run missed while the server was off happens at the next boot.
 [Unit]
-Description=Botsy: daily check at 06:17
+Description=Botsy: daily check at 06:17 New York time
 
 [Timer]
-OnCalendar=*-*-* 06:17:00
+OnCalendar=*-*-* 06:17:00 America/New_York
 Persistent=true
 Unit=botsy-daily.service
 

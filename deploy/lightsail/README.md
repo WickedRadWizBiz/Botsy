@@ -6,12 +6,15 @@ to know Linux: every command is written out, and you copy and paste it.
 
 **What the server does once it is set up**
 
-- When the Botsy helper on your PC uploads an EverBee or eRank export, the server takes it
+- When the Botsy helper on your PC uploads a research export (an eRank or EverBee CSV, or the
+  filled-in Botsy Etsy insights template), the server takes it
   in, studies it (research), makes products, writes listings and saves them as **Etsy
   drafts**. Nothing ever goes live by itself: you approve every draft in Etsy.
-- Every day at 06:17 (server time) it does a full check, and every Sunday at 18:07 it
-  writes a new search list telling you what to export next.
-- It writes a short report, `status.txt`, and every morning at 07:07 a **daily log**,
+- Every day at 6:17 am it does a full check, and every Saturday at 9:07 am it writes a
+  new search list telling you what to export over the weekend. All of Botsy's times are
+  **New York time** (EDT in summer, EST in winter), whatever the server's own clock says;
+  see "Botsy's clock" below.
+- It writes a short report, `status.txt`, and every morning at 7:07 am a **daily log**,
   `daily-log.txt` (what happened in the last 24 hours). The helper copies both to
   `Documents\Botsy` on your PC.
 - If you want, it also sends short messages to a **Discord** channel: new drafts, items
@@ -119,8 +122,9 @@ What the setup did, in short:
 - created `/opt/botsy/.env` for your secrets (empty for now, readable only by `botsy`);
 - created `/opt/botsy/config/settings.local.yaml`, this server's own settings (test mode;
   step 9 and step 12 change it; updates never touch it);
-- switched on four automatic jobs (watch for uploads, daily check, daily log, weekly
-  search list);
+- set the server's clock to New York time (`--timezone` changes it; see "Botsy's clock");
+- switched on four automatic jobs (watch for uploads, daily check at 6:17 am, daily log at
+  7:07 am, weekly search list on Saturday at 9:07 am, all New York time);
 - added the command `botsy`, which runs Botsy's tools for you, for example
   `botsy service status`;
 - added the command `botsy-setup`, which runs this setup again later (steps 7 and 10).
@@ -218,7 +222,8 @@ More ways to look (all safe, they change nothing):
 | What | Command | Normal answer |
 |---|---|---|
 | Is the upload watcher on? | `systemctl status botsy-inbox.path` | `active (waiting)` |
-| When do the timers run next? | `systemctl list-timers 'botsy*'` | three lines with dates |
+| When do the timers run next? | `systemctl list-timers 'botsy*'` | three lines with dates (shown in the server's clock, New York time after setup) |
+| Is a timer's time read right? | `systemd-analyze calendar --iterations=3 "Sat *-*-* 09:07:00 America/New_York"` | the next three Saturdays at 13:07 UTC (summer) or 14:07 UTC (winter) |
 | How did the last run go? | `systemctl status botsy-tick` | `inactive (dead)` between runs is fine; `failed` means the last run had a problem |
 | The last run's messages | `sudo journalctl -u botsy-tick -n 50 --no-pager` | lines with INFO |
 | The daily check's messages | `sudo journalctl -u botsy-daily -n 50 --no-pager` | lines with INFO |
@@ -288,7 +293,7 @@ of the setup files, the SSH rules and the automatic jobs, so they match the code
 
 Botsy can post short messages to a Discord channel of yours: new Etsy drafts, items that
 wait for your review, uploads it could not use, spending warnings, problems, the weekly
-search list (with the file) and the daily log. From 22:00 to 07:00 (server time) it only
+search list (with the file) and the daily log. From 10 pm to 7 am New York time it only
 posts urgent news (the spending cap, problems); the rest goes into the morning's daily log.
 Each item waiting for review is announced once, and the same problem at most once a day.
 
@@ -351,7 +356,7 @@ what count.
 
 ## Step 13. The daily log
 
-Every morning at 07:07 (server time) the server writes `daily-log.txt`: exports received,
+Every morning at 7:07 am New York time the server writes `daily-log.txt`: exports received,
 research, items made, drafts, items waiting for your review (with the exact command to
 approve each one), spending, problems and what runs next. You find it:
 
@@ -392,17 +397,55 @@ file, so nothing is lost. To drop the server's change and use GitHub's version:
 After changing research settings, research again with `botsy service research` (the
 automatic runs only research again when new exports arrive).
 
-## Optional: use your own time zone
+## Botsy's clock: New York time
 
-The server uses UTC, so "06:17" is 06:17 UTC (the same goes for the 07:07 daily log and
-Discord's quiet hours, 22:00 to 07:00). To use your time zone (for example London):
+Every time Botsy uses is New York time (`America/New_York`: EDT in summer, EST in
+winter, so "8 pm" is always 8 pm on your wall clock). The setup also sets the server's own
+clock to New York time, so `date`, `journalctl` and `systemctl list-timers` agree with
+Botsy's messages.
+
+The week, New York time:
+
+| When | What |
+|---|---|
+| Saturday 9:07 am | the weekly search list is written (the helper opens it); export over the weekend, by about 7 pm Sunday |
+| Sunday 8 pm | **planned, not built yet:** the weekly plan is posted (see below) |
+| every day 6:17 am | the daily check |
+| every day 7:07 am | the daily log, with the Discord messages held overnight |
+| 10 pm to 7 am | Discord quiet hours: only urgent news is posted |
+
+The timers carry the zone name themselves (`OnCalendar=Sat *-*-* 09:07:00 America/New_York`),
+and Botsy reads the quiet hours and the daily log's date in `schedule.timezone`, so they
+stay on New York time even if the server's clock were different. The spending cap still
+resets at 00:00 UTC on the 1st (that is how the providers count months).
+
+**The Sunday plan (planned for a later update; nothing runs yet).** Every Sunday at 8 pm
+a weekly plan is posted in Discord. Your first 4 plans wait for your OK, given with a code
+(reminders Monday 8 am and 7 pm; a plan not approved by Tuesday 8 pm expires and Botsy runs
+on its normal rules that week). From plan 5 a plan starts by itself on Monday at 8 am
+unless you press Hold; a plan over $10 (40% of the cap) still needs your code. A revised
+plan starts at least 2 hours after the revision and never before Monday 8 am. The schedule
+is already in `config/settings.yaml` under `schedule:` so the settings, the timers and
+this page agree; the plan's own timer (`botsy-plan.timer`, Sunday 20:00) is added when the
+plan command exists.
+
+To use another zone instead, give it to the setup once (it is remembered) and put the same
+name in this server's settings file, then run the setup again:
 
 ```
-sudo timedatectl set-timezone Europe/London
+sudo botsy-setup --timezone Europe/London
+sudo -u botsy nano /opt/botsy/config/settings.local.yaml
 ```
 
-`timedatectl list-timezones` lists the names (press q to leave). Then run the update from
-step 10 once so the timers pick it up.
+Add these two lines to the file (the timers in `deploy/lightsail/systemd/*.timer` also name
+the zone; change them in your branch too, or they stay on New York time):
+
+```
+schedule:
+  timezone: Europe/London
+```
+
+`timedatectl list-timezones` lists the names (press q to leave).
 
 ## What it costs
 
@@ -450,8 +493,11 @@ The most important files, if you ever copy things by hand: `/opt/botsy/.env`,
   next run takes them. The daily check and the weekly search list try again 20 minutes
   later by themselves.
 - **An export "Not used"**: the reason is in the status file, and a copy with a
-  `.reason.txt` is in `/opt/botsy/data/inbox_rejected/`. The server only takes CSV exports
-  from EverBee or eRank, up to 25 MB.
+  `.reason.txt` is in `/opt/botsy/data/inbox_rejected/`. The server only takes research CSV
+  exports (eRank, EverBee or a filled-in Botsy template), up to 25 MB. Book (KDP/BookBeam)
+  files are not "Not used": they are kept in `data/research_inputs/kdp/` for the KDP reader
+  (status.txt says so) and deleted after 90 days. A file with personal or order columns
+  (addresses, buyers, payments) is deleted at once.
 - **The helper on your PC cannot connect** ("Permission denied (publickey)"): run its
   server line from step 7 again. Check the Lightsail firewall still allows SSH (step 3) and
   that the static IP is attached (step 2).

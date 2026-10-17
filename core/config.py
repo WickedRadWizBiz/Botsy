@@ -15,6 +15,12 @@ AI disclosure files) and `listing.always_disclose_ai: false` are not used.
 A section or list replaced by a single value (`service: true`) is a setup error
 (ValueError), like a file that is not valid YAML. A `monthly_cap_usd` typed outside
 `spend:` is used as the spending cap, with a warning, so a cap never silently does nothing.
+
+Botsy's clock (user, 2026-10-17): `schedule.timezone` (America/New_York by default) is the
+zone of every Botsy time: the systemd timers, Discord's quiet hours, the daily log's date
+and times, and the Sunday plan's schedule (docs/OVERSEER.md; not built yet). `tz(settings)`
+returns it as a ZoneInfo and `now_local(settings)` the current time in it, whatever the
+server's own zone is. Money months and KDP weeks stay UTC.
 """
 from __future__ import annotations
 
@@ -22,8 +28,9 @@ import copy
 import logging
 import os
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -45,6 +52,26 @@ DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # config/settings.yaml ships with this shop name; real drafts are refused until it is set.
 PLACEHOLDER_SHOP_NAMES = ("", "YOUR_SHOP_NAME")
 _logged: set[str] = set()   # log lines already written by this process (each is logged once)
+
+
+# Settings section "schedule" (read with section(settings, "schedule", SCHEDULE_DEFAULTS)).
+# Times are "Day HH:MM" on the wall clock of schedule.timezone. Only `timezone` is used
+# today (timers, quiet hours, the daily log); the plan_* keys are the Sunday plan's schedule
+# as planned in docs/OVERSEER.md, kept here so the settings and docs agree before it is built.
+DEFAULT_TIMEZONE = "America/New_York"
+SCHEDULE_DEFAULTS: dict = {
+    "timezone": DEFAULT_TIMEZONE,
+    "plan_post": "Sun 20:00",            # Hermes posts the weekly plan
+    "reminders": ["Mon 08:00", "Mon 19:00"],
+    "deadline": "Tue 20:00",             # an unapproved plan expires
+    "auto_start": "Mon 08:00",           # from plan 5: starts by itself unless held
+    "revision_min_hours": 2,
+    "max_revisions": 3,
+    "approvals_before_auto": 4,
+    "auto_start_max_cost_share": 0.40,   # plans above this share of the cap still need a code
+    "stale_skip_hours": 24,              # a plan run more than this late is skipped
+    "upload_cutoff": "Sun 19:00",        # shown in messages only: export by then for the plan
+}
 
 
 class MissingSecretError(RuntimeError):
@@ -274,6 +301,35 @@ def check_date(value) -> str:
     except ValueError as e:
         raise ValueError(f"date {value!r} is not a real date: {e}") from None
     return value
+
+
+def tz(settings: dict | None = None) -> ZoneInfo:
+    """Botsy's time zone, schedule.timezone (default America/New_York), as a ZoneInfo.
+
+    `settings` None means the defaults, not the settings file (so this never reads a file).
+    A name tzdata does not know falls back to the default, with one warning."""
+    name = DEFAULT_TIMEZONE
+    if settings:
+        raw = section(settings, "schedule", SCHEDULE_DEFAULTS).get("timezone")
+        name = str(raw).strip() if raw not in (None, "") else DEFAULT_TIMEZONE
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, TypeError, OSError):
+        _log_once(f"schedule.timezone:{name}", logging.WARNING,
+                  "schedule.timezone %r is not a time zone name (timedatectl list-timezones); using %s",
+                  name, DEFAULT_TIMEZONE)
+        return ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def now_local(settings: dict | None = None, now: datetime | None = None) -> datetime:
+    """The current time (or `now`) in schedule.timezone, time-zone aware.
+
+    A naive `now` counts as UTC (the event journal's time stamps are UTC)."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(tz(settings))
 
 
 def today() -> str:

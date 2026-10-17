@@ -11,7 +11,7 @@ from core import events
 from service import notify
 
 URL = "https://discord.com/api/webhooks/123456789/SECRET-webhook-token-abcdef"
-NOON = datetime(2026, 10, 16, 12, 0)        # server local time
+NOON = datetime(2026, 10, 16, 12, 0)        # naive = New York wall clock (schedule.timezone)
 NIGHT = datetime(2026, 10, 16, 23, 30)
 
 
@@ -174,7 +174,77 @@ def test_quiet_hours_hold_non_urgent_messages_for_the_digest(settings):
     (["07:00", "07:00"], datetime(2026, 1, 1, 7, 0), False),
 ])
 def test_quiet_hours_window(hours, when, quiet):
+    """A naive `when` is read as the wall clock of schedule.timezone."""
     assert notify.in_quiet_hours({"notify": {"quiet_hours": hours}}, when) is quiet
+
+
+NY_QUIET = {"notify": {"quiet_hours": ["22:00", "07:00"]}}      # schedule.timezone defaults to New York
+
+
+@pytest.mark.parametrize("utc, quiet", [
+    # Saturday 2026-10-31 evening (EDT, UTC-4): quiet from 02:00 UTC.
+    (datetime(2026, 11, 1, 1, 59, tzinfo=timezone.utc), False),
+    (datetime(2026, 11, 1, 2, 0, tzinfo=timezone.utc), True),
+    # Sunday 2026-11-01: clocks go back 02:00 EDT -> 01:00 EST. 07:00 EST is 12:00 UTC.
+    (datetime(2026, 11, 1, 11, 59, tzinfo=timezone.utc), True),      # 06:59 EST
+    (datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc), False),      # 07:00 EST
+    (datetime(2026, 11, 2, 2, 30, tzinfo=timezone.utc), False),      # Sunday 21:30 EST
+    (datetime(2026, 11, 2, 3, 0, tzinfo=timezone.utc), True),        # Sunday 22:00 EST
+    # Sunday 2027-03-14: clocks go forward 02:00 EST -> 03:00 EDT. 07:00 EDT is 11:00 UTC.
+    (datetime(2027, 3, 14, 3, 0, tzinfo=timezone.utc), True),        # Saturday 22:00 EST
+    (datetime(2027, 3, 14, 10, 59, tzinfo=timezone.utc), True),      # 06:59 EDT
+    (datetime(2027, 3, 14, 11, 0, tzinfo=timezone.utc), False),      # 07:00 EDT
+    (datetime(2027, 3, 15, 1, 59, tzinfo=timezone.utc), False),      # Sunday 21:59 EDT
+    (datetime(2027, 3, 15, 2, 0, tzinfo=timezone.utc), True),        # Sunday 22:00 EDT
+])
+def test_quiet_hours_follow_new_york_through_the_change_of_clocks(utc, quiet):
+    assert notify.in_quiet_hours(NY_QUIET, utc) is quiet
+
+
+def test_quiet_hours_ignore_a_server_set_to_utc(monkeypatch):
+    """With the server clock on UTC, 23:00 UTC is 19:00 in New York: not quiet. And the
+    current time is taken from the system clock in UTC, then moved to New York."""
+    import time
+
+    if not hasattr(time, "tzset"):
+        pytest.skip("needs time.tzset")
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    try:
+        late_utc = datetime(2026, 10, 16, 23, 0, tzinfo=timezone.utc)
+        assert notify.in_quiet_hours(NY_QUIET, late_utc) is False
+        assert notify.in_quiet_hours(NY_QUIET, late_utc.astimezone()) is False     # server-local aware
+        assert notify.in_quiet_hours(NY_QUIET, datetime(2026, 10, 17, 3, 0, tzinfo=timezone.utc)) is True
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return late_utc.astimezone(tz) if tz else late_utc.replace(tzinfo=None)
+
+        monkeypatch.setattr("core.config.datetime", _Clock)
+        assert notify.in_quiet_hours(NY_QUIET) is False
+        london = {"notify": NY_QUIET["notify"], "schedule": {"timezone": "Europe/London"}}
+        assert notify.in_quiet_hours(london) is True                                # 00:00 BST
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time.tzset()
+
+
+def test_urgent_kinds_pass_quiet_hours_in_new_york(settings):
+    posted = []
+
+    class Session:
+        def post(self, url, **kw):
+            posted.append(kw)
+            return type("R", (), {"status_code": 204, "headers": {}})()
+
+    settings["notify"]["quiet_hours"] = ["22:00", "07:00"]
+    at_night = datetime(2026, 11, 1, 3, 30, tzinfo=timezone.utc)      # 23:30 EDT on Halloween
+    assert notify.send("cap reached", settings=settings, kinds=["budget_reached"], now=at_night,
+                       session=Session()) is True
+    assert notify.send("new draft", settings=settings, kinds=["draft_created"], now=at_night,
+                       session=Session()) is False
+    assert len(posted) == 1
 
 
 def test_secrets_in_the_text_are_replaced(settings, monkeypatch):

@@ -7,6 +7,7 @@ import stat
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -17,6 +18,7 @@ from ._support import make_settings
 
 UNTIL = datetime(2026, 10, 16, 7, 7, tzinfo=timezone.utc)
 SINCE = UNTIL - timedelta(hours=24)
+NY = ZoneInfo("America/New_York")
 
 
 def at(hours_before: float) -> str:
@@ -99,7 +101,11 @@ def test_digest_lists_every_section(settings, monkeypatch):
     assert "  - 1 new draft is waiting in Etsy: Frog Stickers Pack\n" in held     # not the "Botsy:" line
     assert "  - 1 item is waiting for your review.\n" in held and "Botsy:" not in held
     assert "approve x" not in held                                               # indented details left out
-    assert "What runs next" in text and "Daily check:" in text and "Weekly search list: Sun" in text
+    assert "What runs next" in text and "Daily check:" in text and "Weekly search list: Sat" in text
+    # Times are on New York's clock (07:07 UTC on 16 Oct = 03:07 EDT), whatever the server's zone.
+    assert "What happened from Thu 15 Oct 03:07 to Fri 16 Oct 03:07 (New York time)." in text
+    assert "Daily check: Fri 16 Oct 06:17\n" in text and "Next daily log: Fri 16 Oct 07:07\n" in text
+    assert "Weekly search list: Sat 17 Oct 09:07\n" in text
     assert max(len(line) for line in text.splitlines()) < 260
 
 
@@ -153,27 +159,52 @@ def test_bad_cap_setting_does_not_stop_the_log(tmp_path):
 
 
 def test_next_runs_follow_the_timers():
-    """digest.SCHEDULE matches the OnCalendar lines of the systemd timers."""
-    from core.config import ROOT
+    """digest.SCHEDULE matches the OnCalendar lines of the systemd timers, zone included."""
+    from core.config import DEFAULT_TIMEZONE, ROOT
 
     units = ROOT / "deploy" / "lightsail" / "systemd"
     cal = {name: next(ln.split("=", 1)[1].strip() for ln in (units / name).read_text().splitlines()
                       if ln.startswith("OnCalendar="))
            for name in ("botsy-daily.timer", "botsy-digest.timer", "botsy-weekly.timer")}
     h, m = digest.SCHEDULE["daily_check"]
-    assert cal["botsy-daily.timer"] == f"*-*-* {h:02d}:{m:02d}:00"
+    assert cal["botsy-daily.timer"] == f"*-*-* {h:02d}:{m:02d}:00 {DEFAULT_TIMEZONE}"
     h, m = digest.SCHEDULE["daily_log"]
-    assert cal["botsy-digest.timer"] == f"*-*-* {h:02d}:{m:02d}:00"
+    assert cal["botsy-digest.timer"] == f"*-*-* {h:02d}:{m:02d}:00 {DEFAULT_TIMEZONE}"
     wd, h, m = digest.SCHEDULE["search_list"]
-    assert wd == 6 and cal["botsy-weekly.timer"] == f"Sun *-*-* {h:02d}:{m:02d}:00"
+    assert wd == 5 and cal["botsy-weekly.timer"] == f"Sat *-*-* {h:02d}:{m:02d}:00 {DEFAULT_TIMEZONE}"
+    assert digest.TIMER_ZONE == DEFAULT_TIMEZONE and all(c.endswith(" " + digest.TIMER_ZONE) for c in cal.values())
+    assert DEFAULT_TIMEZONE == "America/New_York"
 
 
 def test_next_run_dates():
-    after = datetime(2026, 10, 16, 6, 0).astimezone()          # a Friday, local time
-    assert digest._next_run(after, 6, 17).hour == 6 and digest._next_run(after, 6, 17).day == 16
-    assert digest._next_run(after.replace(hour=7), 6, 17).day == 17
-    sunday = digest._next_run(after, 18, 7, weekday=6)
-    assert sunday.weekday() == 6 and sunday.day == 18
+    after = datetime(2026, 10, 16, 6, 0, tzinfo=NY)             # a Friday, New York time
+    run = digest._next_run(after, 6, 17, zone=NY)
+    assert (run.day, run.hour, run.tzinfo) == (16, 6, NY)
+    assert digest._next_run(after.replace(hour=7), 6, 17, zone=NY).day == 17
+    saturday = digest._next_run(after, 9, 7, weekday=5, zone=NY)
+    assert saturday.weekday() == 5 and saturday.day == 17
+    assert digest._next_run(after, 6, 17).tzinfo == NY            # the default zone is Botsy's
+
+
+def test_log_date_is_the_date_on_new_york_clock():
+    """07:07 UTC is still the day before in New York; a naive `now` counts as UTC."""
+    assert digest.log_date({}, datetime(2026, 10, 17, 3, 0, tzinfo=timezone.utc)) == "2026-10-16"
+    assert digest.log_date({}, datetime(2026, 10, 17, 3, 0)) == "2026-10-16"
+    assert digest.log_date({}, datetime(2026, 10, 17, 11, 7, tzinfo=timezone.utc)) == "2026-10-17"
+    london = {"schedule": {"timezone": "Europe/London"}}
+    assert digest.log_date(london, datetime(2026, 10, 17, 3, 0, tzinfo=timezone.utc)) == "2026-10-17"
+
+
+def test_log_date_with_no_time_given(monkeypatch):
+    """No `now`: today on New York's clock, unless PIPELINE_DATE pins the date (like today())."""
+    from core.config import now_local
+
+    monkeypatch.delenv("PIPELINE_DATE", raising=False)
+    assert digest.log_date({}) in {now_local({}).date().isoformat(),
+                                   (now_local({}) - timedelta(seconds=5)).date().isoformat()}
+    monkeypatch.setenv("PIPELINE_DATE", "2026-01-02")
+    assert digest.log_date({}) == "2026-01-02"
+    assert digest.log_date({}, datetime(2026, 10, 17, 3, 0, tzinfo=timezone.utc)) == "2026-10-16"
 
 
 def test_write_saves_latest_and_dated_copies(tmp_path):
@@ -220,22 +251,56 @@ def test_held_message_without_a_header_line(tmp_path):
     assert "  - This week's search list is ready (attached).\n" in text and "  - (empty)\n" in text
 
 
-def test_next_run_keeps_the_wall_clock_time_across_a_summer_time_change():
+@pytest.mark.parametrize("before, offset_after, day", [
+    # New York's clocks go back on Sunday 2026-11-01 (02:00 EDT -> 01:00 EST) ...
+    (datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc), timedelta(hours=-5), 1),
+    # ... and forward on Sunday 2027-03-14 (02:00 EST -> 03:00 EDT).
+    (datetime(2027, 3, 13, 12, 0, tzinfo=timezone.utc), timedelta(hours=-4), 14),
+])
+def test_next_run_keeps_the_wall_clock_time_across_a_change_of_clocks(before, offset_after, day):
+    """The 06:17 check is still shown (and run by the timer) at 06:17 on the morning the
+    clocks change, with that day's offset, not an hour off."""
+    run = digest._next_run(before, 6, 17, zone=NY)
+    assert (run.day, run.hour, run.minute) == (day, 6, 17) and run.utcoffset() == offset_after
+    assert digest._show(run, NY).endswith("06:17")
+    # Measured in real time the run is 25 or 23 hours after the same wall time the day before.
+    previous = run - timedelta(days=1)
+    assert (run.astimezone(timezone.utc) - previous.astimezone(timezone.utc)) \
+        == timedelta(hours=24) - (offset_after - previous.utcoffset())
+
+
+def test_log_times_do_not_follow_a_server_set_to_utc(tmp_path):
+    """A server on UTC (or any zone) shows New York times in the log and names them."""
     import time
 
     if not hasattr(time, "tzset"):
         pytest.skip("needs time.tzset")
+    s, _ = make_settings(tmp_path)
     old_tz = os.environ.get("TZ")
-    os.environ["TZ"] = "Europe/London"
+    os.environ["TZ"] = "UTC"
     time.tzset()
     try:
-        before_change = datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc)    # BST; clocks go back on the 25th
-        run = digest._next_run(before_change, 6, 17, weekday=0)                 # Monday the 26th, GMT
-        assert (run.day, run.hour, run.minute) == (26, 6, 17) and run.utcoffset() == timedelta(0)
-        assert digest._show(run).endswith("06:17")
+        until = datetime(2026, 11, 1, 12, 7, tzinfo=timezone.utc)        # 07:07 EST, the morning the clocks went back
+        text = digest.build(until - timedelta(hours=24), until, s).replace("\r\n", "\n")
+        assert "from Sat 31 Oct 08:07 to Sun 01 Nov 07:07 (New York time)." in text
+        assert "Daily check: Mon 02 Nov 06:17\n" in text and "Weekly search list: Sat 07 Nov 09:07\n" in text
+        s["schedule"] = {"timezone": "Europe/London"}
+        text = digest.build(until - timedelta(hours=24), until, s).replace("\r\n", "\n")
+        assert "from Sat 31 Oct 12:07 to Sun 01 Nov 12:07 (London time)." in text
+        # The timers stay on New York time, so London shows when they really run.
+        assert "Daily check: Mon 02 Nov 11:17\n" in text and "Weekly search list: Sat 07 Nov 14:07\n" in text
     finally:
         if old_tz is None:
             os.environ.pop("TZ", None)
         else:
             os.environ["TZ"] = old_tz
         time.tzset()
+
+
+def test_book_files_kept_for_the_kdp_reader_are_shown(tmp_path):
+    s, _ = make_settings(tmp_path)
+    write_events(s, [{"ts": at(5), "kind": "export_routed", "name": "bookbeam books.csv",
+                      "file": "2026-10-15-bookbeam-books.csv", "reason": "kdp export, waits for the KDP reader"}])
+    text = body(digest.build(SINCE, UNTIL, s))
+    assert "Book (KDP) files kept for the KDP reader: 1" in text and "bookbeam books.csv" in text
+    assert "None received." not in text

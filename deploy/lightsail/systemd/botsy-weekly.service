@@ -1,4 +1,5 @@
 # Writes the weekly search list (outbox/search-list.txt); the Windows helper downloads it.
+# Started by botsy-weekly.timer every Saturday at 09:07 New York time.
 [Unit]
 Description=Botsy: write the weekly search list
 # At most 4 starts (the run and its retries) in 12 hours.

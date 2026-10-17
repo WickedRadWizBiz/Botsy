@@ -15,10 +15,13 @@ status only, and urllib3's debug lines that name a webhook path are dropped.
 - Timeout 10 s (notify.discord.timeout_s). One retry on HTTP 429, after Discord's
   retry_after (at most notify.discord.max_retry_wait_s).
 - send() never raises. It returns True only when Discord accepted the message.
-- Quiet hours (notify.quiet_hours, server local time, default 22:00 to 07:00): a message
-  that is not urgent is not sent then. It is recorded in the event journal as
-  `notification_held`, and the morning digest (service/digest.py) includes it; it is not
-  sent again later. Urgent kinds (notify.urgent: budget_reached, error) always go out.
+- Quiet hours (notify.quiet_hours, default 22:00 to 07:00) are read on the wall clock of
+  schedule.timezone (America/New_York by default; core.config.tz), never the server's own
+  zone, so a server left on UTC still keeps quiet from 10 pm to 7 am New York time, through
+  the change-of-clocks weeks too. A message that is not urgent is not sent then. It is
+  recorded in the event journal as `notification_held`, and the morning digest
+  (service/digest.py) includes it; it is not sent again later. Urgent kinds
+  (notify.urgent: budget_reached, error) always go out.
 - Mentions are switched off (allowed_mentions), so no text can ping @everyone.
 
 While pytest runs, the real webhook is never called: tests pass a fake `session`.
@@ -34,7 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from core.config import load_env, load_settings, section
+from core.config import load_env, load_settings, now_local, section, tz
 
 log = logging.getLogger("service.notify")
 
@@ -56,7 +59,7 @@ DEFAULTS: dict = {
         "timeout_s": 10,
         "max_retry_wait_s": 60,       # longest wait for Discord's retry_after on HTTP 429
     },
-    "quiet_hours": ["22:00", "07:00"],   # server local time; [] or null = no quiet hours
+    "quiet_hours": ["22:00", "07:00"],   # in schedule.timezone; [] or null = no quiet hours
     "urgent": ["budget_reached", "error"],   # sent even during quiet hours
 }
 
@@ -131,7 +134,11 @@ def _parse_hhmm(value) -> int | None:
 
 
 def in_quiet_hours(settings: dict | None = None, now: datetime | None = None) -> bool:
-    """True when `now` (server local time) falls in notify.quiet_hours [start, end)."""
+    """True when `now` falls in notify.quiet_hours [start, end) on schedule.timezone's clock.
+
+    A time-zone aware `now` is converted to that zone; a naive one is taken as already
+    being that zone's wall clock. None means the current time."""
+    settings = settings if settings is not None else load_settings()
     hours = config(settings).get("quiet_hours")
     if not hours:
         return False
@@ -144,9 +151,10 @@ def in_quiet_hours(settings: dict | None = None, now: datetime | None = None) ->
         return False
     if start == end:
         return False
-    now = now or datetime.now().astimezone()
-    if now.tzinfo is not None:
-        now = now.astimezone()                     # server local time
+    if now is None:
+        now = now_local(settings)
+    elif now.tzinfo is not None:
+        now = now.astimezone(tz(settings))         # Botsy's clock, not the server's
     minute = now.hour * 60 + now.minute
     return start <= minute < end if start < end else (minute >= start or minute < end)
 

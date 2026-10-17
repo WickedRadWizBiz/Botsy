@@ -1,6 +1,7 @@
 # The daily Botsy check: refresh our own shop's Etsy stats (live mode only), then a
 # forced tick (research again if the exports changed, then generate -> qa -> listing ->
-# draft, which also drafts items you approved in the review queue).
+# draft, which also drafts items you approved in the review queue). Started by botsy-daily.timer
+# every day at 06:17 New York time.
 [Unit]
 Description=Botsy: daily check (own shop stats, research, items, drafts)
 After=network-online.target

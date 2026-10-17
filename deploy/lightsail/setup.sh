@@ -4,13 +4,18 @@
 # Run it as root (with sudo). It is safe to run again: it adds what is missing, updates
 # the code, and leaves your .env and settings alone. The first time:
 #   sudo bash setup.sh --repo git@github.com:OWNER/REPO.git --branch BRANCH
-# After that it is installed as the command botsy-setup, which remembers the repository
-# and branch (in /etc/botsy/setup.conf):
+# After that it is installed as the command botsy-setup, which remembers the repository,
+# branch and time zone (in /etc/botsy/setup.conf):
 #   sudo botsy-setup                                   (update code, packages, services)
 #   sudo botsy-setup --upload-pubkey "ssh-ed25519 AAAA... name"
 #                                                      (let your PC's helper upload; on a
 #                                                      server that is set up, only this)
-# Options: --repo URL  --branch NAME  --upload-pubkey "KEY"  --help
+#   sudo botsy-setup --timezone Europe/London          (the server's own clock; default
+#                                                      America/New_York. The timers name
+#                                                      their zone in the unit files and
+#                                                      quiet hours follow schedule.timezone,
+#                                                      so this only changes what `date` shows)
+# Options: --repo URL  --branch NAME  --timezone ZONE  --upload-pubkey "KEY"  --help
 # It never prints a secret. deploy/lightsail/README.md walks through every step.
 #
 # Why root keeps its own copy of the code: /opt/botsy belongs to the botsy account, which
@@ -44,8 +49,12 @@ UNITS=(botsy-inbox.path botsy-tick.service botsy-daily.service botsy-daily.timer
        botsy-weekly.service botsy-weekly.timer botsy-digest.service botsy-digest.timer)
 ENABLE=(botsy-inbox.path botsy-daily.timer botsy-weekly.timer botsy-digest.timer)
 
+DEFAULT_TIMEZONE=America/New_York   # the same as schedule.timezone in config/settings.yaml
+ZONEINFO=/usr/share/zoneinfo         # root-owned (package tzdata); zone names are checked here
+
 REPO_URL=""
 BRANCH=""
+TIMEZONE=""
 UPLOAD_PUBKEY=""
 KEY_ONLY=1        # 0 once --repo or --branch is given: then it is a full setup run
 APP_GIT_SSH=""
@@ -87,6 +96,14 @@ valid_pubkey() {
   ssh-keygen -l -f "$f" > /dev/null 2>&1
 }
 
+# A time zone name as tzdata spells it (Area/City, at most three parts, no '..'), and the
+# zone file exists in root's /usr/share/zoneinfo. "UTC" and "Etc/UTC" are fine too.
+valid_timezone() {
+  local zone=$1
+  [[ $zone =~ ^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$ && $zone != *..* ]] || return 1
+  [[ -f $ZONEINFO/$zone ]]
+}
+
 # ---------------------------------------------------------------- 0. options
 
 read_options() {
@@ -94,6 +111,7 @@ read_options() {
     case "$1" in
       --repo)          [[ $# -ge 2 ]] || die "--repo needs a value";          REPO_URL=$2; KEY_ONLY=0; shift 2 ;;
       --branch)        [[ $# -ge 2 ]] || die "--branch needs a value";        BRANCH=$2; KEY_ONLY=0; shift 2 ;;
+      --timezone)      [[ $# -ge 2 ]] || die "--timezone needs a value";      TIMEZONE=$2; KEY_ONLY=0; shift 2 ;;
       --upload-pubkey) [[ $# -ge 2 ]] || die "--upload-pubkey needs a value"; UPLOAD_PUBKEY=$2; shift 2 ;;
       -h|--help)       usage; exit 0 ;;
       *)               die "unknown option: $1 (run with --help to see the options)" ;;
@@ -102,16 +120,19 @@ read_options() {
 
   [[ $(id -u) -eq 0 ]] || die "run this with sudo, for example: sudo botsy-setup --help"
 
-  # Saved answers from an earlier run (only REPO_URL and BRANCH; read as text, never run).
+  # Saved answers from an earlier run (only REPO_URL, BRANCH and TIMEZONE; read as text,
+  # never run; the file is root's, under /etc/botsy).
   if [[ -f $CONF_FILE ]]; then
     local key value
     while IFS='=' read -r key value; do
       case "$key" in
         REPO_URL) [[ -n $REPO_URL ]] || REPO_URL=$value ;;
         BRANCH)   [[ -n $BRANCH ]] || BRANCH=$value ;;
+        TIMEZONE) [[ -n $TIMEZONE ]] || TIMEZONE=$value ;;
       esac
     done < "$CONF_FILE"
   fi
+  [[ -n $TIMEZONE ]] || TIMEZONE=$DEFAULT_TIMEZONE
   [[ -n $REPO_URL ]] || die "say which repository to install, for example:
     sudo bash $0 --repo git@github.com:OWNER/REPO.git --branch main"
   [[ -n $BRANCH ]] || BRANCH=main
@@ -119,6 +140,9 @@ read_options() {
     || die "--repo must look like git@github.com:OWNER/REPO.git or https://github.com/OWNER/REPO.git"
   [[ $BRANCH =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ && $BRANCH != *..* ]] \
     || die "--branch '$BRANCH' is not a valid branch name"
+  valid_timezone "$TIMEZONE" \
+    || die "--timezone '$TIMEZONE' is not a time zone name. Use one from  timedatectl list-timezones
+    (for example America/New_York, America/Chicago, America/Los_Angeles, Europe/London)."
   if [[ -n $UPLOAD_PUBKEY ]] && ! valid_pubkey "$UPLOAD_PUBKEY"; then
     die "the --upload-pubkey value is not a public SSH key. Copy the whole line the Botsy
     helper printed on your PC (it starts with ssh-ed25519) and put it in double quotes."
@@ -147,7 +171,7 @@ update_trusted_copy() {
 
   install -d -m 750 -o root -g "$(getent group "$APP_USER" > /dev/null && echo "$APP_USER" || echo root)" "$CONF_DIR"
   # Remembered for later runs (command-line options always win over it).
-  printf 'REPO_URL=%s\nBRANCH=%s\n' "$REPO_URL" "$BRANCH" > "$CONF_FILE.new"
+  printf 'REPO_URL=%s\nBRANCH=%s\nTIMEZONE=%s\n' "$REPO_URL" "$BRANCH" "$TIMEZONE" > "$CONF_FILE.new"
   chmod 644 "$CONF_FILE.new" && mv -f "$CONF_FILE.new" "$CONF_FILE"
 
   if [[ -n $ROOT_GIT_SSH ]]; then
@@ -194,6 +218,32 @@ install_packages() {
   say "Installing system packages (python3-venv, python3-pip, git, potrace, openssh-server)"
   apt_install python3-venv python3-pip git potrace openssh-server
   note "Done."
+}
+
+# ---------------------------------------------------------------- 2b. server clock
+
+# Botsy's timers name their zone (OnCalendar=... America/New_York) and Botsy reads quiet
+# hours and the daily log's date in schedule.timezone, so they do not depend on this. The
+# server's own zone is set too, so `date`, journalctl and systemctl list-timers show the
+# same clock you read in Botsy's messages.
+set_timezone() {
+  say "Setting the server's clock to $TIMEZONE"
+  local current=""
+  if command -v timedatectl > /dev/null; then
+    current=$(timedatectl show -p Timezone --value 2> /dev/null || true)
+  fi
+  [[ -n $current ]] || current=$(cat /etc/timezone 2> /dev/null || true)
+  if [[ $current == "$TIMEZONE" ]]; then
+    note "Already $TIMEZONE."
+  elif command -v timedatectl > /dev/null; then
+    timedatectl set-timezone "$TIMEZONE" \
+      || die "could not set the time zone to $TIMEZONE (see the message above). To keep the
+    server's clock as it is, run again with  --timezone ${current:-UTC}"
+    note "Done (was ${current:-unknown}). Botsy's timers keep their own zone; see below."
+  else
+    note "Warning: timedatectl is not available, so the server's clock was left at ${current:-unknown}."
+    note "Botsy's timers and quiet hours use $DEFAULT_TIMEZONE / schedule.timezone anyway."
+  fi
 }
 
 # ---------------------------------------------------------------- 3. accounts
@@ -427,8 +477,28 @@ check_data_dirs() {
 
 # ---------------------------------------------------------------- 9. services
 
+# Every OnCalendar line in root's copy of the timers must be one systemd accepts (they
+# carry a zone name, which needs systemd 235 or newer; Ubuntu 24.04 has 255). Checked
+# before anything is installed, so a typo never leaves a timer that cannot start.
+check_calendars() {
+  command -v systemd-analyze > /dev/null || return 0
+  local unit spec found
+  for unit in "${UNITS[@]}"; do
+    [[ $unit == *.timer ]] || continue
+    found=0
+    while IFS= read -r spec; do
+      found=1
+      systemd-analyze calendar -- "$spec" > /dev/null 2>&1 \
+        || die "systemd does not accept the time in $unit: '$spec' (systemd-analyze calendar).
+    The timers name a time zone, which needs systemd 235 or newer:  systemctl --version"
+    done < <(sed -n 's/^[[:space:]]*OnCalendar[[:space:]]*=[[:space:]]*//p' "$SRC_DIR/systemd/$unit")
+    [[ $found -eq 1 ]] || die "$unit has no OnCalendar line"
+  done
+}
+
 install_services() {
   say "Installing the Botsy services and timers"
+  check_calendars
   local unit
   for unit in "${UNITS[@]}"; do
     install -m 644 -o root -g root "$SRC_DIR/systemd/$unit" "$UNIT_DIR/$unit"
@@ -438,7 +508,11 @@ install_services() {
   systemctl enable --quiet "${ENABLE[@]}"
   systemctl restart "${ENABLE[@]}"
   note "Watching $INBOX/incoming; daily check at 06:17, daily log at 07:07, weekly search list"
-  note "on Sunday 18:07 (server time)."
+  note "on Saturday 09:07, all New York time (America/New_York), whatever the server's clock."
+  note "Check with:  systemctl list-timers 'botsy*'"
+  # TODO (Sunday plan, docs/OVERSEER.md "Scale-ups ... and the Sunday plan"): botsy-plan.timer
+  # (Sun *-*-* 20:00:00 America/New_York) and botsy-plan.service are not installed yet,
+  # because `python -m service plan` does not exist. Add them to UNITS and ENABLE when it does.
 }
 
 # ---------------------------------------------------------------- 10. helper command
@@ -500,12 +574,13 @@ main() {
     # Whichever copy was started (root's own, a fresh download, or /opt/botsy's), update
     # root's copy from GitHub and carry on with that one.
     update_trusted_copy
-    local args=(--repo "$REPO_URL" --branch "$BRANCH")
+    local args=(--repo "$REPO_URL" --branch "$BRANCH" --timezone "$TIMEZONE")
     [[ -z $UPLOAD_PUBKEY ]] || args+=(--upload-pubkey "$UPLOAD_PUBKEY")
     rm -rf -- "$WORK"   # exec skips the EXIT trap
     BOTSY_SETUP_STAGE=run exec bash "$SRC_DIR/setup.sh" "${args[@]}"
   fi
   install_packages
+  set_timezone
   create_accounts
   create_inbox
   setup_sftp

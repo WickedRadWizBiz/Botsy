@@ -1,9 +1,14 @@
-# Every Sunday at 18:07 server time (UTC unless you changed the server's time zone).
+# Every Saturday at 09:07 New York time (America/New_York: EDT in summer, EST in winter):
+# the search list is ready Saturday morning, so the exports can be uploaded over the
+# weekend (by about 19:00 Sunday) before the Sunday 20:00 plan (docs/OVERSEER.md, not
+# built yet). systemd 235+ reads the zone name in OnCalendar (Ubuntu 24.04 has 255).
+# Check: systemd-analyze calendar "Sat *-*-* 09:07:00 America/New_York"
+# Persistent=true: a run missed while the server was off happens at the next boot.
 [Unit]
-Description=Botsy: weekly search list on Sunday at 18:07
+Description=Botsy: weekly search list on Saturday at 09:07 New York time
 
 [Timer]
-OnCalendar=Sun *-*-* 18:07:00
+OnCalendar=Sat *-*-* 09:07:00 America/New_York
 Persistent=true
 Unit=botsy-weekly.service
 

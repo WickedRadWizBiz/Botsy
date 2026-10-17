@@ -124,7 +124,7 @@ def test_daily_log_timer_is_installed_and_enabled():
     for unit in units:
         assert (DEPLOY / "systemd" / unit).is_file(), unit
     timer = _unit("botsy-digest.timer")
-    assert timer["OnCalendar"] == ["*-*-* 07:07:00"] and timer["Persistent"] == ["true"]
+    assert timer["OnCalendar"] == ["*-*-* 07:07:00 America/New_York"] and timer["Persistent"] == ["true"]
     assert timer["Unit"] == ["botsy-digest.service"]
     service = _unit("botsy-digest.service")
     assert service["ExecStart"] == ["/opt/botsy/.venv/bin/python -m service digest"]

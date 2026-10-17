@@ -6,8 +6,12 @@
 `python -m service digest [--hours 24]` builds the log for the last day from the event
 journal (core.events) and the spend ledger (core.spend), writes it to the outbox, where
 the Windows helper copies it to Documents\\Botsy, and posts it to Discord. The systemd
-timer botsy-digest.timer runs it every day at 07:07 server time, just after the quiet
+timer botsy-digest.timer runs it every day at 07:07 New York time, just after the quiet
 hours end, so it also carries the Discord messages held overnight.
+
+Every time in the log, and the date in daily-log-<date>.txt (`log_date(settings)`), is on
+the clock of schedule.timezone (core.config.tz; America/New_York by default), whatever the
+server's own zone is. The journal's time stamps stay UTC.
 
 Everything in it is our own data (theme names, titles, item ids, counts, our own error
 summaries); events never hold competitor text. Secret values are replaced by [secret].
@@ -15,10 +19,12 @@ summaries); events never hold competitor text. Secret values are replaced by [se
 from __future__ import annotations
 
 import datetime as _dt
+import os
 from collections import Counter
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from core.config import check_date
+from core.config import check_date, now_local, tz
 
 CRLF = "\r\n"
 LATEST_NAME = "daily-log.txt"
@@ -27,9 +33,14 @@ KEEP_DATED = 35            # dated logs kept in the outbox (the oldest beyond th
 MAX_LINES = 10             # lines listed per section before "... and N more"
 MAX_DETAIL = 200           # characters of one listed line
 
-# When the automatic jobs run (server local time). Keep in step with the OnCalendar lines in
-# deploy/lightsail/systemd/botsy-daily.timer, botsy-digest.timer and botsy-weekly.timer.
-SCHEDULE = {"daily_check": (6, 17), "daily_log": (7, 7), "search_list": (6, 18, 7)}  # (weekday, h, m)
+# When the automatic jobs run, on the wall clock of schedule.timezone (the timers name the
+# same zone). Keep in step with the OnCalendar lines in deploy/lightsail/systemd/
+# botsy-daily.timer, botsy-digest.timer and botsy-weekly.timer (Saturday = weekday 5).
+SCHEDULE = {"daily_check": (6, 17), "daily_log": (7, 7), "search_list": (5, 9, 7)}  # (weekday, h, m)
+# The zone the OnCalendar lines name. The times above are worked out on this clock (that is
+# when systemd runs them) and then shown on schedule.timezone's clock, so a server whose
+# settings name another zone still shows the true run times.
+TIMER_ZONE = "America/New_York"
 
 TOOLS = {"everbee": "EverBee", "erank": "eRank"}
 
@@ -40,12 +51,28 @@ def _utc(when: _dt.datetime) -> _dt.datetime:
     return when.replace(tzinfo=_dt.timezone.utc) if when.tzinfo is None else when.astimezone(_dt.timezone.utc)
 
 
-def _local(when: _dt.datetime) -> _dt.datetime:
-    return _utc(when).astimezone()
+def _local(when: _dt.datetime, zone: _dt.tzinfo) -> _dt.datetime:
+    """`when` (naive = UTC) on Botsy's clock, `zone` (core.config.tz(settings))."""
+    return _utc(when).astimezone(zone)
 
 
-def _show(when: _dt.datetime) -> str:
-    return _local(when).strftime("%a %d %b %H:%M")
+def _show(when: _dt.datetime, zone: _dt.tzinfo) -> str:
+    return _local(when, zone).strftime("%a %d %b %H:%M")
+
+
+def _zone_name(zone: _dt.tzinfo) -> str:
+    key = getattr(zone, "key", None) or str(zone)
+    city = key.rsplit("/", 1)[-1].replace("_", " ")
+    return f"{city} time" if "/" in key else f"{key} time"
+
+
+def log_date(settings: dict, now: _dt.datetime | None = None) -> str:
+    """The date for daily-log-<date>.txt: today on schedule.timezone's clock (YYYY-MM-DD).
+
+    With no `now`, PIPELINE_DATE (core.config.today) still wins, for reproducible runs."""
+    if now is None and os.environ.get("PIPELINE_DATE"):
+        return check_date(os.environ["PIPELINE_DATE"])
+    return now_local(settings, now).date().isoformat()
 
 
 def _plural(n: int, word: str, many: str | None = None) -> str:
@@ -95,22 +122,26 @@ def review_command(item_id: str, dry_run: bool) -> str:
     return f"botsy qa review approve {item_id}" + (" --dry-run" if dry_run else "")
 
 
-def _next_run(after: _dt.datetime, hour: int, minute: int, weekday: int | None = None) -> _dt.datetime:
-    # Worked out on the local wall clock, then given that day's offset, so a summer-time
-    # change between now and the run does not shift the time shown by an hour.
-    local = _local(after).replace(tzinfo=None)
+def _next_run(after: _dt.datetime, hour: int, minute: int, weekday: int | None = None,
+              zone: _dt.tzinfo | None = None) -> _dt.datetime:
+    # Worked out on the zone's wall clock, then given that day's offset, so a summer-time
+    # change between now and the run does not shift the time shown by an hour (the timers
+    # name the same zone, so this is when systemd runs them).
+    zone = zone if zone is not None else tz(None)
+    local = _local(after, zone).replace(tzinfo=None)
     t = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
     while t <= local or (weekday is not None and t.weekday() != weekday):
         t += _dt.timedelta(days=1)
-    return t.astimezone()
+    return t.replace(tzinfo=zone)
 
 
 # ---------------------------------------------------------------- sections
 
 def _exports(by: dict[str, list[dict]]) -> list[str]:
     got, rejected = by.get("export_received", []), by.get("export_rejected", [])
+    routed = by.get("export_routed", [])
     lines = ["Exports"]
-    if not got and not rejected:
+    if not got and not rejected and not routed:
         return lines + ["  None received."]
     tools = Counter(TOOLS.get(str(e.get("tool") or "").lower(), str(e.get("tool") or "unknown")) for e in got)
     rows = sum(int(e.get("rows") or 0) for e in got if isinstance(e.get("rows"), int))
@@ -119,6 +150,9 @@ def _exports(by: dict[str, list[dict]]) -> list[str]:
     if rejected:
         lines.append(f"  Not used: {len(rejected)}")
         lines += _capped([f"{e.get('name')}: {e.get('reason')}" for e in rejected])
+    if routed:
+        lines.append(f"  Book (KDP) files kept for the KDP reader: {len(routed)}")
+        lines += _capped([str(e.get("name")) for e in routed])
     return lines
 
 
@@ -259,13 +293,14 @@ def _held(by: dict[str, list[dict]]) -> list[str]:
     return ["Discord messages held during quiet hours (not sent again)"] + _capped(shown, "  - ")
 
 
-def _next(by: dict[str, list[dict]], until: _dt.datetime, reached: bool) -> list[str]:
+def _next(by: dict[str, list[dict]], until: _dt.datetime, reached: bool, zone: _dt.tzinfo) -> list[str]:
+    timers = ZoneInfo(TIMER_ZONE)
     h, m = SCHEDULE["daily_check"]
-    lines = ["What runs next", f"  Daily check: {_show(_next_run(until, h, m))}"]
+    lines = ["What runs next", f"  Daily check: {_show(_next_run(until, h, m, zone=timers), zone)}"]
     h, m = SCHEDULE["daily_log"]
-    lines.append(f"  Next daily log: {_show(_next_run(until, h, m))}")
+    lines.append(f"  Next daily log: {_show(_next_run(until, h, m, zone=timers), zone)}")
     wd, h, m = SCHEDULE["search_list"]
-    lines.append(f"  Weekly search list: {_show(_next_run(until, h, m, weekday=wd))}")
+    lines.append(f"  Weekly search list: {_show(_next_run(until, h, m, weekday=wd, zone=timers), zone)}")
     lines.append("  New exports are taken in a few minutes after the helper uploads them.")
     if reached:
         lines.append("  Paid steps stay paused until next month (spending cap).")
@@ -281,18 +316,19 @@ def build(since: _dt.datetime, until: _dt.datetime, settings: dict) -> str:
     from service.status import redact
 
     since, until = _utc(since), _utc(until)
+    zone = tz(settings)
     by: dict[str, list[dict]] = {}
     for e in events.read(since, until, settings=settings):
         by.setdefault(e["kind"], []).append(e)
     live = is_live(settings)
     title = "Botsy daily log"
     lines = [title, "=" * len(title),
-             f"What happened from {_show(since)} to {_show(until)} (server time).",
+             f"What happened from {_show(since, zone)} to {_show(until, zone)} ({_zone_name(zone)}).",
              ("Mode: LIVE. Real images, listing text and Etsy drafts; you approve every draft in Etsy."
               if live else "Mode: TEST (dry run). No API calls and no Etsy drafts.")]
     spend_lines, reached = _spend(settings, since, until)
     sections = [_exports(by), _research(by), _items(by), _drafts(by), _review(by, live),
-                spend_lines, _problems(by), _held(by), _next(by, until, reached)]
+                spend_lines, _problems(by), _held(by), _next(by, until, reached, zone)]
     for section in sections:
         if section:
             lines += [""] + section
@@ -316,4 +352,4 @@ def write(outbox: str | Path, text: str, date: str) -> Path:
     return latest
 
 
-__all__ = ["LATEST_NAME", "SCHEDULE", "build", "review_command", "write"]
+__all__ = ["LATEST_NAME", "SCHEDULE", "TIMER_ZONE", "build", "log_date", "review_command", "write"]
