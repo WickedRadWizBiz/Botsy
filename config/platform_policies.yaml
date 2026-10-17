@@ -3,6 +3,8 @@
 # allowed       = terms do not forbid it AND robots.txt allows the paths we would use
 # forbidden     = terms (or robots.txt) forbid it: official API or the user's own clicks only
 # unknown       = not checked yet: no automated access
+# user_decision = (optional) a risk the user chose to accept, in their words, with the date.
+#                 It never lets Botsy itself access the site; it records what the user runs.
 # Re-check entries older than 180 days before relying on them.
 
 platforms:
@@ -14,16 +16,81 @@ platforms:
         note: "API Terms of Use: no automated systems or browser extensions accessing, analysing or scraping Etsy data without Etsy's written authorization."
       - url: https://www.etsy.com/legal/terms-of-use
         note: "General Terms of Use also restrict automated access (secondary summary; re-read the live page)."
+      - url: https://help.erank.com/blog/etsy-marketplace-insights-tool/
+        note: "Third-party summary (22 Oct 2025) of Etsy's own Marketplace Insights (Shop Manager > Stats): 'Searches' and 'Search Results' for a keyword and for similar keywords; 'Standard Etsy sellers get 15 keyword searches per week'; no export described. Etsy's own help page (help.etsy.com/hc/en-us/articles/35122361353239) returned HTTP 403 on 2026-10-16, so Etsy's wording is unverified. The user reads the numbers by hand and types them into Botsy's etsy-insights template; Botsy never opens Etsy."
     checked: "2026-10-16"
   amazon:   # includes KDP
     scraping: forbidden
-    official_api: none for KDP publishing (the user uploads by hand); Creators API analysis needs Amazon's written approval
+    official_api: none for research or KDP publishing (the user uploads by hand). The Creators API (successor of PA-API 5.0) does not fit; see sources.
     sources:
-      - url: https://www.amazon.com/gp/help/customer/display.html?nodeId=GLSBYFE9MGKKQXXM
-        note: "Conditions of Use exclude 'any use of data mining, robots, or similar data gathering and extraction tools'."
+      - url: https://www.amazon.com/gp/help/customer/display.html?nodeId=508088
+        note: "Live Conditions of Use returned HTTP 503 to our fetch on 2026-10-16; text below is from a third-party copy."
+      - url: https://conductatlas.com/platform/amazon/amazon-conditions-of-use/license-and-access-restrictions/
+        note: "Third-party copy of the Conditions of Use dated Aug. 14, 2026 (captured Sept. 14, 2026). Licence 'to access and make personal and non-commercial use'; it does not include 'any resale or commercial use', 'any collection and use of any product listings, descriptions, or prices', 'any derivative use', or 'any use of data mining, robots, or similar data gathering and extraction tools'. So hand-copying listings or prices for business research is not clearly inside the licence either."
       - url: https://affiliate-program.amazon.com/help/operating/policies
-        note: "Using product data to aggregate or analyze needs prior written approval."
+        note: "Associates Program Policies, updated April 14, 2026. IP License (e): no use of Creators API, PA API or Data Feeds 'for the purpose of aggregating, analyzing, extracting, or repurposing any Product Advertising Content or in connection with any software or other application intended for use by persons or entities that offer products on an Amazon Site' without express prior written approval. (h): non-image content may be cached for up to 24 hours, then must be refreshed."
+      - url: https://affiliate-program.amazon.com/creatorsapi/docs/
+        note: "Creators API prerequisites: Associates enrollment and 'at least 10 qualifying sales within the past 30 days'."
+      - url: https://affiliate-program.amazon.com/creatorsapi/docs/en-us/paapiv5-deprecation
+        note: "PA-API 5 'has been deprecated and is being replaced by the Creators API'; calls 'receive an HTTP 403 Forbidden response'."
+    user_decision: "2026-10-16: the user accepts the Amazon-account risk of running the BookBeam extension on Amazon pages ('Yeah I guess, people use bookbeam so it must be allowed'). See bookbeam.user_decision for what is still open."
     checked: "2026-10-16"
+  bookbeam:
+    scraping: forbidden
+    official_api: none. Botsy reads only CSV files the user exports by hand from the BookBeam extension. Botsy never opens BookBeam or Amazon.
+    sources:
+      - url: https://bookbeam.io/terms-of-service/
+        note: "Last Updated May 15, 2026. Licence 'solely for your internal personal or business use'. 'Any automated use of the Service, including the use of bots, scripts, scrapers, crawlers, browser automation tools, or similar tools, is strictly forbidden.' No use 'to build, train, benchmark, improve, support, or assist in the development of any competing product, service, dataset, software, model, tool, feature, or business'. The Service and its outputs (other than User Content) stay BookBeam's property. Nothing on exporting or how long exported files may be kept."
+      - url: https://bookbeam.io/terms-of-service/
+        note: "DATA SYNCHRONIZATION: 'including the free version of the Service, the BookBeam Chrome Extension may periodically retrieve publicly available Amazon marketplace data, such as search result pages, book detail pages, category listings ... using your device's standard network connection'. It 'does not access your personal Amazon account data, passwords, payment information, or private account credentials'. It 'may be required as a condition for accessing certain free features or versions of the Service'. Opt out only by uninstalling. This applies to paid plans too (the clause covers the extension, 'including' the free version)."
+      - url: https://bookbeam.io/ce-lite/
+        note: "CE Lite is 'The free tier of the BookBeam Chrome Extension'; 'No Credit Card Required'. Shows 'Average Best Sellers Rank, Reviews, Price, Competition' on search, category, book and author pages; 'Export your research in one click to CSV'. No column list and no limits published."
+      - url: https://bookbeam.io/pricing/
+        note: "Basic $47/mo, $141 a quarter or $348 a year; Publisher $69/mo or $576 a year; Publisher Pro $119/mo or $984 a year. 'We do not offer a free trial'; 7-day money-back guarantee. (prod.bookbeam.io/pricing still shows an older list with a $24 Starter plan; treat bookbeam.io as current and check at checkout.)"
+      - url: https://chromewebstore.google.com/detail/mbchdidopjakdkjkekaogajhcdekciop
+        note: "'BookBeam: Extension' v1.4.6, updated October 9, 2026, 30,000 users. Store privacy panel: handles 'Personally identifiable information', 'Authentication information', 'Website content'."
+    user_decision: "2026-10-16: the user accepts the Amazon-account risk of the BookBeam extension. NOT yet decided: the Data Synchronization clause (the extension fetching Amazon pages in the background over the user's connection). CLAUDE.md allows Amazon only through official APIs or the user's own clicks, so CE Lite is not used until the user says yes and that exception is written into CLAUDE.md."
+    checked: "2026-10-16"
+  everbee:
+    scraping: forbidden
+    official_api: none for research. EverBee's MCP integration ('Etsy data in your AI assistant', Growth plan and up) is not used, because it would pass competitor listings to an AI model (CLAUDE.md). Botsy reads only CSV files the user exports by hand (exports need a paid plan).
+    sources:
+      - url: https://everbee.io/terms-of-service
+        note: "Last updated May 13, 2026. Section 4.1: 'the software is for your limited use only'. Nothing on derived datasets or how long exports may be kept."
+      - url: https://everbee.io/legal/acceptable-use
+        note: "Last updated May 13, 2026. Bars 'Scraping, crawling, or using any automated method to collect data from the Services without our prior written consent' and bars users to 'Resell, sublicense, or redistribute EverBee data, reports, or exports as a competing product or dataset'."
+      - url: https://www.everbee.io/
+        note: "'Paid plans add unlimited searches, Keyword Score, Hot Filters and exports'. 'Save or download up to 3,000 listings at once to a spreadsheet.' Sign-up means installing the extension and connecting your Etsy account."
+      - url: https://everbee.io/pricing
+        note: "Hobby $0 (10 keywords; product analytics: views, reviews, favorites). Growth $24.99 a month billed yearly at $299 (the page shows $468 a year crossed out, about $39 a month on monthly billing; check at checkout); adds sales, revenue, conversion rate, MCP access. Business $69 a month billed yearly at $828. No free trial."
+      - url: https://www.etsy.com/legal/api
+        note: "The EverBee extension runs on etsy.com pages, and Etsy's API Terms bar browser extensions accessing or analysing Etsy data without Etsy's written authorization. The user has not decided on this Etsy-account risk."
+    checked: "2026-10-16"
+  erank:
+    scraping: forbidden
+    official_api: none. Botsy reads only files the user exports by hand from eRank's website (Export needs Basic or higher). The website is used, not the eRank extension, so nothing runs on etsy.com.
+    sources:
+      - url: https://erank.com/legal/terms-of-service
+        note: "Updated August 13, 2026. Bars users to 'Use automated systems, bots or software to extract data from the Sites (\"screen scraping\")'. Its Intellectual Property includes 'information, data, insights', and 'You agree to not copy, modify, create derivative works of, publicly display, publicly perform, share, sell, re-sell, license, or re-publish any of our Intellectual Property.' Botsy keeps exports and counts private (repo private, briefs never published). Ask eRank in writing whether private aggregation of exports is fine."
+      - url: https://erank.com/pricing
+        note: "Free $0: 5 keyword lookups a day. Basic $5.99/mo or $65.99/yr: 100 a day plus keyword ideas. Pro $9.99/mo or $94.99/yr: 200 a day. Expert $29.99/mo: 500 a day."
+      - url: https://hc.erank.com/en/articles/8420556-keyword-tool
+        note: "Keyword Ideas: Keywords, Avg. Searches, Avg. Clicks, Avg. CTR, Etsy Competition and more; Free members see one row. Top Listings (top 100 Etsy results): Rank, Listing (title, thumbnail 'as well as the name of the shop'), Age (Days), Views, Daily Views, Est. Sales and Est. Revenue (both 'over the life of each listing'), Price, Hearts, Tags. 'Export' is for Basic, Pro and Expert members; the file type and the exported columns are not stated."
+    checked: "2026-10-16"
+  google_trends:
+    scraping: forbidden
+    official_api: Google Trends API (alpha, by application only; not applied for). Botsy reads only CSV files the user downloads by hand from trends.google.com.
+    sources:
+      - url: https://trends.google.com/robots.txt
+        note: "'Disallow: /explore?' and 'Disallow: /trends/explore?' for all user agents."
+      - url: https://policies.google.com/terms
+        note: "Effective July 30, 2026. No 'using automated means to access content from any of our services in violation of the machine-readable instructions on our web pages (for example, robots.txt files ...)'."
+      - url: https://support.google.com/trends/answer/4365538
+        note: "'You can use any information from Google Trends, subject to the Google Terms of Service.' Reused data needs a citation ('Data source: Google Trends'). Charts can be downloaded as CSV."
+      - url: https://developers.google.com/search/apis/trends
+        note: "Alpha: 'We're now accepting applications for alpha testers'; Google 'can't open the API for everyone yet'."
+    checked: "2026-10-16"
+  # pinterest and fiverr: unchanged from the current file
   pinterest:
     scraping: forbidden
     official_api: Pinterest API v5 (our own pins; the user chooses each pin to publish)
@@ -37,14 +104,4 @@ platforms:
     sources:
       - url: https://help.fiverr.com/hc/en-us/articles/32242973123985-Our-Community-Standards
         note: "Bans unauthorized access methods, scraping, and bots for mass messaging."
-    checked: "2026-10-16"
-  everbee:
-    scraping: unknown
-    official_api: none found; we use only the CSV exports the user downloads
-    sources: []
-    checked: "2026-10-16"
-  erank:
-    scraping: unknown
-    official_api: none found; we use only the CSV exports the user downloads
-    sources: []
     checked: "2026-10-16"
