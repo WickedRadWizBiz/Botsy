@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from core import etsy
+from core import etsy, health
 from core.compliance import (Blocklist, find_urls, has_ai_disclosure, iter_strings, load_ai_disclosure,
                              system_mentions)
 from core.config import (PLACEHOLDER_SHOP_NAMES, get_shop, is_placeholder_shop_name, load_settings, require_env,
@@ -83,16 +83,21 @@ DEFAULTS = {
                            "commercial license", "resale rights",
                            # never implying an official product (CLAUDE.md, ttrpg exception)
                            "official", "officially", "licensed product", "officially licensed", "endorsed by"],
-    # No medical or therapeutic claims (CLAUDE.md; docs/PACKS.md section 4), with their word
-    # forms. Matched as whole words; a plural or possessive "s" is matched too. At least the
-    # words research cuts from themes and keywords (research/defaults.py medical_terms).
+    # No medical or therapeutic claims (CLAUDE.md; docs/PACKS.md section 4; docs/HEALTH_TERMS.md
+    # "Decided 2026-10-17"), with their word forms, plus core.health's noun-form and proof
+    # claims ("anxiety relief", "mood booster", "clinically proven"). Matched as whole words; a
+    # plural or possessive "s" is matched too. At least the words research cuts from themes and
+    # keywords (research/defaults.py medical_terms). Result claims in word order ("reduces
+    # anxiety") are core.health.claim_problems, run by rules.medical next to this list. Medical
+    # TOPICS (blood pressure, medication logs) arrive through the blocklist
+    # (config/health_terms.txt). Allowed: "stress relief", "anxiety journal", "ADHD planner".
     # Settings can add words and misleading phrases, never remove these (listing_config).
-    "medical_terms": ["treat", "treated", "treating", "treatment", "cure", "cured", "curing", "heal", "healed",
-                      "healing", "diagnose", "diagnosed", "diagnoses", "diagnosing", "diagnosis", "diagnostic",
-                      "therapy", "therapies", "therapist", "therapeutic", "therapeutics", "therapeutically",
-                      "clinical", "clinically", "medical", "medically", "medication", "medicine", "prescription",
-                      "prescribed", "symptom relief", "symptoms relief", "relieves symptoms", "relieve symptoms",
-                      "anxiety relief", "pain relief"],
+    "medical_terms": list(dict.fromkeys([
+        "treat", "treated", "treating", "treatment", "cure", "cured", "curing", "heal", "healed",
+        "healing", "diagnose", "diagnosed", "diagnoses", "diagnosing", "diagnosis", "diagnostic",
+        "therapy", "therapies", "therapist", "therapeutic", "therapeutics", "therapeutically",
+        "clinical", "clinically", "medical", "medically", "medication", "medicine", "prescription",
+        "prescribed", *health.research_cut_terms()])),
     # Ordinary phrases with those words that make no claim (themes such as "sweet treats").
     "medical_ok_phrases": ["trick or treat", "trick or treating", "trick or treaters", "sweet treat",
                            "treat bag", "treat box", "treat jar", "holiday treat"],
@@ -175,6 +180,10 @@ def listing_config(settings: dict) -> dict:
     keep = ({str(x).strip().casefold() for x in given} if isinstance(given, (list, tuple))
             else {p.casefold() for p in DEFAULTS["medical_ok_phrases"]})
     cfg["medical_ok_phrases"] = [p for p in DEFAULTS["medical_ok_phrases"] if p.casefold() in keep]
+    # Medical topics (config/health_terms.txt, settings compliance.health_terms): rules.medical
+    # refuses them like claim words, so a model draft naming one is repaired. Derived, not
+    # a listing setting.
+    cfg["health_terms"] = health.medical_topics((settings.get("compliance") or {}).get("health_terms"))
     return cfg
 
 
@@ -189,7 +198,8 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
     except KeyError as e:
         raise ListingError(f"{item_id}: {e}") from None
     system = _game_system(manifest, settings, item_id)
-    blocklist = Blocklist.load(comp.get("trademark_blocklist"), catalog=system["catalog"] if system else None)
+    blocklist = Blocklist.load(comp.get("trademark_blocklist"), catalog=system["catalog"] if system else None,
+                               health_path=comp.get("health_terms"))
     allow = (system["id"],) if system else ()
     # Settle everything that can fail cheaply before any API call is spent.
     price, quantity = _price(manifest, shop), _quantity(cfg)
@@ -205,9 +215,9 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
         if not blocklist.system_names(system["id"]):
             raise ListingError(f"{item_id}: no game-system (!) term in the blocklist belongs to {system['id']!r}; "
                                "check config/trademark_blocklist.txt and config/ttrpg_systems.yaml")
-    if data_check.blocked:  # never send a trademark to the model or into a listing
-        raise ListingComplianceError(f"{item_id}: item data has blocked terms: {', '.join(data_check.blocked)}",
-                                     data_check.blocked)
+    if data_check.blocked:  # never send a trademark or a medical topic to the model or into a listing
+        raise ListingComplianceError(f"{item_id}: item data has blocked terms: "
+                                     f"{', '.join(blocklist.labels(data_check.blocked))}", data_check.blocked)
     if find_urls(facts):
         raise ListingComplianceError(f"{item_id}: item data contains URLs: {find_urls(facts)}")
     # The theme, keywords, audience and page types reach our fixed description sections, so
@@ -279,7 +289,8 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
     final_texts = [*copy_texts, *draft["alt_texts"]]
     found = blocklist.check(*copy_texts, allow_systems=allow).merge(blocklist.check(*draft["alt_texts"]))
     if found.blocked:
-        raise ListingComplianceError(f"{item_id}: listing has blocked terms: {', '.join(found.blocked)}", found.blocked)
+        raise ListingComplianceError(f"{item_id}: listing has blocked terms: {', '.join(blocklist.labels(found.blocked))}",
+                                     found.blocked)
     if find_urls(final_texts):
         raise ListingComplianceError(f"{item_id}: listing contains URLs: {find_urls(final_texts)}")
     others = _other_systems(copy_texts, draft["alt_texts"], system, settings)
@@ -288,11 +299,11 @@ def _write_listing(d: Path, *, client, dry_run: bool, settings: dict, review_dir
                                      others)
 
     listing_reasons = []
-    if found.flagged:
-        listing_reasons.append(f"listing copy has review terms: {', '.join(found.flagged)}")
+    if found.flagged:  # a health topic says so: "period tracker (health topic)"
+        listing_reasons.append(f"listing copy has review terms: {', '.join(blocklist.labels(found.flagged))}")
     data_only = sorted(set(data_check.flagged) - set(found.flagged))
     if data_only:
-        listing_reasons.append(f"item data has review terms: {', '.join(data_only)}")
+        listing_reasons.append(f"item data has review terms: {', '.join(blocklist.labels(data_only))}")
     reasons = list(listing_reasons)
     if manifest.get("needs_review"):
         reasons.append("item was marked needs_review before listing (brief or generator)")

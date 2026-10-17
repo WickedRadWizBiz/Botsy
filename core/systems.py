@@ -448,9 +448,8 @@ def _blocklist(settings: dict | None):
     try:
         from core.compliance import Blocklist
 
-        path = ((settings or {}).get("compliance") or {}).get("trademark_blocklist") if isinstance(settings, dict) \
-            else None
-        return Blocklist.load(path or None)
+        comp = ((settings or {}).get("compliance") or {}) if isinstance(settings, dict) else {}
+        return Blocklist.load(comp.get("trademark_blocklist") or None, health_path=comp.get("health_terms") or None)
     except Exception as e:  # noqa: BLE001
         log.info("game systems: blocklist not loaded for the label check (%s)", e)
         return None

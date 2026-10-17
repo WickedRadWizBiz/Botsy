@@ -112,7 +112,7 @@ def files_per_pack(page_sizes: list[str]) -> int:
 def plan_pages(ctx: dict, n: int, *, seed: str, settings: dict) -> list[dict]:
     """n activity page specs, types round-robin (generators/activity_sheets/pack.py plan_specs).
     Puzzle words are blocklist-checked as they are picked."""
-    blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
+    blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"), health_path=(settings.get("compliance") or {}).get("health_terms"))
     return plan_specs(ctx, n, seed=seed, cfg=_cfg(settings), blocklist=blocklist, settings=settings)
 
 

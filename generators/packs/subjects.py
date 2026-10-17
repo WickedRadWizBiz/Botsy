@@ -121,7 +121,7 @@ def plan_subjects(theme: str, niche: str, n: int, *, settings: dict, client=None
     theme = clean_text(theme, 80)
     if not theme:
         raise ValueError("no theme to plan subjects for")
-    blocklist = blocklist or Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
+    blocklist = blocklist or Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"), health_path=(settings.get("compliance") or {}).get("health_terms"))
     cfg = config(settings)["subjects"]
     max_chars = int(cfg.get("max_chars", 80))
     taken = {subject_key(a) for a in avoid if isinstance(a, str)}

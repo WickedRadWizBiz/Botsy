@@ -81,8 +81,14 @@ TV shows, games, toys, apps or celebrities, and never write "in the style of".
 - Do not say the designs are handmade, hand-drawn, hand-painted or made without AI, or that the product \
 is official, licensed or endorsed. Do not offer commercial use or resale rights.
 - No medical or therapeutic claims: never use the words treat, cure, heal, diagnose, therapy, \
-therapeutic, clinically, medical, prescription or symptom relief (or their other forms). "ADHD-friendly" \
-and "for ADHD brains" may describe a layout; never say a product helps a condition.
+therapeutic, clinically, medical, medication, prescription or symptom relief (or their other forms). \
+Describe the layout and the look, never a health result: never write that a product reduces, relieves, \
+eases, prevents, improves or manages a condition, a symptom, stress, anxiety, sleep, mood or focus \
+("reduces anxiety", "improves sleep", "manage your ADHD"), and no proof or authority claims ("clinically \
+proven", "therapist approved"). Never name a medical condition, a medication or a symptom. Lifestyle \
+topics are fine as topics: "stress relief", "relaxing", "calm", "mindful", "mood tracker", "sleep log", \
+"anxiety journal", "food diary". "ADHD-friendly", "ADHD planner" and "for ADHD brains" may describe a \
+layout; never say a product helps a condition.
 - When the facts list "page_types", the pack mixes those kinds of pages: name only page types listed \
 there, and never write the title as if every page were one kind (not "Character Sheet, 20 Pages" for \
 a pack with 2 character sheets).
@@ -217,8 +223,10 @@ def write(client, facts: dict, cfg: dict, *, model: str, max_tokens: int, blockl
           settings: dict | None = None, item_id: str | None = None, allow_systems: tuple[str, ...] = (),
           alt_names=None, owner_names=None, absent_types=None) -> ModelResult:
     """Ask for a draft, re-asking with the problems found, up to 1 + max_retries calls.
-    A blocked term in any draft stops at once with ListingComplianceError: we never
-    rewrite our way around a trademark hit; a person looks at the item instead.
+    A blocked trademark term in any draft stops at once with ListingComplianceError: we
+    never rewrite our way around a trademark hit; a person looks at the item instead. A
+    medical topic (config/health_terms.txt) in a draft is medical wording: a rule problem
+    the model is asked to fix, repaired like any other.
 
     `allow_systems` (a ttrpg item made for a game system) lets that system's names through
     the blocklist; `alt_names(text)` finds them, and one in an alt text is a rule problem
@@ -258,9 +266,12 @@ def write(client, facts: dict, cfg: dict, *, model: str, max_tokens: int, blockl
                 errors.append("the response was cut off; keep every field shorter")
         if draft is not None:
             found = blocklist.check(*rules.texts(draft), allow_systems=allow_systems)  # each field on its own
-            if found.blocked:
+            # A medical topic (health file) is medical wording: rules.validate reports it
+            # and the draft is re-asked or repaired. A trademark stops at once.
+            trademarks = [t for t in found.blocked if not blocklist.is_health(t)]
+            if trademarks:
                 raise ListingComplianceError(
-                    f"model draft contains blocked terms: {', '.join(found.blocked)}", found.blocked)
+                    f"model draft contains blocked terms: {', '.join(trademarks)}", trademarks)
             errors = rules.validate(draft, n_images, cfg, alt_names=alt_names, owner_names=owner_names,
                                     absent_types=absent_types)
             if result.draft is None or len(errors) < len(result.errors):

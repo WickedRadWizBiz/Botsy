@@ -312,7 +312,7 @@ def review_wait(item_dir: str | Path, *, settings: dict | None = None,
         system = _game_system(manifest, settings)
     except PublishGateError:
         system = None  # check_ready reports it; review terms do not depend on it
-    blocklist = Blocklist.load(section(settings, "compliance", {}).get("trademark_blocklist"),
+    blocklist = Blocklist.load(section(settings, "compliance", {}).get("trademark_blocklist"), health_path=section(settings, "compliance", {}).get("health_terms"),
                                catalog=system["catalog"] if system else None)
     allow = (system["id"],) if system else ()
     problem, _ = _review_gate(item_id, item_dir, manifest, listing, qa_report,
@@ -395,7 +395,7 @@ def check_ready(item_dir: str | Path, *, settings: dict | None = None,
         problems.append(str(e).split(": ", 1)[-1])
         system = None
     allow = (system["id"],) if system else ()
-    blocklist = Blocklist.load(comp.get("trademark_blocklist"), catalog=system["catalog"] if system else None)
+    blocklist = Blocklist.load(comp.get("trademark_blocklist"), health_path=comp.get("health_terms"), catalog=system["catalog"] if system else None)
     # File names are sent to Etsy too; buyers see the download's name.
     found = _listing_check(listing, blocklist, allow)
     blocked = sorted(set(found.blocked) | set((listing.get("compliance") or {}).get("blocked") or []))

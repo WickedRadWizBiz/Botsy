@@ -1,4 +1,9 @@
-"""Compliance helpers: trademark blocklist, URL scrubbing, AI disclosure.
+"""Compliance helpers: trademark blocklist, health topics, URL scrubbing, AI disclosure.
+
+Blocklist.load reads two files with one format: config/trademark_blocklist.txt and
+config/health_terms.txt (medical topics as hard terms, borderline ones as `?` review terms;
+docs/HEALTH_TERMS.md). Blocklist.health holds the health terms so a message can say
+"health topic" (Blocklist.label). Result claims ("reduces anxiety") are core.health.
 
 Blocklist format (config/trademark_blocklist.txt): one term per line, `#` comments,
 `?term` = flag for human review instead of hard block, `!term` = a game-system name
@@ -229,15 +234,39 @@ def system_mentions(texts: Iterable[str], catalog: Mapping | None = None) -> lis
     return [sid for sid in order if sid in hit]
 
 
+HEALTH_LABEL = "health topic"
+
+
+def read_terms(path: str | Path) -> tuple[list[str], list[str], list[str]]:
+    """(hard, review, systems) from a term file: one term per line, `#` comments, `?term`
+    review, `!term` game system. A UTF-8 byte-order mark (a file saved by Windows Notepad)
+    is ignored, so the first line is not read as a term."""
+    hard, review, systems = [], [], []
+    for raw in Path(path).read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("?"):
+            review.append(line[1:].strip())
+        elif line.startswith("!"):
+            systems.append(line[1:].strip())
+        else:
+            hard.append(line)
+    return hard, review, systems
+
+
 class Blocklist:
     """Hard, review and game-system terms. `systems` is a list of `!` terms (their ids are
     looked up in `catalog`, default core.systems.load_systems(), when first needed) or a
-    {term: id or ids} mapping that fixes them."""
+    {term: id or ids} mapping that fixes them. `health` names the hard and review terms
+    that are health topics (config/health_terms.txt: medical = hard, borderline = review)
+    rather than trademarks, so messages can say so (label())."""
 
     def __init__(self, hard: Iterable[str], review: Iterable[str] = (), systems: Iterable[str] = (), *,
-                 catalog: Mapping | None = None):
+                 catalog: Mapping | None = None, health: Iterable[str] = ()):
         self.hard = [(t, _term_pattern(t)) for t in hard]
         self.review = [(t, _term_pattern(t)) for t in review]
+        self.health = frozenset(health)
         given = dict(systems) if isinstance(systems, Mapping) else dict.fromkeys(systems)
         self.system_rx = [(t, _term_pattern(t)) for t in given]
         self._system_catalog = catalog
@@ -245,20 +274,44 @@ class Blocklist:
             {t: _id_tuple(v) for t, v in given.items()} if isinstance(systems, Mapping) else None)
 
     @classmethod
-    def load(cls, path: str | Path | None = None, *, catalog: Mapping | None = None) -> "Blocklist":
+    def load(cls, path: str | Path | None = None, *, catalog: Mapping | None = None,
+             health_path: str | Path | None | bool = None) -> "Blocklist":
+        """The trademark blocklist (`path`, default config/trademark_blocklist.txt) plus the
+        health topics (`health_path`, settings compliance.health_terms, default
+        config/health_terms.txt; False reads none). A health term already in the trademark
+        file keeps that file's kind. The health file may not hold `!` lines."""
         p = resolve(path) if path else CONFIG_DIR / "trademark_blocklist.txt"
-        hard, review, systems = [], [], []
-        for raw in p.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("?"):
-                review.append(line[1:].strip())
-            elif line.startswith("!"):
-                systems.append(line[1:].strip())
-            else:
-                hard.append(line)
-        return cls(hard, review, systems, catalog=catalog)
+        hard, review, systems = read_terms(p)
+        health: list[str] = []
+        if health_path is not False:
+            hp = resolve(health_path) if health_path else CONFIG_DIR / "health_terms.txt"
+            if health_path or hp.is_file():
+                h_hard, h_review, h_systems = read_terms(hp)
+                if h_systems:
+                    raise ValueError(f"{hp}: health terms cannot be game-system (!) terms: {h_systems}")
+                known = {normalize(t) for t in [*hard, *review, *systems]}
+                h_hard = [t for t in dict.fromkeys(h_hard) if normalize(t) not in known]
+                h_review = [t for t in dict.fromkeys(h_review) if normalize(t) not in known]
+                hard += h_hard
+                review += h_review
+                health = h_hard + h_review
+        return cls(hard, review, systems, catalog=catalog, health=health)
+
+    @property
+    def health_terms(self) -> frozenset[str]:
+        """Alias of `health` (service/searchlist.py reads either name)."""
+        return self.health
+
+    def is_health(self, term: str) -> bool:
+        """True for a term that came from the health file (a medical or borderline topic)."""
+        return term in self.health
+
+    def label(self, term: str) -> str:
+        """The term for a message: "blood pressure (health topic)" or "Disney"."""
+        return f"{term} ({HEALTH_LABEL})" if term in self.health else term
+
+    def labels(self, terms: Iterable[str]) -> list[str]:
+        return [self.label(t) for t in terms]
 
     def _ids(self) -> dict[str, tuple[str, ...]]:
         if self._system_map is None:

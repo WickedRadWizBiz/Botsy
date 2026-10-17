@@ -1,0 +1,326 @@
+# Health topics. CLAUDE.md "No medical or therapeutic claims"; user decisions of 2026-10-16
+# and 2026-10-17 (docs/HEALTH_TERMS.md, "Decided 2026-10-17").
+#
+# Same format and matching as trademark_blocklist.txt (whole words, plural/possessive "s",
+# case and accents ignored, hyphen/space/joined spellings of a phrase):
+#   plain line = MEDICAL topic: hard block everywhere (themes, briefs, listing text, printed
+#                text, file names, image prompts, search lists, KDP fields)
+#   ?term      = BORDERLINE: not blocked, the item waits for the user's review
+# No "!" lines here. core.compliance.Blocklist.load reads this file next to the trademark
+# file and remembers which terms came from it, so messages say "health topic".
+#
+# NOT listed, on purpose (allowed, described by layout and look): meditation, mindfulness,
+# breathwork, yoga, stress, stress relief, worry, exercise, workout, fitness, gym, running,
+# sleep, mood, feelings, gratitude, affirmations, habit, water intake, self-care, wellness,
+# food diary / food journal / food log, meal planner, anxiety, anxious, mental health
+# (so no "health journal" entry: a mental health journal is allowed),
+# ADHD / ADHD-friendly, neurodivergent, skincare routine, calm, relaxing, zen.
+# Result claims ("reduces anxiety", "improves sleep") are core/health.py, not this file.
+# Short words with ordinary uses appear only inside phrases: pain (no pain no gain), pill
+# (pill bug; the plural "pills" is listed: a pills sticker is a medicine theme), cancer (zodiac), stroke (brush stroke), contraction (grammar), period (class
+# schedule, pay period), sugar (sugar cookie), fever (spring fever), pressure, dose, cycle,
+# recovery, panic, temperature, injection (fuel injection), health (the TTRPG "Health" field, "healthy habits").
+# Never listed because TTRPG sheets print them: medicine, psychology, sanity, wound(s),
+# dying, first aid, injuries, madness, phobias, fatigue, conditions.
+
+# ---- MEDICAL: vital signs and blood tests
+blood pressure
+hypertension
+hypertensive
+blood sugar
+blood glucose
+glucose
+diabetes
+diabetic
+insulin
+a1c
+cholesterol
+oxygen level
+oxygen saturation
+spo2
+pulse oximeter
+blood test
+lab results
+biopsy
+
+# ---- MEDICAL: medication (not "medicine": the TTRPG Medicine skill prints)
+medication
+meds
+prescription
+pills
+pill tracker
+pill log
+pill organizer
+pill organiser
+pill reminder
+pill box
+pill bottle
+pill chart
+pill planner
+pill sticker
+pill schedule
+dosage
+dose log
+dose tracker
+dose chart
+medicine tracker
+medicine log
+medicine chart
+medicine reminder
+medicine schedule
+medicine bottle
+medicine sticker
+medical history
+medical log
+medical record
+medical tracker
+medical journal
+medical planner
+medical binder
+medical id
+medical alert
+
+# ---- MEDICAL: symptoms and illness
+symptom
+chronic illness
+chronic pain
+pain log
+pain tracker
+pain diary
+pain journal
+pain scale
+pain management
+pain chart
+back pain
+joint pain
+nerve pain
+migraine
+headache log
+headache diary
+headache tracker
+headache journal
+flare tracker
+flare log
+spoonie
+fever log
+fever tracker
+fever chart
+fibromyalgia
+arthritis
+ibs
+crohn
+colitis
+celiac
+coeliac
+allergy log
+allergy tracker
+allergy chart
+asthma
+epilepsy
+seizure
+cancer journal
+cancer patient
+cancer awareness
+cancer ribbon
+cancer survivor
+breast cancer
+chemo
+chemotherapy
+radiation therapy
+tumor
+tumour
+dementia
+alzheimer
+parkinson
+lupus
+endometriosis
+pcos
+pmdd
+thyroid
+dialysis
+heart disease
+heart failure
+heart attack
+stroke recovery
+stroke survivor
+copd
+covid
+coronavirus
+acne
+eczema
+psoriasis
+insomnia
+sleep apnea
+chronic disease
+disease tracker
+disease log
+disease journal
+
+# ---- MEDICAL: clinical care and medicine-themed designs (stickers, clip art)
+vaccination
+vaccine
+immunization
+immunisation
+syringe
+injection log
+injection tracker
+injection site
+injection chart
+iv drip
+iv bag
+surgery recovery
+post-op
+physical therapy
+occupational therapy
+speech therapy
+caregiver log
+caregiver journal
+patient log
+patient journal
+patient chart
+awareness ribbon
+pink ribbon
+
+# ---- MEDICAL: mental illness and clinical worksheets (anxiety and mental-health journals
+# described by layout are allowed; a named disorder or a therapy method is not)
+depression
+depressive
+bipolar
+ptsd
+ocd
+panic attack
+panic disorder
+anxiety disorder
+mental illness
+eating disorder
+anorexia
+bulimia
+binge eating
+self-harm
+suicide
+suicidal
+schizophrenia
+psychiatric
+psychosis
+cbt
+dbt
+cognitive behavioral
+cognitive behavioural
+dialectical behavior
+dialectical behaviour
+emdr
+therapy worksheet
+counseling worksheet
+counselling worksheet
+
+# ---- MEDICAL: pregnancy and fertility medicine
+fertility
+infertility
+ovulation
+basal body temperature
+bbt
+ivf
+iui
+ttc
+trying to conceive
+contraception
+birth control
+kick count
+kick counter
+contraction timer
+contraction log
+contraction tracker
+contraction counter
+prenatal
+miscarriage
+
+# ---- MEDICAL: weight-loss drugs and surgery
+bariatric
+ozempic
+semaglutide
+wegovy
+mounjaro
+tirzepatide
+glp-1
+
+# ---- BORDERLINE (review): periods
+?period tracker
+?period log
+?period diary
+?period journal
+?period planner
+?period calendar
+?menstrual
+?menstruation
+?cycle tracker
+?cycle log
+?menopause
+?perimenopause
+?pms
+
+# ---- BORDERLINE (review): pregnancy and babies
+?pregnancy
+?pregnant
+?baby log
+?newborn log
+?feeding log
+?feeding tracker
+?breastfeeding
+?pumping log
+?diaper log
+?postpartum
+
+# ---- BORDERLINE (review): weight
+?weight loss
+?weight tracker
+?weight log
+?calorie
+?macro tracker
+?intermittent fasting
+?fasting tracker
+?body measurement
+
+# ---- BORDERLINE (review): sobriety and recovery
+?sobriety
+?sober
+?alcohol free
+?quit smoking
+?recovery journal
+?addiction
+?rehab
+?relapse
+
+# ---- BORDERLINE (review): grief
+?grief
+?grieving
+?bereavement
+
+# ---- BORDERLINE (review): mental load, supplements
+?burnout
+?dopamine menu
+?trauma
+?vitamin
+?supplement
+
+# ---- BORDERLINE (review): diagnoses, care roles and medical-looking objects
+?autism
+?autistic
+?dyslexia
+?dyslexic
+?special needs
+?counselor
+?counsellor
+?counseling
+?counselling
+?psychologist
+?psychiatrist
+?hospital
+# Awareness-campaign stickers and pages go to review (user, 2026-10-17); disease campaigns above are blocked.
+?mental health awareness
+?awareness month
+?awareness sticker
+?awareness stickers
+?awareness day
+# bare "disease" is review, not hard: TTRPG sheets may track game diseases;
+# named diseases above are hard
+?disease

@@ -4,8 +4,9 @@ render() writes one vector PDF for one page size (reportlab, invariant=1, so the
 give byte-identical files) and returns the Metrics the pen recorded: the smallest font,
 line weights, the smallest writing-line gap, every printed string and anything drawn
 outside the margins. Printed text is checked before the file is saved: a blocked term
-(including game-system "!" names, which never go on a printed page) or medical wording
-refuses the render, and so does a blocked term in the PDF's title metadata.
+(including game-system "!" names, which never go on a printed page, and medical topics from
+config/health_terms.txt), medical wording or a health claim (core.health) refuses the
+render, and so does a blocked term in the PDF's title metadata.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from reportlab.pdfgen import canvas
 
+from core import health
 from core.compliance import Blocklist
 from core.config import CONFIG_DIR, resolve
 from core.render import POINTS_PER_INCH, page_size_points, render_pdf_pages
@@ -29,10 +31,14 @@ from generators.stationery.styles import spec_for
 FOOTER_H = 16.0
 
 # Listing-copy words that would make a medical or therapeutic claim (docs/PACKS.md section
-# 4), plus a few more that only belong in health claims. Never on a printed page.
+# 4), plus symptom(s) and disorder(s), which only belong to medical products. Never on a
+# printed page. Medical TOPICS (blood pressure, depression, medication) come through the
+# blocklist (config/health_terms.txt) and result claims ("reduces anxiety") through
+# core.health; "stress relief", "anxiety" and "mental health" are allowed topics
+# (docs/HEALTH_TERMS.md "Decided 2026-10-17").
 MEDICAL_RE = re.compile(
     r"\b(treat(s|ed|ing|ment|ments)?|cure[sd]?|curing|heal(s|ed|ing)?|diagnos\w*|therap\w*|clinical(ly)?|"
-    r"medical(ly)?|medicat\w*|prescri\w*|symptoms?|disorders?|anxiety|depression|mental health|stress relief)\b",
+    r"medical(ly)?|medicat\w*|prescri\w*|symptoms?|disorders?)\b",
     re.IGNORECASE)
 
 _CACHE: OrderedDict[str, Metrics] = OrderedDict()
@@ -51,32 +57,42 @@ def render_ctx(settings: dict, cfg: dict, page_size: str) -> RenderCtx:
 
 
 def _blocklist(settings: dict) -> Blocklist:
-    """The settings' blocklist, loaded again whenever its file changes (a long-running
-    service picks up newly added terms)."""
-    path = str((settings.get("compliance") or {}).get("trademark_blocklist") or "")
-    file = resolve(path) if path else CONFIG_DIR / "trademark_blocklist.txt"
-    try:
-        st = file.stat()
-        stamp = (st.st_mtime_ns, st.st_size)
-    except OSError:
-        stamp = None
-    key = f"{path}|{stamp}"
+    """The settings' blocklist (trademark file plus the health file, settings
+    compliance.trademark_blocklist and compliance.health_terms), loaded again whenever
+    either file changes (a long-running service picks up newly added terms)."""
+    comp = settings.get("compliance") or {}
+    path = str(comp.get("trademark_blocklist") or "")
+    health_path = str(comp.get("health_terms") or "")
+    stamps = []
+    for given, default in ((path, "trademark_blocklist.txt"), (health_path, "health_terms.txt")):
+        file = resolve(given) if given else CONFIG_DIR / default
+        try:
+            st = file.stat()
+            stamps.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            stamps.append(None)
+    key = f"{path}|{health_path}|{stamps}"
     if key not in _BLOCKLISTS:
         _BLOCKLISTS.clear()
-        _BLOCKLISTS[key] = Blocklist.load(path or None)
+        _BLOCKLISTS[key] = Blocklist.load(path or None, health_path=health_path or None)
     return _BLOCKLISTS[key]
 
 
 def text_problems(texts, settings: dict) -> list[str]:
-    """Why these printed strings may not be printed (blocked terms, medical wording)."""
+    """Why these printed strings may not be printed: blocked terms (trademarks and medical
+    topics, labelled "(health topic)"), medical wording, health claims."""
     texts = [t for t in texts if t]
     problems = []
-    found = _blocklist(settings).check(*texts)
+    blocklist = _blocklist(settings)
+    found = blocklist.check(*texts)
     if found.blocked:
-        problems.append(f"printed text contains blocked terms {found.blocked}")
+        problems.append(f"printed text contains blocked terms {blocklist.labels(found.blocked)}")
     medical = sorted({m.group(0).lower() for t in texts for m in MEDICAL_RE.finditer(t)})
     if medical:
         problems.append(f"printed text uses medical wording {medical}")
+    claims = sorted({c for t in texts for c in health.claim_problems(t)})
+    if claims:
+        problems.append(f"printed text makes health claims {claims}")
     return problems
 
 

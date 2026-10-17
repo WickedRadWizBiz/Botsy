@@ -1,6 +1,7 @@
 """Defaults for the research stage, merged with settings `research:` (settings win)."""
 from __future__ import annotations
 
+from core import health
 from core.config import section
 from research.guard import HARD_FLOOR
 from research.niches import DEFAULT_RULES
@@ -18,6 +19,8 @@ DEFAULTS: dict = {
     # received within window_days of the run date; the service deletes them after keep_days.
     "window_days": 35,
     "keep_days": 180,
+    "kdp_keep_days": 90,               # book files the inbox routed to research_inputs/kdp/ are deleted
+                                        # after this many days (service/cleanup.py RESEARCH_DEFAULTS mirrors it)
     "briefs_per_niche": 5,
     "themes_in_patterns": 25,
     "keyword_clusters": 15,
@@ -96,15 +99,20 @@ DEFAULTS: dict = {
     # "ADHD-friendly" describes a layout and stays allowed.
     # The ordinary phrases the listing stage allows ("trick or treat", MEDICAL_OK_PHRASES)
     # keep their word.
-    "medical_terms": ["treat", "treats", "treated", "treating", "treatment", "treatments",
-                      "cure", "cures", "cured", "curing", "heal", "heals", "healed", "healing",
-                      "healings", "diagnose", "diagnosed", "diagnoses", "diagnosing", "diagnosis",
-                      "diagnostic", "therapy", "therapies", "therapist", "therapists",
-                      "therapeutic", "therapeutics", "therapeutically", "clinical", "clinically",
-                      "medical", "medically", "medication", "medications", "medicine",
-                      "prescription", "prescriptions", "prescribed", "symptom relief",
-                      "symptoms relief", "relieves symptoms", "relieve symptoms",
-                      "anxiety relief", "pain relief"],
+    # Plus core.health's noun-form and proof claims ("anxiety relief", "pain relief", "mood
+    # booster", "anti-anxiety", "clinically proven"; docs/HEALTH_TERMS.md "Decided
+    # 2026-10-17"). NOT cut: "stress relief" (a descriptive term, user 2026-10-17), "anxiety",
+    # "mental health", "sleep", "mood" and the other lifestyle topics. Medical TOPICS (blood
+    # pressure, medication logs) arrive as hard blocklist terms (config/health_terms.txt): a
+    # row holding one is marked blocked and supports no theme.
+    "medical_terms": list(dict.fromkeys([
+        "treat", "treats", "treated", "treating", "treatment", "treatments",
+        "cure", "cures", "cured", "curing", "heal", "heals", "healed", "healing",
+        "healings", "diagnose", "diagnosed", "diagnoses", "diagnosing", "diagnosis",
+        "diagnostic", "therapy", "therapies", "therapist", "therapists",
+        "therapeutic", "therapeutics", "therapeutically", "clinical", "clinically",
+        "medical", "medically", "medication", "medications", "medicine",
+        "prescription", "prescriptions", "prescribed", *health.research_cut_terms()])),
     # Stricter-only supplement to config/trademark_blocklist.txt (hard, review). The
     # former entries now live in the file so every stage sees them; add new ones there.
     "extra_blocked_terms": [],

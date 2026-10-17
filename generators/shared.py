@@ -76,7 +76,7 @@ def check_brief(brief: dict, niche: str, settings: dict, brief_file: str | Path 
     theme = str(brief.get("theme") or "").strip()
     if not theme:
         raise ValueError("brief has no theme")
-    blocklist = Blocklist.load(settings.get("compliance", {}).get("trademark_blocklist"))
+    blocklist = Blocklist.load(settings.get("compliance", {}).get("trademark_blocklist"), health_path=settings.get("compliance", {}).get("health_terms"))
     texts = {k: brief.get(k) for k in BRIEF_TEXT_FIELDS}
     check = blocklist.check_obj(texts)
     if check.blocked:

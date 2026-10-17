@@ -42,19 +42,26 @@ _BLOCKLISTS: dict[str, tuple[tuple, Blocklist]] = {}
 
 
 def _blocklist(settings: dict) -> Blocklist:
-    """The trademark blocklist, reloaded when its file changes (a long-running service
+    """The trademark blocklist plus the health file (settings compliance.trademark_blocklist
+    and compliance.health_terms), reloaded when either file changes (a long-running service
     picks up added terms without a restart)."""
-    path = str((settings.get("compliance") or {}).get("trademark_blocklist") or "")
-    file = resolve(path) if path else CONFIG_DIR / "trademark_blocklist.txt"
-    try:
-        st = Path(file).stat()
-        stamp = (st.st_mtime_ns, st.st_size)
-    except OSError:
-        stamp = None                       # Blocklist.load raises the real error below
-    cached = _BLOCKLISTS.get(path)
-    if cached is None or stamp is None or cached[0] != stamp:
-        _BLOCKLISTS[path] = (stamp, Blocklist.load(path or None))
-    return _BLOCKLISTS[path][1]
+    comp = settings.get("compliance") or {}
+    path = str(comp.get("trademark_blocklist") or "")
+    health_path = str(comp.get("health_terms") or "")
+    stamp = []
+    for given, default in ((path, "trademark_blocklist.txt"), (health_path, "health_terms.txt")):
+        file = resolve(given) if given else CONFIG_DIR / default
+        try:
+            st = Path(file).stat()
+            stamp.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            stamp.append(None)             # Blocklist.load raises the real error (a missing default health file is skipped)
+    stamp = tuple(stamp)
+    key = f"{path}|{health_path}"
+    cached = _BLOCKLISTS.get(key)
+    if cached is None or cached[0] != stamp:
+        _BLOCKLISTS[key] = (stamp, Blocklist.load(path or None, health_path=health_path or None))
+    return _BLOCKLISTS[key][1]
 
 
 def text_problems(texts, settings: dict) -> list[str]:

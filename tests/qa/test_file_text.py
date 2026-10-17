@@ -109,3 +109,74 @@ def test_sticker_count_is_the_whole_pack_not_the_mockup_sample():
     assert content_count({"niche": "stickers", "assets": assets, "files": []}, 12) == 40
     assert content_count({"niche": "stickers", "assets": [], "files": [{"kind": "zip", "count": 30}]}, 0) == 30
     assert content_count({"niche": "stickers", "pack": {"stickers": 24}, "assets": assets}, 12) == 24
+
+
+# ------------------------------------------------------------------ health topics and claims (docs/HEALTH_TERMS.md, decided 2026-10-17)
+
+def test_medical_topic_printed_in_a_file_is_an_error_named_health_topic(tmp_path, settings, blocklist):
+    item = pdf_item(tmp_path, settings, ["Blood Pressure Log", "Date", "Reading"], title="Health Pages")
+    r = by_name(check_file_text(item, blocklist), "compliance_file_text")[0]
+    assert not r["passed"] and "blood pressure (health topic)" in r["detail"]
+
+
+def test_borderline_health_topic_printed_in_a_file_is_a_review_warning(tmp_path, settings, blocklist):
+    item = pdf_item(tmp_path, settings, ["Period Tracker", "Day 1 to 31"])
+    checks = check_file_text(item, blocklist)
+    assert by_name(checks, "compliance_file_text")[0]["passed"]
+    assert by_name(checks, "compliance_file_claims")[0]["passed"]
+    r = by_name(checks, "compliance_file_review_terms")[0]
+    assert not r["passed"] and r["severity"] == "warning" and "period tracker (health topic)" in r["detail"]
+
+
+def test_health_claim_printed_on_a_coloring_page_is_an_error(tmp_path, settings, blocklist):
+    item = pdf_item(tmp_path, settings, ["Mandala Coloring Pages", "Reduces anxiety and improves sleep"])
+    checks = check_file_text(item, blocklist)
+    assert by_name(checks, "compliance_file_text")[0]["passed"]
+    r = by_name(checks, "compliance_file_claims")[0]
+    assert not r["passed"] and r["severity"] == "error" and "reduces anxiety" in r["detail"]
+
+
+def test_stress_relief_and_lifestyle_words_printed_pass(tmp_path, settings, blocklist):
+    item = pdf_item(tmp_path, settings, ["Stress Relief Coloring Pages", "Calm, detailed patterns", "Mood Tracker"],
+                    title="Relaxing Mandala Coloring Pages")
+    assert all(c["passed"] for c in check_file_text(item, blocklist))
+
+
+def test_ttrpg_game_words_print_but_claim_words_do_not(tmp_path, settings, blocklist):
+    d = tmp_path / "item-1"
+    text_pdf(d / "files/sheet-us_letter.pdf", ["Medicine (Wis)", "Sanity", "Major Wound", "First Aid", "Hit Points"])
+    item = make_item(d, settings, niche="ttrpg", files=[{"path": "files/sheet-us_letter.pdf", "kind": "pdf",
+                                                        "page_size": "us_letter", "pages": 1}])
+    assert all(c["passed"] for c in check_file_text(item, blocklist)), check_file_text(item, blocklist)
+    text_pdf(d / "files/sheet-us_letter.pdf", ["Therapy Notes", "Hit Points"])
+    item = make_item(d, settings, niche="ttrpg", files=[{"path": "files/sheet-us_letter.pdf", "kind": "pdf",
+                                                        "page_size": "us_letter", "pages": 1}])
+    r = by_name(check_file_text(item, blocklist), "compliance_file_claims")[0]
+    assert not r["passed"] and "therapy" in r["detail"].lower()
+
+
+def test_stationery_pages_use_the_stationery_renderer_rule(tmp_path, settings, blocklist):
+    d = tmp_path / "item-1"
+    text_pdf(d / "files/planner-a4.pdf", ["Mood and Energy", "Rate your mood and energy each day", "Medicine"])
+    entry = [{"path": "files/planner-a4.pdf", "kind": "pdf", "page_size": "a4", "pages": 1}]
+    item = make_item(d, settings, niche="stationery", files=entry)
+    assert all(c["passed"] for c in check_file_text(item, blocklist))   # "Medicine" alone is not the stationery rule's word
+    text_pdf(d / "files/planner-a4.pdf", ["Symptom Tracker", "Helps manage stress"])
+    item = make_item(d, settings, niche="stationery", files=entry)
+    checks = check_file_text(item, blocklist)
+    assert "symptom (health topic)" in by_name(checks, "compliance_file_text")[0]["detail"]
+    r = by_name(checks, "compliance_file_claims")[0]
+    assert not r["passed"] and "manage stress" in r["detail"]
+
+
+def test_halloween_word_search_printing_treat_passes_but_a_treat_claim_does_not(tmp_path, settings, blocklist):
+    """"TREAT" in a kids' word list is candy (generators/activity_sheets/vocab.py halloween)."""
+    d = tmp_path / "item-1"
+    entry = [{"path": "files/pack-us_letter.pdf", "kind": "pdf", "page_size": "us_letter", "pages": 1}]
+    text_pdf(d / "files/pack-us_letter.pdf", ["Halloween Word Search", "PUMPKIN  GHOST  TREAT  MASK", "treats"])
+    item = make_item(d, settings, niche="activity_sheets", files=entry)
+    assert all(c["passed"] for c in check_file_text(item, blocklist)), check_file_text(item, blocklist)
+    text_pdf(d / "files/pack-us_letter.pdf", ["Halloween Word Search", "Coloring treats anxiety"])
+    item = make_item(d, settings, niche="activity_sheets", files=entry)
+    r = by_name(check_file_text(item, blocklist), "compliance_file_claims")[0]
+    assert not r["passed"] and "treats anxiety" in r["detail"]

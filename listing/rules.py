@@ -36,7 +36,8 @@ import unicodedata
 from collections.abc import Callable
 from functools import lru_cache
 
-from core.compliance import URL_RE, Blocklist, find_urls, normalize
+from core.compliance import URL_RE, Blocklist, find_urls, normalize, term_pattern
+from core import health
 from core.etsy import MARKS, TITLE_ONCE_ONLY, tag_char_ok, title_char_ok  # noqa: F401 (re-exported)
 
 # text -> the names it holds (a game system's names, its trademark owner); see validate().
@@ -102,17 +103,28 @@ def misleading(text: str, cfg: dict) -> list[str]:
 
 
 def medical(text: str, cfg: dict) -> list[str]:
-    """Medical or therapeutic wording our copy must not use (CLAUDE.md compliance rules).
-    Phrases in `medical_ok_phrases` ("trick or treat", "sweet treats") are not claims and
-    are taken out before the check."""
-    terms = tuple(cfg.get("medical_terms") or ())
-    if not terms or not text:
+    """Medical or therapeutic wording our copy must not use (CLAUDE.md compliance rules):
+    the claim words in `medical_terms`, the medical topics in `health_terms` (listing_config
+    reads them from config/health_terms.txt) and the health claims core.health finds
+    ("reduces anxiety", "clinically proven"; docs/HEALTH_TERMS.md "Decided 2026-10-17"). Phrases in
+    `medical_ok_phrases` ("trick or treat", "sweet treats") are not claims and are taken out
+    before the word check. A claim phrase that already holds a found word ("treat anxiety"
+    with "treat") is not listed twice."""
+    terms = tuple(dict.fromkeys([*(cfg.get("medical_terms") or ()), *(cfg.get("health_terms") or ())]))
+    if not text:
         return []
     norm = normalize(text)
     for ok in cfg.get("medical_ok_phrases") or ():
         rx = _phrase_checker((str(ok),)).hard[0][1]
         norm = rx.sub(" | ", norm)
-    return _phrase_checker(terms).check(norm).blocked
+    found = list(_phrase_checker(terms).check(norm).blocked) if terms else []
+    for claim in health.claim_problems(norm):  # a listed word inside the claim already names it
+        if not any(term_pattern(t).search(claim) for t in found):
+            found.append(claim)
+    # Keep the shortest spelling of a hit: "clinically", not also "clinically proven".
+    inner = {t for t in found for u in found
+             if u != t and term_pattern(u).search(normalize(t)) and not term_pattern(t).search(normalize(u))}
+    return sorted(t for t in found if t not in inner)
 
 
 def banned(text: str, cfg: dict) -> bool:

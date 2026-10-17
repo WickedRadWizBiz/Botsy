@@ -121,7 +121,7 @@ def run(item_dir: str | Path, *, settings: dict | None = None, review_dir: str |
         return report
 
     item = Item(d, manifest, settings, cfg)
-    blocklist = Blocklist.load(settings.get("compliance", {}).get("trademark_blocklist"))
+    blocklist = Blocklist.load(settings.get("compliance", {}).get("trademark_blocklist"), health_path=settings.get("compliance", {}).get("health_terms"))
     checks = run_checks(item, blocklist)
 
     shots: list[str] = []

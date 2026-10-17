@@ -550,7 +550,7 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
 
     files = _pick_brief_files(summary, brief_files=brief_files, briefs_dir=briefs_dir, niches=niches,
                               date=date, dry_run=dry_run, max_age=max_age)
-    blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
+    blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"), health_path=(settings.get("compliance") or {}).get("health_terms"))
     queues = [q for q in (_load_brief_queue(summary, bf, blocklist) for bf in files) if q]
     # Round-robin across brief files (one per niche) so a small max_items still
     # covers every niche instead of filling up from the first file. Tier i holds the

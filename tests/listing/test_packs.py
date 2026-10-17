@@ -476,3 +476,53 @@ def test_every_research_claim_word_is_a_listing_claim_word():
 
     missed = [w for w in RESEARCH["medical_terms"] if not rules.medical(w, CFG)]
     assert missed == []
+
+
+# ------------------------------------------------------------------ health topics (docs/HEALTH_TERMS.md, decided 2026-10-17)
+
+def test_medical_topic_in_model_copy_is_repaired_not_stopped(tmp_path, settings):
+    d = pack_item(tmp_path / "out", niche="stationery", theme="daily planner", keywords=["daily planner printable"])
+    bad = good(about="A daily planner with a blood pressure log and a medication tracker page.")
+    client = FakeClient(bad, bad, bad)
+    lst = listing.write_listing(d, client=client, settings=settings)
+    assert any("no medical or therapeutic claims" in p for p in lst["writer"]["repaired"])
+    low = lst["description"].lower()
+    assert "blood pressure" not in low and "medication" not in low
+    assert Blocklist.load().check(*_texts(lst)).ok
+
+
+def test_result_claims_in_model_copy_are_repaired_and_stress_relief_stays(tmp_path, settings):
+    d = pack_item(tmp_path / "out", theme="mandala", keywords=["mandala coloring pages"])
+    bad = good(about="Calm, detailed patterns on every page. Reduces anxiety and improves sleep.",
+               suggested_uses=["Color to manage your ADHD symptoms", "Stress relief coloring on a quiet evening",
+                               "Frame a finished page"])
+    client = FakeClient(bad, bad, bad)
+    lst = listing.write_listing(d, client=client, settings=settings)
+    assert any("no medical or therapeutic claims" in p for p in lst["writer"]["repaired"])
+    low = lst["description"].lower()
+    assert "reduces anxiety" not in low and "improves sleep" not in low and "manage your adhd" not in low
+    assert "stress relief coloring on a quiet evening" in low and "frame a finished page" in low
+    assert rules.medical(lst["description"], CFG) == []
+    assert "reduces anxiety" in client.calls[0]["system"] and "stress relief" in client.calls[0]["system"]
+
+
+def test_medical_topic_in_item_data_is_refused_as_a_health_topic(tmp_path, settings):
+    d = pack_item(tmp_path / "out", niche="stationery", theme="blood pressure log", keywords=["log pages"])
+    client = FakeClient()
+    with pytest.raises(ListingComplianceError, match=r"blood pressure \(health topic\)"):
+        listing.write_listing(d, client=client, settings=settings)
+    assert client.calls == [] and not (d / "listing.json").exists()
+
+
+def test_borderline_health_topic_sends_the_item_to_review(tmp_path, settings):
+    d = pack_item(tmp_path / "out", niche="stationery", theme="period tracker", keywords=["period tracker printable"])
+    lst = _dry(d, settings)
+    assert lst["needs_review"]
+    assert any("period tracker (health topic)" in r for r in lst["review_reasons"]), lst["review_reasons"]
+
+
+def test_lifestyle_theme_lists_without_review(tmp_path, settings):
+    d = pack_item(tmp_path / "out", niche="stationery", theme="meditation journal", keywords=["meditation journal pages"])
+    lst = _dry(d, settings)
+    assert not lst["needs_review"] and rules.medical(lst["description"], CFG) == []
+    assert "meditation" in lst["title"].lower()

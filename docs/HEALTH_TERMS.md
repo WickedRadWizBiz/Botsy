@@ -1,6 +1,57 @@
 # Health topics: medical vs lifestyle
 
-> **Status: design, written 2026-10-17 after the user's answers of 2026-10-16; not built yet.** Open choices and build order: [PROPOSAL_2026-10-16.md](PROPOSAL_2026-10-16.md) section "Round 2".
+## Decided 2026-10-17 (built; this header overrides the design below where they differ)
+
+The user's final answers of 2026-10-17 settle the open questions. What is built:
+
+- **Medical topics are OUT on Etsy and KDP** (hard block everywhere: themes, briefs, listing
+  text, printed text, file names, image prompts, search lists, KDP fields): medical log books
+  (blood pressure, blood sugar/glucose, medication/pill, symptom, pain, migraine, chronic-illness
+  trackers and the like), named diseases and disorders (depression, PTSD, eating disorders, ...),
+  clinical worksheets (CBT, DBT), fertility/pregnancy medicine, weight-loss drugs, and
+  disease- or medicine-themed stickers (awareness ribbons, pink ribbon, pills, syringes,
+  vaccines). The list is `config/health_terms.txt` (plain lines).
+- **Lifestyle journals and logs are IN**, described by layout and look: meditation, mindfulness,
+  stress, exercise/workout/fitness/yoga/running, sleep, mood, gratitude, habit, water, self-care,
+  food diaries, **anxiety and mental-health journals**, ADHD planners. None of these words is in
+  the health file. "stress relief" is ALLOWED as a descriptive term (so section 4.6 below no
+  longer applies: research keeps it, titles and tags may use it, the stationery renderer prints
+  it). "relaxing", "calm", "mindful", "ADHD planner" are fine.
+- **Borderline (review, never blocked)**, `?` lines in the health file: period/menopause/
+  pregnancy/newborn trackers, weight-loss/calorie trackers, sobriety and recovery, grief,
+  autism/dyslexia items, burnout, plus a few uncertain ones (trauma, supplements, counselor
+  roles, stethoscope, hospital, bare "disease", which TTRPG sheets may print for game
+  diseases; named diseases and disease trackers stay hard). "injection" blocks only as a
+  phrase (injection log/tracker/site), so "fuel injection" passes. No "health journal" entry: a mental health journal is allowed.
+  A flagged item waits in the review queue with the reason "<term> (health topic)".
+- **Still never, on any topic (the claims rule, `core/health.py`):** claims to treat, cure,
+  diagnose, heal, prevent or manage a condition, or to reduce/relieve/improve a symptom or
+  state in word order ("reduces anxiety", "relieves migraine pain", "manage your ADHD
+  symptoms", "improves sleep", "boosts your mood", "cures stress"); noun-form claims
+  ("anxiety relief", "pain relief", "mood booster", "anti-anxiety", "lose weight"); proof and
+  authority claims ("clinically proven", "doctor recommended", "therapist approved", "FDA").
+  Allowed because they name no target: "ADHD planner to manage your day", "mood tracker to
+  manage your month", "anxiety journal with daily check-in pages", "food diary". Focus,
+  attention, concentration and memory are claim targets only after a determiner ("improve your
+  focus"), so kids' learning copy ("a matching game to improve memory") passes. A claim split
+  by a line break is still a claim. QA lets the candy word "treat"/"treats" print on kids'
+  pages (a Halloween word search); "treats anxiety" is still a claim.
+- **Where it runs:** `core.compliance.Blocklist.load` reads the health file next to the
+  trademark file (settings `compliance.health_terms`, default `config/health_terms.txt`), so
+  every stage gets the topics and `Blocklist.label()` says "health topic". `listing.rules.medical`
+  = claim words + medical topics + `core.health.claim_problems`; a model draft naming a medical
+  topic is repaired, not stopped as a trademark. Research cuts `core.health.research_cut_terms()`
+  from theme names (not "stress relief"). The stationery renderer runs the claims check next
+  to its `MEDICAL_RE` (which no longer refuses anxiety, depression, mental health or stress
+  relief: topics come through the blocklist). QA's `compliance_file_claims` checks printed text
+  per niche: listing rule for coloring/stickers/activity, each generator's `text_problems` for
+  stationery and ttrpg, so "Medicine (Wis)", "Sanity", "Major Wound" keep printing.
+- Not built here: the search-list note "(check: health?)" (`service/searchlist.py`, requested)
+  and the KDP search list.
+
+> **Design below: written 2026-10-17 before the final answers.** Where it differs from the
+> header (food diaries, anxiety and mental health, "stress relief", the borderline list), the
+> header wins. Open choices and build order: [PROPOSAL_2026-10-16.md](PROPOSAL_2026-10-16.md) section "Round 2".
 
 Status: design only. I read the repo and changed nothing. Another build is editing these files now. Uncommitted changes: `listing/__init__.py`, `listing/rules.py`, `research/defaults.py`, `research/pipeline.py`, `core/compliance.py`, `core/briefs.py`, `qa/file_text.py`, `config/trademark_blocklist.txt`, `config/settings.yaml`. Untracked (new) files: `generators/stationery/`, `generators/ttrpg/`, `config/ttrpg_systems.yaml`. Line numbers below may move.
 
