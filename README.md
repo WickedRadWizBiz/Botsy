@@ -82,7 +82,16 @@ RPG sheets are our own layouts, printed without any game-system name. A listing 
 
 The system names are `!term` lines in `config/trademark_blocklist.txt`; QA and the publisher refuse an item that breaks any of these rules. Stationery listings may say "ADHD-friendly" to describe a layout, never a medical claim (treat, cure, therapy, ...).
 
+## Health topics
+Decided 2026-10-17 (full lists: [`docs/HEALTH_TERMS.md`](docs/HEALTH_TERMS.md), "Decided 2026-10-17"; terms: `config/health_terms.txt`, settings `compliance.health_terms`):
+- **Out on Etsy and KDP:** medical products: medical log books (blood pressure, blood sugar, medication, symptom, pain, migraine, chronic-illness trackers and the like) and disease- or medicine-themed designs (awareness ribbons, pills, syringes). These are hard-blocked everywhere, labelled "(health topic)".
+- **In:** lifestyle journals and logs (meditation, mindfulness, stress, exercise, sleep, mood, gratitude, habit, water, self-care, food diaries, anxiety and mental-health journals), described by their layout. "Stress relief", "relaxing", "calm" and "ADHD planner" are fine.
+- **Review, not block:** period, menopause and pregnancy trackers, weight-loss and calorie trackers, sobriety, grief, autism/dyslexia items, burnout.
+- **Never:** claims to treat, cure, diagnose, heal or manage a condition, or to reduce symptoms of a named condition (`core/health.py` checks listing copy and printed pages).
+
 ## Research inputs
+**Start at $0** (docs/RESEARCH_COSTS.md): type Etsy Marketplace Insights numbers (Shop Manager > Stats > Marketplace Insights, about 15 searches a week) into the Botsy template `data/templates/etsy-insights-template.csv` (columns keyword, searches, competition, checked_on) and save it as CSV; research reads it as keyword data. The first paid step later is eRank Basic. Book (KDP/BookBeam) files are kept apart in `data/research_inputs/kdp/` for the KDP reader and never read as Etsy data; files with personal or order columns are refused.
+
 Download CSV exports from eRank, EverBee or a similar licensed tool into `data/research_inputs/`. They are licensed data: they stay on your machine (gitignored) and are never committed or passed to a model.
 - Keyword and listing exports are recognized by their column names (`research/columns.py`; override them in `research.column_overrides`). A keyword export needs a competition (matching listings) column to count toward a brief; without one it produces no briefs and research logs a warning.
 - Name a file `<niche>__anything.csv` (for example `stickers__erank.csv`) to force its niche. Otherwise each row's niche comes from `research.niche_rules`.
@@ -110,6 +119,7 @@ Each stage runs on its own. The generator, QA, listing and `publisher publish` c
 | `python -m publisher discard --item ID` | delete this tool's draft for an item and start over |
 | `python -m publisher taxonomy --search sticker [--json]` | find Etsy taxonomy ids |
 | `python -m publisher own-stats [--dry-run]` | our own listings' stats as a research input |
+| `python -m publisher stats [--dry-run]` | own-stats CSV + daily per-listing snapshot + our own sales (`transactions_r`: only listing id, day, quantity, price) + reviews (listing id, rating, day) → `data/performance/` (gitignored; docs/CONTRACTS.md section 7) |
 
 `--item` takes an item id inside `--out` or a path to an item folder. `python -m listing --item ID` also rewrites a `listed` item (for example after you set the shop name).
 
@@ -160,10 +170,10 @@ The live publish job has no token file. It seeds one from the `ETSY_REFRESH_TOKE
 Until this is set up, keep `PIPELINE_PUBLISH` off and create drafts locally from the downloaded artifact (`python -m publisher publish --out batch`).
 
 ## Run it 24/7 on Lightsail
-Botsy can run on its own on a small AWS Lightsail server (Ubuntu 24.04, 4 GB plan). You still make the exports yourself in EverBee or eRank (the rules allow nothing else), but everything after that is automatic:
+Botsy can run on its own on a small AWS Lightsail server (Ubuntu 24.04, 4 GB plan). You still make the research files yourself (the rules allow nothing else), but everything after that is automatic. **All times are New York time** (America/New_York, all year).
 
-1. Every Sunday the server writes a **search list**. The Botsy helper on your Windows PC saves it as `Documents\Botsy\search-list.txt` and opens it. Search each line in EverBee (type only the words before the brackets) and click **Export CSV**.
-2. The helper notices the new file in your Downloads folder and uploads it to the server. It only ever sends EverBee or eRank exports, never any other CSV.
+1. Every Saturday at 09:07 the server writes a **search list**. The Botsy helper on your Windows PC saves it as `Documents\Botsy\search-list.txt` and opens it. Follow its "What to do" lines: today, type the Etsy Marketplace Insights numbers into `Documents\Botsy\templates\etsy-insights-template.csv` and save it as CSV UTF-8 into Downloads; later, eRank exports go straight into Downloads.
+2. The helper notices the new file in your Downloads folder and uploads it to the server. It only sends research exports (eRank, EverBee, BookBeam or a filled-in Botsy template), never any other CSV and never a file with personal or order columns.
 3. The server checks the upload, researches, makes the items and creates Etsy **drafts** (practice drafts until you turn live mode on). You approve every draft in Etsy.
 4. The helper also copies the server's report to `Documents\Botsy\status.txt` every hour, and the **daily log** (`daily-log.txt`: what happened overnight, what is waiting for you, what it cost) every morning.
 5. If you want, the server also posts short messages to a **Discord** channel: new drafts, items waiting for your review, problems, the spending cap, the daily log and the weekly search list.
@@ -189,14 +199,14 @@ On the server, type `botsy service <command>`; that runs it as the `botsy` accou
 | `research` | research every shop niche, with history snapshots in `data/history/` |
 | `run` | generate, QA, listing and draft for every shop (a dry run unless `service.live` is `true`) |
 | `searchlist` | write this week's `search-list.txt` for the helper to fetch |
-| `tick` | ingest, then research and run when a new export arrived, then tidy old files, write the status files and send one Discord message (`--force`: run even without a new upload; `--own-stats`: first read our own shop's stats, live mode only) |
+| `tick` | ingest, then research and run when a new export arrived, then tidy old files, write the status files and send one Discord message (`--force`: run even without a new upload; `--own-stats`: first read our own shop's stats, snapshot, sales and reviews; test mode uses the fake shop and writes under the dry-run folder) |
 | `status` | rebuild `status.txt` and show it |
 | `digest [--hours N]` | write `daily-log.txt` (the overnight log) and post it to Discord |
 | `spend [--month YYYY-MM]` | this month's estimated API spending |
 | `notify-test` | send a test message to Discord and say whether it worked |
 | `cleanup` | remove old rejected uploads, old exports and old practice items now (every tick does this too) |
 
-The server runs these by itself: `tick` when an upload arrives, `tick --force --own-stats` every day at 06:17, `digest` every day at 07:07, and `searchlist` every Sunday at 18:07. Exit codes: 0 ok, 1 something failed (see `status.txt`), 2 setup problem, 3 another command was still running after 30 minutes.
+The server runs these by itself: `tick` when an upload arrives, `tick --force --own-stats` every day at 06:17 (our own shop's stats, snapshot, sales and reviews; the fake shop in test mode), `digest` every day at 07:07, and `searchlist` every Saturday at 09:07; all times New York time (America/New_York), see docs/SERVER.md section 6. Exit codes: 0 ok, 1 something failed (see `status.txt`), 2 setup problem, 3 another command was still running after 30 minutes.
 
 ## Layout
 | Folder | Role |

@@ -1,13 +1,15 @@
 # Server (Lightsail) and Windows helper: contracts
 
 The pipeline runs 24/7 on an AWS Lightsail Ubuntu 24.04 instance (4 GB RAM plan). Competitor data still comes only from
-exports the user makes in EverBee or eRank (no scraping, no browser automation on etsy.com, no
-third-party research API). Everything after the export is automatic:
+research files the user makes by hand: eRank or EverBee exports, BookBeam exports, or a filled-in
+Botsy template such as `data/templates/etsy-insights-template.csv` for Etsy Marketplace Insights
+numbers (the $0 start, docs/RESEARCH_COSTS.md). No scraping, no browser automation on etsy.com, no
+third-party scraping service. All server times are New York time (America/New_York, section 6). Everything after the export is automatic:
 
 ```
 Windows PC                                   Lightsail server (/opt/botsy, user "botsy")
 ----------                                   --------------------------------------------
-EverBee/eRank "Export CSV" -> Downloads
+research export / filled-in template -> Downloads
 windows/botsy_helper.py  --sftp-->  /srv/botsy-inbox/incoming/   (upload-only account "botsy-upload")
                                          | systemd path unit
                                          v
@@ -18,7 +20,7 @@ windows/botsy_helper.py  --sftp-->  /srv/botsy-inbox/incoming/   (upload-only ac
                                       4. cleanup  old rejected uploads, exports, practice items
                                       5. status   -> /srv/botsy-inbox/outbox/status.txt
                                       6. one Discord message (optional)
-                                    python -m service digest (07:07) -> outbox/daily-log.txt + Discord
+                                    python -m service digest (07:07 New York) -> outbox/daily-log.txt + Discord
 windows/botsy_helper.py  <--sftp--  /srv/botsy-inbox/outbox/search-list.txt   (weekly timer),
                                     status.txt, daily-log.txt
 ```
@@ -54,7 +56,9 @@ User guides: `deploy/lightsail/README.md` (server) and `windows/README.md` (PC).
 - **Duplicate:** a file whose sha256 was already recorded is deleted and counted as `duplicate`.
 - **Rejected:** moved to `data/inbox_rejected/<YYYY-MM-DD>-<name>`, with `<same>.reason.txt` next to it in plain words.
   Links, special files and files over the size limit are deleted instead (only the reason file is written).
-- `IngestResult` has `accepted: list[Path]`, `duplicates: list[str]` and `rejected: list[tuple[str, str]]` (name, reason).
+- **Book (KDP) files** (BookBeam, a generic book export with BSR/ASIN/Print Length/... headers, or the `kdp_manual` template) are stored in `data/research_inputs/kdp/` with a ledger entry and reported as `routed`: never accepted (no Etsy research run), never rejected. They wait for the KDP reader and are deleted after `research.kdp_keep_days` (90). A forced `research.source_tool` never turns a book file into Etsy data.
+- **Personal data:** a file whose header row names a personal or order column (address, buyer, customer, email, phone, order/transaction id, payment, tracking, ...; `research.columns.personal_columns`) is refused and deleted at once, with only a `.reason.txt` naming at most 3 headers (never cell values). The helper refuses the same files on the PC.
+- `IngestResult` has `accepted: list[Path]`, `duplicates: list[str]`, `rejected: list[tuple[str, str]]` (name, reason) and `routed: list[tuple[str, Path, str]]` (name, stored file, reason). The tick puts `routed` into `status.txt` ("Book (KDP) files kept for the KDP reader") and records `export_routed`; the daily log lists them under Exports.
 - Ingest never reads anything outside `incoming/`. It never follows symlinks (it rejects them), and it rejects hard links.
 - Uploaded names are made printable before they reach logs, the ledger or `status.txt`.
 
@@ -117,8 +121,9 @@ User guides: `deploy/lightsail/README.md` (server) and `windows/README.md` (PC).
      The age is measured from the last snapshot in which the theme had fresh rows (`last_fresh`).
      When there are rechecks, one slot is kept for them, so near misses never crowd them out.
 - Each search phrase is the theme plus the niche's noun from `service.search_list.nouns` (coloring_pages: "coloring pages", stickers: "stickers", activity_sheets: "activity sheets", stationery: "planner pages", ttrpg: "rpg sheets"). The stationery seeds are "adhd planner printable" and "productivity planner pages"; the ttrpg seeds "ttrpg character sheet" and "hex map paper printable".
-- Every phrase passes the blocklist used by research (blocked terms dropped; flagged ones marked "(check: trademark?)"). Phrases holding a URL are dropped.
-- A short header explains what to do: search each phrase in EverBee Product Analytics, click Export CSV, and the helper uploads it. It also says the notes in brackets need not be typed.
+- Every phrase passes the blocklist used by research, including the health file (blocked terms dropped, medical topics too; flagged trademark terms marked "(check: trademark?)", borderline health terms "(check: health?)"; lifestyle searches get no note). Phrases holding a URL are dropped.
+- A short header ("What to do", `service.search_list.instructions`, default `service/searchlist.py` INSTRUCTIONS) gives per-source steps: today Etsy Marketplace Insights (Shop Manager > Stats > Marketplace Insights, about 15 searches a week), typed into `Documents\Botsy\templates\etsy-insights-template.csv` (columns keyword, searches, competition, checked_on) and saved as CSV UTF-8 into Downloads; later eRank Basic Keyword Ideas and Top Listings exports. It also says the notes in brackets need not be typed.
+- `write` and every tick put the blank templates (`data/templates/*.csv`) into the outbox (`publish_templates`, only when missing or different), so the helper's hourly fetch brings them to `Documents\Botsy\templates\`.
   In the refined stage it adds that a theme must show up in exports from 3 different weeks before it becomes a design.
 - A short footer gives last week's numbers. `status` is the `week` mapping of `outbox/status.json` (section 5): `exports`, `briefs`, `items`, `drafts`, and `practice_drafts` in test mode.
 - `write` saves `outbox/search-list-<date>.txt` and `outbox/search-list.txt` (latest), each as a temp file set to mode 640 and then renamed.
@@ -134,7 +139,7 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
 - `run`: `pipeline.run.run(stages=("generate","qa","listing","publish"), dry_run=not service.live, ...)` for every shop that has brief files.
 - `searchlist`: section 4, with `status=` the `week` totals from `outbox/status.json`.
 - `tick`: ingest, then (if any file was accepted, or `--force`) research and run, then status. Used by the systemd path unit and the daily timer. Built as follows (deviations from the first spec):
-  - `--own-stats` first refreshes our own shop's stats (`publisher own-stats`), in live mode only. The daily timer passes it. In live mode it also checks the Etsy token's age (`publisher.token_days_left`) and records `token_expiring` once a day from 10 days before it runs out.
+  - `--own-stats` first runs `publisher.__main__.run_stats` (`python -m publisher stats`): the own-stats CSV, the daily per-listing snapshot, our own sales (`transactions_r`; only listing_id, day, quantity, price) and reviews (listing_id, rating, day) into `publisher.performance_dir` (docs/CONTRACTS.md section 7). In test mode it runs the same step on the fake shop and writes only under `<dry-run folder>/performance` and `<dry-run folder>/research_inputs/own_shop_stats.csv`. A failure is a problem in `status.txt` and never stops the tick. The daily timer passes it. In live mode it also checks the Etsy token's age (`publisher.token_days_left`) and records `token_expiring` once a day from 10 days before it runs out.
   - **Spending cap:** before anything else the tick reads `core.spend.budget_state` (section 10). `spend_warning` and `budget_reached` are recorded once per month (again when the cap changes).
     While the cap is reached, a live tick runs only `qa` and `publish` (no paid stages); research still runs. In live mode with a cap set, a spending log that cannot be written (`LedgerUnavailable`) pauses the paid stages too, reported as one problem per tick.
     When a shop's run reaches the cap, the remaining shops also switch to `qa` and `publish`.
@@ -164,7 +169,9 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
 ## 6. Server setup and systemd units (deploy/lightsail/)
 
 - `setup.sh` runs as root. The first time it runs as `sudo bash setup.sh --repo URL --branch NAME`; it then installs itself as `/usr/local/sbin/botsy-setup` (on sudo's secure_path).
-  - Updates: `sudo botsy-setup` (repository and branch remembered in `/etc/botsy/setup.conf`).
+  - Updates: `sudo botsy-setup` (repository, branch and time zone remembered in `/etc/botsy/setup.conf`, root-owned; read as text, never run).
+  - `--timezone ZONE` (default `America/New_York`; user, 2026-10-17: "8 pm EST" means New York time all year) sets the server's clock with `timedatectl set-timezone` after the packages and before the units. The name must be `Area/City` (at most three parts, no `..`) and exist in root's `/usr/share/zoneinfo`; otherwise the run stops before anything changes. An unchanged clock is left alone; without `timedatectl` a warning is printed and the run goes on, because Botsy's own clock does not depend on it (below).
+  - Before installing the units, `check_calendars` runs `systemd-analyze calendar` on every `OnCalendar` line of root's copy of the timers (when the binary exists) and stops on one systemd does not accept.
   - Root keeps its own copy of the code in `/usr/local/lib/botsy/src`, downloaded from GitHub by root. The units, the sshd drop-in and the launcher are installed only from that copy, never from `/opt/botsy` (which the `botsy` account owns). Root never follows a link inside `/opt/botsy`.
   - `/opt/botsy/.env` may not be a link; it is created from `.env.example` with mode 600 when missing.
   - `/opt/botsy/config/settings.local.yaml` is created once as botsy (test mode, no spending cap) and never overwritten (section 14). `/opt/botsy/data/spend/` is made as botsy.
@@ -173,9 +180,12 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
     Otherwise the key is added during the full setup. The Windows installer's fallback line is `echo "restrict <key>" | sudo tee -a /etc/ssh/botsy-upload/authorized_keys`.
 - `botsy-inbox.path`: `PathChanged=/srv/botsy-inbox/incoming`, plus `PathExistsGlob=/srv/botsy-inbox/incoming/*.csv` (and `*.CSV`), triggers `botsy-tick.service`. The glob also catches files left over from a tick that ended early.
 - `botsy-tick.service`: oneshot, `User=botsy`, `WorkingDirectory=/opt/botsy`, runs `.venv/bin/python -m service tick`.
-- `botsy-daily.timer` (06:17 local, `Persistent=true`) runs `botsy-daily.service`: `service tick --force --own-stats` (the tick itself skips own-stats unless live).
-- `botsy-weekly.timer` (Sunday 18:07 local, `Persistent=true`) runs `botsy-weekly.service`: `service searchlist`.
-- `botsy-digest.timer` (07:07 local, `Persistent=true`) runs `botsy-digest.service`: `service digest` (oneshot, hardened, no `Restart`: it never takes the lock, so it never exits 3).
+- **Botsy's clock (user, 2026-10-17):** every Botsy time is on `schedule.timezone` (`America/New_York`: EDT in summer, EST in winter), whatever the server's zone. The timers name the zone in `OnCalendar` (systemd 235+; Ubuntu 24.04 has 255), `core.config.tz(settings) -> ZoneInfo` and `now_local(settings, now=None)` give it to Python code, `service.notify.in_quiet_hours` reads the quiet hours on it, and `service.digest` shows its times and names the zone ("New York time") and dates its files with `digest.log_date(settings)`. Money months (`core.spend`, the cap resets 00:00 UTC on the 1st) and the event journal's time stamps stay UTC. Check a line with `systemd-analyze calendar --iterations=3 "Sat *-*-* 09:07:00 America/New_York"`; `systemctl list-timers 'botsy*'` shows the next runs.
+- `botsy-daily.timer` (`*-*-* 06:17:00 America/New_York`, `Persistent=true`) runs `botsy-daily.service`: `service tick --force --own-stats` (the tick itself skips own-stats unless live).
+- `botsy-weekly.timer` (`Sat *-*-* 09:07:00 America/New_York`, `Persistent=true`) runs `botsy-weekly.service`: `service searchlist`. Saturday morning, so the exports can be uploaded over the weekend (by about 19:00 Sunday, `schedule.upload_cutoff`) before the Sunday plan.
+- `botsy-digest.timer` (`*-*-* 07:07:00 America/New_York`, `Persistent=true`) runs `botsy-digest.service`: `service digest` (oneshot, hardened, no `Restart`: it never takes the lock, so it never exits 3).
+- `service.digest.SCHEDULE` and `TIMER_ZONE` repeat the three times and the timers' zone (tests keep them equal to the `OnCalendar` lines); "What runs next" is worked out on `TIMER_ZONE` and shown on `schedule.timezone`, so a server whose settings name another zone still shows when the timers really run.
+- **Sunday plan schedule (settings only; the plan service is not built):** `schedule:` in `config/settings.yaml` (defaults `core.config.SCHEDULE_DEFAULTS`), times as `Day HH:MM` on `schedule.timezone`: `plan_post "Sun 20:00"`, `reminders ["Mon 08:00", "Mon 19:00"]`, `deadline "Tue 20:00"`, `auto_start "Mon 08:00"`, `revision_min_hours 2`, `max_revisions 3`, `approvals_before_auto 4` (the first 4 plans need a code), `auto_start_max_cost_share 0.40` (plans over 40% of the cap, $10 of $25, still need a code), `stale_skip_hours 24`, `upload_cutoff "Sun 19:00"` (shown in messages only). `botsy-plan.timer` (`Sun *-*-* 20:00:00 America/New_York`) and `botsy-plan.service` are not in `UNITS` yet: a unit that runs a command which does not exist would fail at every start, so `setup.sh` carries a TODO instead. Design: docs/OVERSEER.md, "Scale-ups ... and the Sunday plan".
 - The daily and weekly services retry a lock timeout (exit 3) after 20 minutes (`Restart=on-failure`, `RestartPreventExitStatus=1 2`). The tick service is not restarted: the path unit starts it again.
 - Every service runs hardened (`NoNewPrivileges`, `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, no capabilities) and may write only `/opt/botsy` and the inbox folders.
 
@@ -186,11 +196,11 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
   Every other key has a default in `DEFAULTS` in `botsy_helper.py`: `port`, `outbox_dir` (`%USERPROFILE%\Documents\Botsy`), `outbox_every_seconds` (3600), `fetch_after_upload_seconds` (900), `remote_incoming`, `remote_outbox`, `sftp`, `timeout_seconds`, `max_upload_bytes` (25000000, matches `service.max_upload_bytes`), `state_file`, `outbox_state_file` (`%APPDATA%\Botsy\outbox.json`), `log_file` and `lock_file`.
 - Every poll:
   - Find `*.csv` files in `watch_dir` modified within `max_age_days`, finished (unchanged for a few seconds and since the last poll) and not yet in the state file (`%APPDATA%\Botsy\state.json`, keyed by sha256).
-  - Upload only files whose header row looks like an EverBee or eRank export: at least 2 known research headers within the first 20 lines. Any other CSV, such as a bank statement, is never uploaded.
+  - Upload only files whose header row looks like a research export (eRank, EverBee, BookBeam or other book exports): at least 2 known research headers within the first 20 lines, one of them a demand number, or the `# botsy-template:` line of a Botsy template. Any other CSV, such as a bank statement, is never uploaded, and neither is a file whose header row names a personal or order column (an Amazon order history has ASIN next to the shipping address).
   - Upload a snapshot copy of each with the Windows OpenSSH client: `sftp -b <batch> -i <key> -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes ... user@host`.
     The batch is `put "<name>" "incoming/<name>.part"`, then `rename "incoming/<name>.part" "incoming/<name>"`.
     `<name>` is the original name folded to `[A-Za-z0-9._-]` plus `-<sha8>.csv`, so a leading `<niche>__` survives and two different files with the same name stay apart.
-  - Once an hour (and 15 minutes after an upload), `-get` the 3 outbox files (`OUTBOX_FILES`: `search-list.txt`, `status.txt`, `daily-log.txt`) into `%USERPROFILE%\Documents\Botsy\`.
+  - Once an hour (and 15 minutes after an upload), `-get` the outbox files (`OUTBOX_FILES`: `search-list.txt`, `status.txt`, `daily-log.txt`, and the templates `etsy-insights-template.csv`, `kdp-manual-template.csv`, saved under `Documents\Botsy\templates\`) into `%USERPROFILE%\Documents\Botsy\`. A local template the user typed in (it differs from the server's) is never replaced.
     A file is replaced only when the server has content this PC has not fetched before (recorded in `outbox.json`), so notes the user wrote in the list are kept. When the search list changes, it is opened with `os.startfile`; `daily-log.txt` is never opened.
 - The helper never deletes, moves or edits the user's files. Logs go to `%APPDATA%\Botsy\helper.log` (rotating, about 1 MB). `--check` tests the connection; `--once` does one pass.
 - `install_helper.ps1`:
@@ -285,7 +295,7 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
   - `held_for_review` (with the exact `botsy qa review approve` command), `export_rejected`, `budget_reached`, `spend_warning`, `token_expiring`, `stage_changed`, `error`;
   - `search_list_written`: the weekly search list, posted with `search-list.txt` attached.
   - The same problem (place and text) is posted at most once a day.
-- `notify.quiet_hours: ["22:00", "07:00"]` (server local time): non-urgent posts during quiet hours are not sent. They are recorded as `notification_held` and listed in the morning's daily log. `notify.urgent` kinds (`budget_reached`, `error`) always post.
+- `notify.quiet_hours: ["22:00", "07:00"]`, read on the wall clock of `schedule.timezone` (New York), never the server's zone: non-urgent posts during quiet hours are not sent. They are recorded as `notification_held` and listed in the morning's daily log. `notify.urgent` kinds (`budget_reached`, `error`) always post. `in_quiet_hours(settings, now=None)`: an aware `now` is converted to that zone, a naive one is taken as that zone's wall clock; the change-of-clocks mornings (first Sunday of November, second Sunday of March) are covered by tests.
 - `service/digest.py`, the overnight log:
   - `build(since, until, settings) -> str` builds a plain-text summary of the window from the event journal plus the spend ledger.
   - Sections:
@@ -300,7 +310,7 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
   - Plain words, CRLF line endings.
 - `python -m service digest [--hours N]` writes `outbox/daily-log.txt` and `outbox/daily-log-<date>.txt` (the newest 35 dated logs are kept), then posts the log to Discord (attached when long) unless `notify.discord.digest` is false.
   Without `--hours`, the window is the last 24 hours, or back to the previous daily log when that is older (at most 7 days), so nothing falls between two logs.
-- The systemd timer `botsy-digest.timer` runs it daily at 07:07 local time.
+- The systemd timer `botsy-digest.timer` runs it daily at 07:07 New York time. The log's header names the zone ("... (New York time)"), "What runs next" is on that clock, and `log_date(settings, now=None)` gives the date for `daily-log-<date>.txt` in it (03:07 UTC is still the day before in New York).
 - The Windows helper also fetches `outbox/daily-log.txt` into `Documents\Botsy\`. It does not auto-open it; only the search list opens.
 - `.env.example` has `DISCORD_WEBHOOK_URL=` with a comment: Discord channel > Edit Channel > Integrations > Webhooks > New Webhook > Copy URL.
 
@@ -345,5 +355,7 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
   - `data/inbox_rejected/` keeps at most `service.rejected_max_mb` (200 MB) and `service.rejected_keep_days` (30), deleting the oldest first. Only files ingest named `<YYYY-MM-DD>-<name>` (and their reason files) are ever removed;
   - accepted exports received more than `research.keep_days` ago (never fewer days than `window_days`) are deleted, with the same received date research uses. Their sha256 stays in `.ingested.json` marked `deleted`, so a re-upload is still a duplicate. The ledger is saved before any export is removed; an export that cannot be hashed, or whose date cannot be read, is kept;
   - `output/dry-run/` practice items (made in a dry run, with no real `publish.json`) older than `service.dry_run_keep_days` (14) are deleted, with their review entries and old run summaries;
+  - book (KDP) files in `data/research_inputs/kdp/` received more than `research.kdp_keep_days` (90) days ago, with the same ledger rules;
+  - own-shop performance files (`publisher.performance_dir`, `data/performance/`, and the dry-run copy): `etsy/<date>.json` and `reviews/<date>.json` older than `service.performance_keep_days` (400), `sales/<date>.json` older than `service.sales_files_keep_days` (90), by the date in the name; `etsy_quota.json` and other names stay;
   - practice design sets (`output/dry-run/sets/<set_id>/`, docs/PACKS.md section 3) made in a dry run more than that many days ago are deleted once none of the items in their `set.json` is left. A set with `dry_run: false` or an unreadable `set.json` is never removed, and `sets/packs_state.json` stays.
 - Cleanup runs at the end of every tick and logs what it removed. Folders it could not tidy (for example a link) are listed in `status.txt` under "Could not tidy".

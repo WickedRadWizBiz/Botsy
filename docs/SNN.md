@@ -332,7 +332,7 @@ Status: proposed 2026-10-16, not built, skeptic-checked. It replaces the "Roles"
 
 ## 9. Schedule and outputs
 - **Weekly scout:** `botsy-snn.service`, a one-shot job.
-  - `botsy-weekly.service` gets `Wants=` and `After=botsy-snn.service`, so the scout finishes before the Sunday 18:07 search list.
+  - `botsy-weekly.service` gets `Wants=` and `After=botsy-snn.service`, so the scout finishes before the Saturday 09:07 (New York time) search list.
   - If the scout fails, the list still runs.
   - It runs after Sunday's 06:17 research.
   - The server uses UTC (deploy README). If you change its timezone, these times move.

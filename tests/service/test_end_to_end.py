@@ -180,7 +180,7 @@ def test_uploads_to_drafts_to_search_list_and_back_to_the_pc(world, tmp_path, ca
     assert [re.sub(r"-[0-9a-f]{8}\.csv$", "", n) for n in stored] == [f"erank-{DATE}", f"everbee-{DATE}"]
     assert len(read_json(paths.inputs / ".ingested.json")) == 2
     reason = (paths.rejected / f"{DATE}-bank-statement.csv.reason.txt").read_text(encoding="utf-8")
-    assert "does not look like an EverBee or eRank export" in reason
+    assert "does not look like a research export" in reason
 
     niches = ["activity_sheets", "coloring_pages", "stickers"]
     assert sorted(p.name for p in paths.briefs.glob("*.json")) == [f"{n}-{DATE}.json" for n in niches]

@@ -41,6 +41,7 @@ DEFAULTS: dict = {
 # The kinds the service emits (docs/SERVER.md section 9). Others are allowed, for new needs.
 KINDS = (
     "export_received", "export_rejected",
+    "export_routed",          # a book (KDP/BookBeam) file kept in research_inputs/kdp/ for the KDP reader
     "briefs_written", "stage_changed",
     "item_generated", "qa_failed", "listing_written", "draft_created", "held_for_review",
     "spend_warning", "budget_reached", "token_expiring",

@@ -38,6 +38,7 @@ def make_settings(tmp_path: Path, service: dict | None = None, **sections) -> tu
         "pipeline": {"dry_run_output_dir": str(tmp_path / "dry")},
         "spend": {"ledger_file": str(tmp_path / "data" / "spend" / "ledger.jsonl")},
         "packs": {"state_file": str(tmp_path / "data" / "packs_state.json")},
+        "publisher": {"performance_dir": str(tmp_path / "data" / "performance")},
         # Discord stays off unless a test switches it on (and then it passes a fake session).
         "notify": {"discord": {"enabled": False}},
     })

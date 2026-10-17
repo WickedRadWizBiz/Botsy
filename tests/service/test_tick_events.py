@@ -483,7 +483,7 @@ def test_token_expiring_is_sent_once_a_day_from_the_daily_live_tick(tmp_path, mo
                                                                     stage):
     monkeypatch.setattr(research, "run", FakeResearch())
     monkeypatch.setattr(prun, "run", FakePipeline())
-    monkeypatch.setattr(tick, "fetch_own_stats", lambda settings: 3)
+    monkeypatch.setattr(tick, "fetch_own_stats", lambda settings, dry_run=False: {"csv_rows": 3})
     monkeypatch.setattr(tick, "token_days_left", lambda settings: 6)
     settings, _ = setup(tmp_path, live=True, notify={"discord": {"enabled": True}, "quiet_hours": None})
     tick.tick(settings, force=True, own_stats=True, date=DATE)

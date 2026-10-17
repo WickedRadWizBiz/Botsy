@@ -125,6 +125,9 @@ research:
   window_days: 35                # empty = default
   keep_days: 180                 # the service deletes accepted exports received longer ago (never fewer
                                  # days than window_days); their sha256 stays in .ingested.json marked "deleted"
+  kdp_keep_days: 90              # book (KDP/BookBeam) files the inbox routed to data/research_inputs/kdp/ are
+                                 # deleted this many days after they were received (0 = keep; docs/RESEARCH_COSTS.md
+                                 # section 5). Their sha256 stays in .ingested.json marked "deleted".
   # Research stage (docs/SERVER.md section 8): auto | discovery | refined. auto = refined once the
   # shop has stages.refined.after_drafts real Etsy drafts (publish.json with listing_id, not dry_run).
   # Discovery uses min_listings_per_pattern / min_shops_per_pattern / own_shop_boost above.
@@ -149,6 +152,10 @@ research:
 compliance:
   trademark_blocklist: config/trademark_blocklist.txt
   ai_disclosure: config/ai_disclosure.txt
+  # Health topics (docs/HEALTH_TERMS.md "Decided 2026-10-17"): medical topics are hard blocked,
+  # "?" borderline topics go to review, labelled "(health topic)". Read by Blocklist.load next
+  # to trademark_blocklist; the file path is also the default when this key is absent.
+  health_terms: config/health_terms.txt
   publisher_mode: draft_only     # never change; the user activates listings in Etsy. The pipeline
                                  # refuses its publish stage unless this is draft_only.
 
@@ -233,12 +240,21 @@ service:
   rejected_keep_days: 30           # rejected uploads and their reason files older than this are removed (0 = keep).
                                    # Only files ingest named <YYYY-MM-DD>-<name> are ever removed.
   dry_run_keep_days: 14            # output/dry-run/ practice items and run summaries older than this are removed (0 = keep)
+  performance_keep_days: 400       # data/performance/etsy/ and reviews/ daily files older than this are removed (0 = keep)
+  sales_files_keep_days: 90        # data/performance/sales/ daily files older than this are removed (0 = keep)
   # Event journal and memories between ticks (docs/SERVER.md section 9; defaults: core/events.py, service/tick.py)
   events_file: data/events.jsonl   # what the server did, one JSON line per event (the daily log is built from it)
   events_max_mb: 5                 # rotate to events-1.jsonl ... events-5.jsonl at this size
   events_keep: 5                   # rotated event files kept (copies beyond this are removed at the next rotation)
   state_file: data/.service_state.json   # last research stage, spending messages, review holds and problems already sent to Discord
-  search_list:                     # outbox/search-list.txt, written every Sunday (docs/SERVER.md section 4)
+  search_list:                     # outbox/search-list.txt, written every Saturday 09:07 New York time (docs/SERVER.md section 4)
+    # instructions:                # the "What to do" lines at the top of search-list.txt; empty = default
+    #                              # (service/searchlist.py INSTRUCTIONS). A list of lines, or one multi-line string, e.g.
+    #   - "Etsy Marketplace Insights (free; 15 keyword searches a week on a standard account):"
+    #   - "  1. In Etsy, open Shop Manager > Stats > Marketplace Insights and search for a line below."
+    #   - "  2. Type the keyword, Etsy's Searches and Search Results numbers and today's date into"
+    #   - "     Documents\\Botsy\\templates\\etsy-insights-template.csv (columns keyword, searches, competition, checked_on)."
+    #   - "  3. File > Save As > CSV UTF-8 into Downloads with a new name; the helper uploads it."
     max_per_niche: 6               # search lines per niche; empty = default
     recheck_weeks: 2               # a qualified theme not seen in history for this long goes back on the list
     seeds:                         # our own starter searches, listed every week (no brand names: they get flagged); one phrase or a list
@@ -256,16 +272,36 @@ service:
 # The Windows helper has no section here: it runs on the PC and reads %APPDATA%\Botsy\helper.json
 # (defaults: DEFAULTS in windows/botsy_helper.py; see windows/README.md).
 
+# --- Botsy's clock and the Sunday plan schedule (user, 2026-10-17; docs/SERVER.md section 6,
+# docs/OVERSEER.md "Scale-ups ... and the Sunday plan"; defaults: core/config.py SCHEDULE_DEFAULTS).
+# Every time below is "Day HH:MM" on the wall clock of schedule.timezone. Only `timezone` is
+# used today (Discord quiet hours, the daily log's times and date); the systemd timers name
+# America/New_York in their unit files. The plan_* keys are the weekly plan's schedule as
+# planned, so settings, timers and docs agree before it is built.
+# Money months (the spending cap) and KDP weeks stay UTC. ---
+schedule:
+  timezone: America/New_York       # "8 pm EST" means 8 pm New York time all year (EDT in summer)
+  plan_post: "Sun 20:00"           # the weekly plan is posted (botsy-plan.timer, not installed yet)
+  reminders: ["Mon 08:00", "Mon 19:00"]   # first 4 plans: reminders while a plan waits for your code
+  deadline: "Tue 20:00"            # an unapproved plan expires; Botsy runs on its normal rules that week
+  auto_start: "Mon 08:00"          # from plan 5: the plan starts by itself unless you press Hold
+  revision_min_hours: 2            # a revised plan starts no sooner than this after the revision
+  max_revisions: 3                 # Hermes may revise a plan this many times, then no plan that week
+  approvals_before_auto: 4         # plans approved by code before automatic start
+  auto_start_max_cost_share: 0.40  # a plan above this share of spend.monthly_cap_usd ($10 of $25) still needs a code
+  stale_skip_hours: 24             # a plan run that is later than this (server was off) is skipped
+  upload_cutoff: "Sun 19:00"       # shown in messages only: export by then so the plan can use the research
+
 # --- Discord messages and the daily log (docs/SERVER.md section 11; defaults: service/notify.py) ---
 notify:
   discord:
     enabled: true                  # also needs DISCORD_WEBHOOK_URL in .env (deploy/lightsail/README.md, step 11)
     events: [draft_created, held_for_review, export_rejected, budget_reached, spend_warning,
              token_expiring, stage_changed, error, search_list_written]   # kinds that post right away (one message per tick)
-    digest: true                   # post the daily log (python -m service digest, every day at 07:07)
+    digest: true                   # post the daily log (python -m service digest, every day at 07:07 New York time)
     timeout_s: 10
     max_retry_wait_s: 60           # longest wait for Discord's retry_after on HTTP 429
-  quiet_hours: ["22:00", "07:00"]  # server local time; other messages wait for the morning's daily log
+  quiet_hours: ["22:00", "07:00"]  # in schedule.timezone (New York); other messages wait for the morning's daily log
   urgent: [budget_reached, error]  # sent even during quiet hours
 
 # --- Spending tracker (docs/SERVER.md section 10; defaults: core/spend.py). Costs are estimates;
@@ -467,8 +503,16 @@ qa:
 publisher:
   # Etsy Open API v3, our own shop, DRAFTS ONLY (all keys and defaults: publisher/defaults.py)
   # listings_d is used only by `python -m publisher discard` on drafts this tool created;
-  # remove it to forbid deletes entirely.
-  scopes: [listings_r, listings_w, listings_d, shops_r]
+  # remove it to forbid deletes entirely. A list here replaces the default list, so
+  # transactions_r must be listed here too (user approved 2026-10-17: our own sales via
+  # getShopReceiptTransactionsByShop; publisher/sales.py keeps only listing_id, day, quantity,
+  # price). Re-run `python -m publisher auth` once to grant it.
+  scopes: [listings_r, listings_w, listings_d, shops_r, transactions_r]
+  # Own-shop performance files (docs/CONTRACTS.md section 7), gitignored. Dry runs write the same
+  # tree under pipeline.dry_run_output_dir/performance.
+  performance_dir: data/performance
+  sales_keep_days: 90          # local days kept, today included (rolling window)
+  sales_max_pages: 50          # getShopReceiptTransactionsByShop has no date filter: page cap
   currency: USD                # listing.json prices are USD; a shop in another currency is refused
   min_price_usd: 0.20          # Etsy's price range (USD 0.20 - 50,000)
   max_price_usd: 50000

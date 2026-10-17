@@ -82,27 +82,48 @@ TOKEN_WARN_DAYS = 10          # token_expiring from this many days before the Et
 
 # ---------------------------------------------------------------- steps
 
-def fetch_own_stats(settings: dict) -> int:
-    """`python -m publisher own-stats` for the first shop: our own active listings only."""
-    from publisher import own_stats
-    from publisher.client import EtsyClient
-    from publisher.defaults import load_cfg
+def fetch_own_stats(settings: dict, *, dry_run: bool = False) -> dict:
+    """`python -m publisher stats` for the first shop: the own-stats CSV, the daily per-listing
+    snapshot, our own sales (transactions_r) and reviews (docs/CONTRACTS.md section 7).
+    A dry run uses the fake Etsy client and writes under the dry-run folder only."""
+    from publisher.__main__ import run_stats
 
-    _, n = own_stats.write_own_stats(EtsyClient(settings=settings),
-                                     resolve(load_cfg(settings)["own_stats_file"]))
-    return n
+    return run_stats(settings, dry_run=dry_run)
+
+
+def own_stats_detail(rec: dict) -> str:
+    sales = "skipped (no transactions_r)" if rec.get("sales") is None else rec.get("sales_rows")
+    reviews = "skipped" if rec.get("reviews") is None else rec.get("reviews_rows")
+    return (f"{rec.get('csv_rows')} listings, {rec.get('drafts')} drafts, sales {sales}, "
+            f"reviews {reviews}" + (" (dry run, fake shop)" if rec.get("dry_run") else ""))
 
 
 def own_stats_step(settings: dict, rec: dict, *, live: bool) -> None:
-    if not live:
-        rec["own_stats"] = {"ran": False, "detail": "skipped in test mode (service.live is false)"}
-        return
+    """Daily check: our own shop's numbers. Live: real Etsy reads (own shop only). Test mode:
+    the same step against the fake shop, written under the dry-run folder. A failure is
+    noted and never stops the tick."""
     try:
-        n = fetch_own_stats(settings)
-        rec["own_stats"] = {"ran": True, "detail": f"{n} of our own listings read from Etsy"}
+        out = fetch_own_stats(settings, dry_run=not live)
+        rec["own_stats"] = {"ran": True, "dry_run": not live, "detail": own_stats_detail(out),
+                            "snapshot": out.get("snapshot"), "sales": out.get("sales"),
+                            "reviews": out.get("reviews")}
     except Exception as e:  # missing secrets, Etsy down: note it and keep going
-        rec["own_stats"] = {"ran": False, "detail": "failed (see Problems)"}
+        rec["own_stats"] = {"ran": False, "dry_run": not live, "detail": "failed (see Problems)"}
         rec["errors"].append(f"own-stats: {type(e).__name__}: {e}")
+
+
+def templates_step(paths: ServicePaths) -> None:
+    """Keep Botsy's blank templates (the Etsy insights template, the KDP manual template) in
+    the outbox, so the helper's hourly fetch brings them to the PC before the first search
+    list. Idempotent and cheap (a file is written only when missing or different); a
+    problem is logged and never stops the tick."""
+    try:
+        from service import searchlist
+
+        for path in searchlist.publish_templates(paths.outbox):
+            log.info("template published to the outbox: %s", path.name)
+    except Exception as e:  # noqa: BLE001
+        log.warning("templates not published to the outbox: %s", e)
 
 
 def token_days_left(settings: dict) -> int | None:
@@ -166,7 +187,8 @@ def export_info(path: Path, settings: dict) -> dict:
 
 def _add_ingest(rec: dict, result: inbox.IngestResult, settings: dict, journal: Journal | None) -> None:
     d = result.to_dict()
-    for key in ("accepted", "duplicates", "rejected"):
+    for key in ("accepted", "duplicates", "rejected", "routed"):
+        rec["ingest"].setdefault(key, [])
         rec["ingest"][key] += d[key]
     if journal is None:
         return
@@ -176,6 +198,10 @@ def _add_ingest(rec: dict, result: inbox.IngestResult, settings: dict, journal: 
         # A reason can quote what the file held (a CSV error names a cell): keep quotes and
         # links out of the journal, the daily log and Discord.
         journal.emit("export_rejected", name=scrub(name), reason=scrub(reason))
+    for name, stored, reason in result.routed:
+        # A book (KDP/BookBeam) file: kept in research_inputs/kdp/ for the KDP reader, so the
+        # user sees it arrived instead of it vanishing.
+        journal.emit("export_routed", name=scrub(name), file=Path(stored).name, reason=scrub(reason))
 
 
 def ingest_step(paths: ServicePaths, settings: dict, rec: dict, day: str, *,
@@ -871,6 +897,7 @@ def tick(settings: dict, *, inbox_dir: str | Path | None = None, force: bool = F
         log.exception("tick failed")
         rec["errors"].append(f"tick: {type(e).__name__}: {e}")
     cleanup_step(settings, rec)
+    templates_step(paths)
     _error_events(rec["errors"], journal, state, day)
     rec["finished"] = status.now_iso()
     rec["exit_code"] = _exit_code(rec)

@@ -246,22 +246,37 @@ def test_settle_waits_for_the_rest_of_a_batch(tmp_path, fakes):
     assert len(slept) >= 2
 
 
-def test_own_stats_only_in_live_mode(tmp_path, fakes, monkeypatch):
+def test_own_stats_runs_the_fake_shop_in_test_mode_and_etsy_when_live(tmp_path, fakes, monkeypatch):
     calls = []
-    monkeypatch.setattr(tick, "fetch_own_stats", lambda settings: calls.append(1) or 7)
+    out = {"csv_rows": 7, "drafts": 2, "sales": "s.json", "sales_rows": 4, "reviews": None,
+           "reviews_rows": None, "snapshot": "e.json"}
+    monkeypatch.setattr(tick, "fetch_own_stats",
+                        lambda settings, dry_run=False: calls.append(dry_run) or dict(out, dry_run=dry_run))
     settings, _ = setup(tmp_path)
     rec = tick.tick(settings, force=True, own_stats=True, date=DATE)
-    assert calls == [] and "test mode" in rec["own_stats"]["detail"]
+    assert calls == [True] and rec["own_stats"]["ran"] and rec["own_stats"]["dry_run"]
+    assert "dry run, fake shop" in rec["own_stats"]["detail"]
 
     live, _ = setup(tmp_path, live=True)
     rec = tick.tick(live, force=True, own_stats=True, date=DATE)
-    assert calls == [1] and rec["own_stats"] == {"ran": True, "detail": "7 of our own listings read from Etsy"}
+    assert calls == [True, False] and rec["own_stats"]["dry_run"] is False
+    assert rec["own_stats"]["detail"] == "7 listings, 2 drafts, sales 4, reviews skipped"
+
+
+def test_own_stats_dry_run_writes_the_performance_files_under_the_dry_run_folder(tmp_path, fakes):
+    settings, _ = setup(tmp_path)
+    rec = tick.tick(settings, force=True, own_stats=True, date=DATE)
+    assert rec["own_stats"]["ran"], rec["errors"]
+    snap = Path(rec["own_stats"]["snapshot"])
+    assert snap.is_file() and snap.is_relative_to(tmp_path / "dry")
+    assert Path(rec["own_stats"]["sales"]).is_relative_to(tmp_path / "dry")
+    assert "sales skipped" not in rec["own_stats"]["detail"]
 
 
 def test_own_stats_failure_does_not_stop_the_tick(tmp_path, fakes, monkeypatch):
     _, p = fakes
 
-    def fail(settings):
+    def fail(settings, dry_run=False):
         raise RuntimeError("ETSY_API_KEYSTRING is not set")
 
     monkeypatch.setattr(tick, "fetch_own_stats", fail)
@@ -357,3 +372,24 @@ def test_accepted_files_still_count_when_the_second_ingest_fails(tmp_path, fakes
     rec = tick.tick(settings, date=DATE)
     assert len(rec["ingest"]["accepted"]) == 1 and rec["research"]["ran"] and p.calls
     assert rec["errors"] == ["ingest: OSError: disk full"]
+
+
+def test_a_book_file_is_kept_for_the_kdp_reader_and_shown_not_lost(tmp_path, fakes):
+    r, p = fakes
+    settings, paths = setup(tmp_path)
+    rows = "\n".join(f"Planner {i},9.99,{10 + i},{30 + i},{1000 + i}" for i in range(12))
+    upload(paths.incoming, "bookbeam books.csv", f"Title,Price,Reviews,Est. Sales,BSR\n{rows}\n".encode())
+    rec = tick.tick(settings, date=DATE)
+    assert [x["name"] for x in rec["ingest"]["routed"]] == ["bookbeam books.csv"]
+    assert rec["ingest"]["accepted"] == [] and r.calls == []        # never Etsy research
+    _, text = read_status(paths)
+    assert "Book (KDP) files kept for the KDP reader: 1" in text and "Kept: bookbeam books.csv" in text
+
+
+def test_every_tick_keeps_the_blank_templates_in_the_outbox(tmp_path, fakes):
+    from service import searchlist
+
+    settings, paths = setup(tmp_path)
+    tick.tick(settings, date=DATE)
+    for name in searchlist.TEMPLATE_NAMES:
+        assert (paths.outbox / name).read_bytes() == (searchlist.TEMPLATES_DIR / name).read_bytes()

@@ -66,7 +66,7 @@ def _common(sub: bool) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--settings", help="settings YAML (default: config/settings.yaml)", **kw)
     p.add_argument("--inbox", help="inbox folder (default: settings service.inbox_dir, /srv/botsy-inbox)", **kw)
-    p.add_argument("--date", help="date for file names, YYYY-MM-DD (default: today)", **kw)
+    p.add_argument("--date", help="date for file names, YYYY-MM-DD (default: today, New York time for the daily log)", **kw)
     p.add_argument("-v", "--verbose", action="store_true", help="more log output", **kw)
     return p
 
@@ -117,6 +117,8 @@ def cmd_ingest(a, settings: dict, paths: ServicePaths, day: str) -> int:
         print(f"duplicate (already received): {name}")
     for name, reason in result.rejected:
         print(f"not used: {name}: {reason}")
+    for name, _stored, reason in result.routed:
+        print(f"kept for later: {name}: {reason}")
     if result.empty():
         print(f"no finished uploads in {paths.incoming}")
     return 0
@@ -163,7 +165,8 @@ def cmd_searchlist(a, settings: dict, paths: ServicePaths, day: str) -> int:
     notify = importlib.import_module("service.notify")
     if notify.wants("search_list_written", settings) and notify.problem(settings) is None:
         sent = notify.send("This week's search list is ready (attached). The Botsy helper also puts it in "
-                           "Documents\\Botsy on your PC. Search each line in EverBee and click Export CSV.",
+                           "Documents\\Botsy on your PC. Follow the 'What to do' lines at the top: Etsy "
+                           "Marketplace Insights numbers go into the Botsy template, eRank exports go in Downloads.",
                            file=latest, settings=settings, kinds=["search_list_written"])
         print("Discord: search list sent" if sent else "Discord: not sent now (see the log above)")
     return 0
@@ -213,6 +216,8 @@ def cmd_digest(a, settings: dict, paths: ServicePaths, day: str) -> int:
     until = _dt.datetime.now(_dt.timezone.utc)
     since = digest_since(paths.outbox, until, getattr(a, "hours", None), digest.LATEST_NAME)
     text = digest.build(since, until, settings)
+    if not getattr(a, "date", None):
+        day = digest.log_date(settings)   # today on schedule.timezone's clock (New York); honours PIPELINE_DATE
     latest = digest.write(paths.outbox, text, day)
     print(f"wrote {latest}")
     if not (notify.config(settings).get("discord") or {}).get("digest", True):

@@ -79,7 +79,7 @@ def new_record(*, date: str, forced: bool, live: bool, started: str | None = Non
     return {
         "started": started or now_iso(), "finished": None, "date": date,
         "forced": bool(forced), "live": bool(live), "own_stats": None,
-        "ingest": {"accepted": [], "duplicates": [], "rejected": []},
+        "ingest": {"accepted": [], "duplicates": [], "rejected": [], "routed": []},
         "research": {"ran": False, "stage": None, "brief_files": [], "briefs": 0, "notes": []},
         "run": {"ran": False, "dry_run": not live, "items": 0, "generated": 0, "drafts": 0,
                 "awaiting_review": 0, "cooldown": 0, "budget_wait": 0, "failed": [], "summaries": [],
@@ -92,7 +92,7 @@ def has_activity(rec: dict) -> bool:
     """A tick that found nothing and did nothing only moves `last_checked`."""
     ing = rec.get("ingest") or {}
     return bool(rec.get("forced") or rec.get("errors") or rec.get("own_stats")
-                or ing.get("accepted") or ing.get("duplicates") or ing.get("rejected")
+                or ing.get("accepted") or ing.get("duplicates") or ing.get("rejected") or ing.get("routed")
                 or (rec.get("research") or {}).get("ran") or (rec.get("run") or {}).get("ran"))
 
 
@@ -215,6 +215,10 @@ def _tick_lines(rec: dict) -> list[str]:
     if rejected:
         where = ing.get("rejected_dir") or "data/inbox_rejected"
         lines.append(f"  (Copies and reasons are in {where} on the server.)")
+    routed = ing.get("routed") or []
+    if routed:
+        lines.append(f"Book (KDP) files kept for the KDP reader: {len(routed)}")
+        lines += _cap([f"Kept: {r.get('name')}" for r in routed], "  ")
 
     if res.get("ran"):
         files = res.get("brief_files") or []
@@ -277,8 +281,9 @@ def render(doc: dict) -> str:
     lines.append(f"Last checked for uploads: {_show_time(doc.get('last_checked'))}")
     ticks = [t for t in doc.get("ticks") or [] if isinstance(t, dict)]
     if not ticks:
-        lines += ["", ("Nothing has happened yet. Export a CSV in EverBee or eRank and the "
-                       "Botsy helper on your PC uploads it.")]
+        lines += ["", ("Nothing has happened yet. Make a research export (an eRank/EverBee CSV, or the "
+                       "filled-in Etsy insights template saved as CSV) and the Botsy helper on your PC "
+                       "uploads it.")]
     else:
         last = ticks[-1]
         why = "daily check" if last.get("forced") else "new upload"

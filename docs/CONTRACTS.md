@@ -252,3 +252,56 @@ Written by `pipeline.run(...)` (`python -m pipeline run`) after every run; earli
 - The listing step lists what `listing.needs_listing()` selects; the publish step asks `publisher.review_wait()` first and records waiting items under `awaiting_review`.
 - Live runs skip a niche's newest brief file when it is older than `pipeline.max_brief_age_days` (6) days; files named with `--brief` are exempt.
 - `pipeline.exit_code(summary)`: 2 with any `setup_errors` (including a spending log that cannot be written, and unreadable settings in the CLI), 1 with any `errors` or any `ok: false` record except `budget: true` ones, else 0. A run stopped only by the spending cap exits 0.
+
+## 7. Own-shop performance: `data/performance/` (gitignored)
+
+Written by `python -m publisher stats` (`publisher.__main__.run_stats(settings, dry_run=, performance_dir=, csv_path=)`), which also refreshes the id-free `own_shop_stats.csv` from the same pass. Our own shop only (ETSY_SHOP_ID, pinned by the safety layer); never other sellers. Every `day` and file name is Botsy's local day (`schedule.timezone`, America/New_York); rerunning the same day replaces that day's files, so the command is idempotent. Dry runs write the same tree under `<pipeline.dry_run_output_dir>/performance/` and never under `data/`. Settings: `publisher.performance_dir` (`data/performance`), `publisher.sales_keep_days` (90), `publisher.sales_max_pages` (50). The service's daily check (`service tick --force --own-stats`) calls `run_stats`: live with the real client, in test mode with `dry_run=True`. `service/cleanup.py` removes `etsy/<day>.json` and `reviews/<day>.json` older than `service.performance_keep_days` (400) days and `sales/<day>.json` older than `service.sales_files_keep_days` (90), in both trees; `etsy_quota.json` is never removed.
+
+### performance/v1: `etsy/<YYYY-MM-DD>.json` (daily per-listing snapshot)
+
+Written by `publisher.own_stats.write_snapshot(client, performance_dir, day=, settings=)` / `write_all(...)` from getListingsByShop (active, then `state=draft`; scope `listings_r`).
+
+```json
+{"schema": "performance/v1", "day": "2026-10-17", "taken": "2026-10-17T10:17:02+00:00", "etsy_shop_id": 12345678,
+ "active": 2, "drafts": 1,
+ "listings": [{"listing_id": 900000001, "state": "active", "title": "Farm Animal Coloring Pages ...",
+               "tags": ["farm coloring", "..."], "views": 120, "num_favorers": 7, "created": "2026-09-17",
+               "price": 4.0, "currency": "USD", "quantity": 999}]}
+```
+- `views` and `num_favorers` are Etsy's running totals ("views in the last 30 days" = today's count minus the count 30 days ago). Etsy tabulates views once a day and only for active listings, so a 0 after a non-zero number means "not counted yet", not a drop; drafts have no views. `created` is the local day of `original_creation_timestamp`; `null` fields were missing from Etsy's answer.
+- `drafts` (and the `state: "draft"` rows) feed the waiting-drafts check; `active` counts the live listings. Each listing appears once.
+- Winners, Hermes and the SNN read these files; the research stage keeps reading only the id-free CSV.
+
+### sales/v1: `sales/<YYYY-MM-DD>.json` (our own sales, rolling 90 days)
+
+Written by `publisher.sales.write_sales(client, performance_dir, keep_days=90, max_pages=50, settings=)` from getShopReceiptTransactionsByShop (scope `transactions_r`, user-approved 2026-10-17; limit 100, offset paging, at most 50 pages; the endpoint has no date filter, so paging stops at the first page that lies entirely before the window and runs newest first; a page in any other order never stops paging early, so only the cap does). The window is `keep_days` local days including today (90: today and the 89 days before it).
+
+```json
+{"schema": "sales/v1", "day": "2026-10-17", "etsy_shop_id": 12345678, "window_days": 90, "since": "2026-07-20",
+ "complete": true, "pages": 1, "currency": "USD",
+ "sales": [{"listing_id": 900000001, "day": "2026-10-14", "quantity": 1, "price": 4.0}]}
+```
+- Per sale exactly `listing_id`, `day` (local day of `created_timestamp`), `quantity` and `price` (unit price; `price × quantity` is our revenue). Never stored: `buyer_user_id`, `receipt_id`, `transaction_id`, names, addresses, coupon fields, notes, SKUs or file names. The receipt endpoints are never called (the safety layer refuses every `/receipts` path), so refunds are not visible.
+- `complete: false` means the page cap stopped paging before the window was exhausted (the oldest days may be missing). Rows are sorted by day, then listing id.
+- A token without the scope (issued before `transactions_r` was added to `publisher.scopes`) or a 403 skips the file with one log line and no error (`write_sales` returns `(None, None)`); `python -m publisher auth` once more grants the scope.
+
+### reviews/v1: `reviews/<YYYY-MM-DD>.json` (star ratings of our own listings)
+
+Written by `publisher.reviews.write_reviews(client, performance_dir, settings=)` from getReviewsByShop (app key only; limit 100, at most 50 pages, every review kept).
+
+```json
+{"schema": "reviews/v1", "day": "2026-10-17", "etsy_shop_id": 12345678, "count": 1,
+ "reviews": [{"listing_id": 900000001, "rating": 5, "day": "2026-10-16"}]}
+```
+- Per review exactly `listing_id`, `rating` and `day` (local day of `created_timestamp`). Never stored: review text, language, photo links or anything about the buyer. A 403 skips the file with one log line.
+
+### quota/v1: `etsy_quota.json`
+
+Kept by `publisher.client.EtsyClient` (`quota_path`; the default is `<publisher.performance_dir>/etsy_quota.json` for a client on the real network, while a client with an injected session (tests, fakes) keeps it in memory only as `client.quota`; a dry run's `stats` names `<dry-run root>/performance/etsy_quota.json`), updated after every Etsy answer and never allowed to fail a request. Etsy's quota belongs to the app key, so all clients (every shop, the service and manual runs) share the one file and re-read it before each update.
+
+```json
+{"schema": "quota/v1", "etsy_shop_id": 12345678, "day": "2026-10-17", "requests_today": 123,
+ "rate_limited_today": 0, "rate_limited_total": 2, "limit_per_day": 10000, "remaining_today": 9877,
+ "last_rate_limited": "2026-10-03T14:02:11+00:00", "updated": "2026-10-17T10:17:03+00:00"}
+```
+- `limit_per_day` and `remaining_today` are Etsy's `x-limit-per-day` and `x-remaining-today` headers from the latest answer that carried them (null until one did); `requests_today` and `rate_limited_today` count all clients' answers and 429s and reset when the UTC `day` changes; `rate_limited_total` never resets. A later capacity check reads this before planning a batch.
