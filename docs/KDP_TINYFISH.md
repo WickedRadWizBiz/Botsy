@@ -1,0 +1,118 @@
+# KDP market reader through TinyFish Fetch (docs/KDP_TINYFISH.md)
+
+> **Status: design, 2026-10-17, skeptic-checked, not built.** It follows the dated exception in CLAUDE.md ("I want to use TinyFish and see how that goes"). Everything that touches Amazon is the user's accepted risk; this document only makes the trial small, slow and easy to switch off. Outside facts were read on 2026-10-17 unless a line says otherwise. "Estimate" and "unverified" mean exactly that. No Amazon page was opened while writing this; Amazon's page layout is confirmed only by the first test (section 8).
+
+## 0. In one paragraph
+
+Each week Botsy takes 15 Amazon book searches (its KDP search list: starter phrases such as "undated planner" or "fishing log book", plus near-miss themes from history once the KDP reader exists), asks the TinyFish **Fetch** service for the first two Books search pages of each, then for the product pages of the top 10 non-sponsored paperbacks, one page at a time with a pause of about a minute and a half between pages: 180 pages in all, over about 5 hours (estimate). It turns the pages into the same rows the hand-typed `kdp-manual-template.csv` has, so the planned KDP reader reads both sources one way. The first blocked page, robot check or unexpected page layout ends the run for the day; nothing is retried in a loop and nothing is escalated to the paid TinyFish Agent or Browser products. Fetch is free, so the trial costs $0 unless someone runs the Agent by hand, and even then a $3-a-month sub-cap holds it. If Amazon blocks it, Botsy falls back to BookBeam exports and the manual template, and nothing else changes.
+
+## 1. What TinyFish is and what its rules say
+
+**Products and prices** (https://www.tinyfish.ai/pricing and the wallet call, 2026-10-17): Search free (30 requests a minute, 500 an hour); **Fetch free (150 URLs a minute, 1,000 URLs a day, counted per successfully fetched URL, reset 00:00 UTC)**; Agent $0.016 per step, 2 concurrent runs; Browser $0.002 per minute, 5 sessions; Monitor $0.005 per run. Prepaid wallet, $10 minimum top-up; **the wallet held $10.00 on 2026-10-17** (auto-reload off). The pricing page says, under "Residential proxies": "Requests route through real residential IPs, so sites serve the page they would serve a person", and under "Anti-bot handling": "Bot checks are handled at the infrastructure layer, before the run reaches them." That matters for section 7.
+
+**Fetch API** (https://docs.tinyfish.ai/fetch-api/reference): `POST https://api.fetch.tinyfish.ai`, header `X-API-Key`. Request: `urls` (1 to 10), `format` (`markdown`, `html`, `json`), `ttl` (omit = any cached copy is fine; `0` = live fetch; N = a copy younger than N seconds), `per_url_timeout_ms` (1 to 110,000), `include_selectors` / `exclude_selectors` (CSS, up to 20 each, applied after the fetch), optional `purpose`. There is a "fast path" (plain download) and a browser path for pages that need rendering (the reference's own error texts say so; TinyFish's blog says the browser is Chromium: not re-read today). Response: `results[]` with `url, final_url, title, description, language, author, published_date, text, latency_ms, format` and `errors[]` with `url, error, status`. **Per-URL error codes** (inside an HTTP 200): `target_http_error` (with the upstream status, for example 403 or 503), `page_not_found` (404/410), `target_unreachable`, `timeout`, `proxy_error`, **`bot_blocked`** ("Site served a bot-protection challenge, e.g. Cloudflare, Incapsula"), **`empty_content`** ("Browser returned HTML, but no extractable text"), **`login_required`**, `content_too_large`, `invalid_url`, `invalid_redirect_url`, `conditional_unsupported`, `selector_not_matched`, `selector_unsupported`. HTTP-level: 400, 401, 402 `INSUFFICIENT_CREDITS` (free allowance used and wallet empty), 403 (beta features), 422 (bad CSS), 429 (rate limit; `Retry-After` and `X-RateLimit-*` headers per https://docs.tinyfish.ai/error-codes.md), 500, 503 ("retry with backoff"). Each URL has a 110-second backend timeout; set the client timeout to at least 150 seconds. Usage history: `GET https://api.fetch.tinyfish.ai/usage`. Note: an Amazon robot-check page is an ordinary HTTP 200 page with text, so it will usually arrive as a *result*, not an error; section 4 handles that.
+
+**Agent API** (https://docs.tinyfish.ai/agent-api/reference): `url` + natural-language `goal`, optional `output_schema`, `browser_profile` `lite` (default) or `stealth`, `proxy_config`, `agent_config` with `max_steps` (1 to 500, **beta-only: a non-beta request that includes it gets 403**), `mode: strict` (beta) and **`max_duration_seconds` (not beta-gated, no limit by default)**. Default budget 150 steps, so **one run can cost up to $2.40** (typical runs 5 to 30 steps: estimate). A blocked site ends the run with `SITE_BLOCKED` (HTTP 200 in the body, status `FAILED`) and the docs' advice is "Switch browser_profile to stealth, attach a proxy"; TinyFish's anti-bot guide says CAPTCHAs "cannot be solved automatically". Botsy's scheduled job never calls the Agent (section 4).
+
+**Terms of Service** (https://www.tinyfish.ai/terms, "Effective August 17, 2026"; `/terms-of-service`, `/legal` and `/privacy` are 404): licence to use the Services "solely for your internal business purposes"; you "must comply with all applicable laws"; Restrictions bar storing or compiling TinyFish's own "Site Content" and "any automated means to access the Services other than through the programmatic interfaces Tiny Fish provides"; about other websites it only says you "should review the applicable terms and policies" of third-party sites (no robots.txt clause). You indemnify TinyFish for your use; TinyFish's liability is capped at the greater of $100 or 12 months of fees; disputes go to arbitration. **Customer Data** ("the data, content, and materials you provide to, submit to, or process through the Services") stays yours, but you grant TinyFish a licence "to use, host, copy, transmit, and process Customer Data" to provide the service and to "**train, fine-tune, evaluate, and improve Tiny Fish's artificial intelligence and machine learning models**", "subject to commercially reasonable safeguards" against disclosure to other customers; **there is no opt-out**. Outputs are assigned to you; the terms do not say how long TinyFish keeps fetched content or whether you may store Outputs (my reading: Botsy's 90-day raw store is Outputs, not Site Content, so it is not barred; unverified). The **privacy policy** (https://www.tinyfish.ai/privacy-policy, effective December 14, 2025) covers account, device, usage and payment data only. **Retention of fetched page content: not stated anywhere I could find (unverified).** Nothing Botsy sends is secret (public URLs and public pages), but the user should know TinyFish may train on it.
+
+**Python client.** PyPI `tinyfish` 0.9.0 (uploaded 2026-09-29, Python 3.11+, wheel 42.8 kB, depends on httpx, pydantic, tenacity; summary "Official Python SDK for the TinyFish API"); `client.fetch.get_contents(urls=[...], format=..., per_url_timeout_ms=...)` returns `results` and `errors`; it reads `TINYFISH_API_KEY`. **Its licence fields on PyPI are empty and it has no licence classifier (unverified licence).** Recommendation: v1 is a plain HTTPS POST with the `requests` library Botsy already has (about 40 lines); switch to the SDK only once it states a licence.
+
+## 2. What Botsy reads on Amazon, and how much
+
+**Pages per weekly search term (public pages only):**
+- Search pages: `https://www.amazon.com/s?k=<term>&i=stripbooks` and the same with `&page=2` (`i=stripbooks` is the usual Books-department parameter: unverified until the first test).
+- Product pages: `https://www.amazon.com/dp/<ASIN>` for the **top 10** non-sponsored paperbacks of that term (ASINs come from the result links). Ten, not eight, because the manual template (docs/RESEARCH_COSTS.md section 5) records product fields for the top 10 per page and already warns that size and page-count patterns, which need those fields, "may miss the floor".
+- Never: login or account pages, `/product-reviews/`, "customers also bought" or "frequently bought together" blocks, author pages, Goodreads or any other Amazon-owned site.
+
+**What is visible where** (what Amazon book pages usually show; not re-checked for this document, confirmed by the first test):
+- Search result card: title (and subtitle), author ("by ..."), format (Paperback / Hardcover / Kindle), price, star rating and ratings count, a "Best Seller" badge, a "Sponsored" label, sometimes the publication date. **Not visible:** Best Sellers Rank, print length, dimensions, publisher.
+- Product page: "Best Sellers Rank: #12,345 in Books (...)", "Print length", "Publication date", "Dimensions", "Publisher" ("Independently published" means KDP), ISBN or none.
+
+**Weekly page budget (settings `kdp.fetch`):** 15 terms x 2 search pages = 30, plus 15 x 10 product pages = 150: **180 pages a week**, hard caps `weekly_page_cap: 200` and `daily_page_cap: 200`. That is 18% of Fetch's free daily allowance and far below 150 URLs a minute. Fetch costs $0, so Botsy's $25 cap is not touched. A single term's 10 product rows never reach the 10-book floor on their own; size, page-count and price patterns pool across all terms of one niche, which is how the manual template already works.
+
+**Pacing:** one URL per request (never a batch of 10), `pace_s: 90` plus a random 0 to 30 seconds, so 180 pages take about 5 to 5.5 hours (estimate). Pass `ttl: 86400`: if TinyFish already has a copy from the last 24 hours it is reused and Amazon is not asked again; a day-old page is fine for weekly patterns. Omit `purpose`. Use `format: "html"` because markdown drops the attributes the parser keys on.
+
+**Excluded by selector before extraction** (`exclude_selectors`, confirmed in the first test): the reviews block, sponsored cards and recommendation carousels, so review text, reviewer names and "also bought" signals never reach Botsy's disk. (The selectors run on TinyFish's side after the fetch; the full page still passes through TinyFish.) Sponsored results are also dropped by the parser.
+
+## 3. Parsing: one row format for both sources
+
+The fetcher writes **exactly the hand-typed template**: first line `# botsy-template: kdp_manual v1`, then
+`search_term,page_type,position,title,author,price,ratings_count,bsr,print_length,publication_date,dimensions`,
+plus a second comment line `# source: tinyfish_fetch 2026-10-24` so the reader can tell the two sources apart (`research/columns.py` finds the marker with a regex search over the preamble, so an extra comment line should pass; confirmed in the first test, else the source goes into the file name only). The file is saved into `data/research_inputs/kdp/` **named the way ingest names files and listed in `.ingested.json`**, which is where `service/inbox.py` routes book files and what `service/cleanup.py` already deletes after `research.kdp_keep_days` (90). `research/columns.py` already maps the marker to `botsy_kdp_manual` (`TEMPLATE_TOOLS`), so the planned KDP reader needs no second code path.
+
+Rules:
+- `page_type` is `search` (position = place on the page; sponsored cards skipped and not counted) or `product`.
+- Paperbacks only; Kindle and hardcover rows are dropped.
+- `dimensions` keeps Amazon's text ("6 x 0.25 x 9 inches"); the reader turns it into 6 x 9.
+- Two optional extra columns the reader may use but never requires: `asin_hash` (sha256 of the ASIN, for de-duplication across terms) and `best_seller_badge` (0/1). The plain ASIN lives in memory only, to build product URLs.
+- **Privacy:** titles and author names are needed for patterns, the 3-author count and the title-closeness check, so they exist in that one private folder (gitignored, deleted after 90 days) and in memory. The reader hashes authors in memory for the 3-author count. Titles, ASINs, author names and links never go into briefs, history, logs, Discord, status files or any AI prompt (the same rule as for BookBeam files).
+- A parse failure is a stop: a page with text but zero result cards (or a product page with none of the five detail fields) counts as "layout changed", ends the run for the day and is reported, with the raw page kept for inspection. It is not a block, but it is not retried either.
+- **Raw pages:** `data/kdp_raw/<date>/<term-slug>/<n>.html` (gitignored), used only by the title-closeness check at kit time, deleted by `service.cleanup` after `kdp.fetch.raw_keep_days: 90` (a new cleanup rule; the rows file is covered by the existing one).
+
+Parser targets (all unverified until the first pages are in hand; the parser logs which fields it found): result cards `div[data-component-type="s-search-result"][data-asin]`, title in `h2`, "Sponsored" label text, price `.a-price .a-offscreen`, ratings count in the "N ratings" link, format from the "Paperback" link; product details in `#detailBullets_feature_div` or `#productDetails_detailBullets_sections1` rows "Best Sellers Rank", "Print length", "Publication date", "Dimensions", "Publisher". Tests use synthetic HTML fixtures written by us (no real Amazon text in the repo).
+
+## 4. The stop rule (and what is never done)
+
+The run ends **for the day**, writes what it has, and emits `kdp_fetch_blocked` when any of these happens once:
+- an `errors[]` entry with `bot_blocked`, `login_required`, `empty_content`, or `target_http_error` with status 403, 429, 503 or any 5xx;
+- a result whose text contains Amazon's robot-check wording (for example "Enter the characters you see below", "make sure you're not a robot", "api-services-support@amazon.com") or whose title is "Robot Check";
+- a "layout changed" parse (section 3);
+- TinyFish answers 402, 429 or 503 at the HTTP level (allowance, rate limit or service trouble: the docs say retry with backoff, Botsy chooses to stop because any of these means more traffic than planned);
+- the daily or weekly page cap is reached.
+
+Allowed once: a `timeout`, `target_unreachable` or `proxy_error` on a page is retried **one time after `retry_wait_s: 600`**; a second failure of the same page skips that page; a third transient failure in one run ends the run.
+
+Never: retry a blocked page; switch to `browser_profile: stealth`; add a proxy setting; call the Agent, Browser or Monitor products from the scheduled job; log in; fetch review pages. If two consecutive weekly runs are blocked, the job sets `kdp.fetch.enabled: false` in `config/settings.local.yaml` (with a dated note), posts once to Discord, and waits for the user. The Agent exists only as a hand-run test (`botsy service kdp-fetch --agent-test <url>`), capped by `max_duration_seconds: 600`, a wallet check (refuse below $2) and the $3 sub-cap (section 5); using it is a separate user decision each time.
+
+## 5. Where it runs, keys, money, and the daily log
+
+- **Timer** `deploy/lightsail/systemd/botsy-kdp-fetch.timer`: `OnCalendar=Sat *-*-* 11:07:00 America/New_York` (checked with `systemd-analyze calendar`: next elapse Sat 2026-10-17 15:07 UTC), `Persistent=false` (a missed Saturday is skipped, never caught up at boot). It does not depend on the search-list timer: today that timer is `Sun *-*-* 18:07:00` server time (UTC); the Saturday 9:07 am New York schedule in docs/OVERSEER.md B6 is a proposal, not built. The fetcher builds its own term list from `kdp.search_list.seeds` plus near-miss KDP themes once the KDP reader produces them.
+- **Service** `botsy-kdp-fetch.service`: the same hardening block as `botsy-weekly.service`, `ExecStart=/opt/botsy/.venv/bin/python -m service kdp-fetch`, `TimeoutStartSec=7h`, `Nice=10`, **no `Restart=`** (a failed run is never retried by systemd), `ReadWritePaths=/opt/botsy`. **It does not hold the service lock while fetching**: a 5-hour hold would make every tick wait 30 minutes and exit 3 (service/lock.py). It uses its own lock (`data/.kdp_fetch.lock`, so two fetch runs never overlap) and takes the service lock only for the seconds it writes the rows file and the ledger entry.
+- **CLI:** a `kdp-fetch` subcommand in `service/__main__.py` (which already has subparsers; `research/__main__.py` has none), code in `research/kdp_fetch.py` and `research/kdp_parse.py`.
+- **Key:** `TINYFISH_API_KEY` in `/opt/botsy/.env` (added to `.env.example` as `[local]`, with the note that the key is shown once at agent.tinyfish.ai/api-keys). Never in settings or git.
+- **Settings:** a `kdp.fetch` block in `config/settings.yaml` with `enabled: false` by default; the server turns it on in `config/settings.local.yaml` after the test (section 8). `kdp.search_list.seeds` holds the first search terms per book type, checked against the trademark blocklist and the health terms like every other search phrase.
+- **Spending:** `core/spend.py` gets a third kind `"web"` (today `KINDS = ("text", "image")`), prices `tinyfish: {agent: {per_step: 0.016}, browser: {per_minute: 0.002}, monitor: {per_run: 0.005}, fetch: {per_url: 0.0}}`, a count-based `record()` path (steps, minutes, runs), and a per-provider **sub-cap `spend.sub_caps: {tinyfish: 3.00}`** checked by `check_budget("web", provider="tinyfish")` under the $25 monthly cap (today `check_budget(kind)` has no provider argument). Fetch pages are counted in the run's state file, not as 180 zero-dollar ledger lines; a hand-run Agent test records `num_of_steps x 0.016` when it finishes and checks the wallet (`GET /v1/wallet`) before it starts. So the "see how that goes" trial cannot spend more than $3 a month even if someone experiments.
+- **Daily log and Discord:** the run emits `kdp_fetch_done` with `pages_planned, pages_fetched, pages_cached, pages_blocked, rows_kept, terms_done, terms_short, stopped_at`, and `kdp_fetch_blocked` with the error code and time (no URL, no title). The daily log prints one line: "KDP reader (Sat): 180 planned, 164 fetched (31 from cache), 1 blocked at 15:42, stopped; 540 paperback rows kept for 13 of 15 terms." `kdp_fetch_blocked` joins `notify.discord.events`.
+
+## 6. Compliance checklist against the CLAUDE.md exception
+
+| Exception term | How the design meets it |
+|---|---|
+| PUBLIC search, category and product pages only | Only `/s?k=` and `/dp/` URLs; no login, account, review or author pages; `login_required` is a stop. |
+| Aggregated KDP market research | Output is the kdp_manual row format feeding the 10-book / 3-author aggregate; no single-book use. |
+| No reviews text or reviewer names | Review blocks excluded by selector before extraction; `/product-reviews/` never requested. |
+| No personal data | Author names are public professional names, kept only in the private rows folder and hashed in memory for counts; no buyer or reviewer data. |
+| Small fixed weekly page budget in settings | `kdp.fetch.weekly_page_cap: 200` (plan 180), `daily_page_cap: 200`, 15 terms x (2 + 10) pages. |
+| Stop (do not retry or escalate) on a blocked page or CAPTCHA | Section 4: first block ends the day; no stealth, no proxy change, no Agent/Browser from the job; auto-off after two blocked weeks. |
+| Raw pages at most 90 days outside git | `data/kdp_raw/` gitignored, `raw_keep_days: 90`; rows file under the existing `research.kdp_keep_days: 90`. |
+| 10-book / 3-author floor on everything derived | Unchanged: the KDP reader applies it to both sources. |
+| Apify not on Amazon | Not used anywhere in this design. |
+| robots.txt | Earlier record (2026-10-17, not re-read for this review): `User-agent: *` does not disallow `/s` or `/dp`; the named AI-crawler bans do not name TinyFish. Amazon's Conditions of Use still exclude data-gathering tools, which is the risk the user accepted. |
+| "Never bypass blocks" (general rule) | Botsy's side: default Fetch path, no stealth, no proxies, stop on the first reported block. TinyFish's own infrastructure routes through residential IPs and handles bot checks: decision 4. |
+
+## 7. What to expect, honestly
+
+- **Amazon may block.** Then the day's run stops, the log says so, and Botsy keeps working from BookBeam exports and the manual template. Nothing else in Botsy depends on this reader.
+- **TinyFish itself routes requests through residential IPs and handles "bot checks at the infrastructure layer"** (its pricing page), which Botsy cannot switch off, while CLAUDE.md says Botsy never bypasses blocks. Botsy's side is clean (default path, no stealth, no proxies, stop at the first reported block), but you should decide with open eyes whether a service built this way fits your rule (decision 4). If not, the same design works with a plain `requests` fetch from the server's own IP, which will likely be blocked sooner.
+- **TinyFish may train its models on what Botsy sends** (its terms, no opt-out). The content is public Amazon pages and search URLs; nothing of ours. Still a fact to accept (decision 4).
+- **The data is weaker than BookBeam's:** no sales estimates, only BSR, price, ratings count and page facts; BSR is a snapshot. Use it to compare niches, not to forecast sales.
+- **Amazon's page layout changes without notice.** The parser logs which fields it found and stops on a layout change; expect a small fix a few times a year (estimate).
+- **A cached TinyFish copy may be up to a day old**, fine for weekly patterns.
+- **Cost:** $0 for Fetch. An accidental Agent run costs up to $2.40 (150 steps); the $3 sub-cap and the 600-second duration cap hold it there.
+
+## 8. First-week test plan (on the server, as the `botsy` user)
+
+1. Put `TINYFISH_API_KEY=...` into `/opt/botsy/.env` (`sudo -u botsy nano /opt/botsy/.env`). Leave `kdp.fetch.enabled` off.
+2. Run `botsy service kdp-fetch --test "fishing log book" --pages 1 --products 0`. It fetches one live search page (`ttl: 0`), saves the raw page under `data/kdp_raw/test/`, and prints: the TinyFish result or error code, how many result cards it found, how many were sponsored, and a table of parsed rows with titles cut to 30 characters (terminal only; nothing goes to the rows folder, the log or Discord). If the page is a robot check it says so and stops.
+3. If rows look right, run `--pages 2 --products 3`: three product pages follow, 90 seconds apart; check BSR, print length, dimensions and date for each.
+4. Compare the rows with what you see in your own browser for the same search (your own clicks). Any wrong field is a parser fix before step 5.
+5. Turn it on: in `config/settings.local.yaml` set `kdp: {fetch: {enabled: true}}` (budget stays 180). The next Saturday 11:07 am New York time run is the first real one; the daily log line on Sunday tells you pages fetched, blocked and rows kept.
+6. After four weekly runs, decide: keep (patterns reach 10 books / 3 authors for most niches, blocks rare), shrink (blocks every week: halve the budget or stop), or stop (two auto-disables).
+
+## 9. Repo work (estimates)
+- `research/kdp_fetch.py` (client, pacing, own lock, stop rule, raw store, template writer with ledger entry) with tests on synthetic fixtures: 1.5 days.
+- `research/kdp_parse.py` (search card and product detail extraction): 1 day, plus small fixes after the first test.
+- `core/spend.py` kind `web`, `sub_caps`, TinyFish prices, count-based record; events, digest line, Discord kind; cleanup rule for `data/kdp_raw/`: 0.5 day.
+- `service/__main__.py` subcommand, systemd unit and timer, `setup.sh` install line, `.env.example`, `.gitignore`, settings block, docs: 0.5 day.
+- The KDP reader itself (`research/kdp_columns.py`, aggregate, briefs) is the separate planned KDP build; this fetcher only feeds it.
