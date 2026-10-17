@@ -70,6 +70,15 @@ DEFAULTS = {
     "regions_max_bad_share": 0.25,  # pages allowed below min_regions (covers, text pages)
     "transparent_border_min": 0.98,
     "subject_min_fraction": 0.01,
+    # Pack checks (qa/packs.py, docs/PACKS.md section 5). Perceptual-hash distance (of 64
+    # bits) at or below duplicate_distance fails the item; at or below near_distance it goes
+    # to review.
+    "packs": {"duplicate_distance": 3, "near_distance": 6},
+    # Stationery and ttrpg print rules (qa/packs.py): printed text at least 7 pt, writing
+    # lines at least 6 mm apart (estimated from a render at `dpi`).
+    "print_rules": {"min_font_pt": 7.0, "font_tolerance_pt": 0.05, "min_line_gap_mm": 6.0,
+                    "line_gap_tolerance_mm": 0.4, "dpi": 150, "dark_level": 235, "min_run_mm": 20,
+                    "light_level": 90, "max_pages": 60},
     "mockups": {
         "enabled": True,
         "width": 2700,              # 4:3; Etsy recommends at least 2000 px on both sides
@@ -82,6 +91,8 @@ DEFAULTS = {
         "render_dpi": 110,          # PDF render when an item has no previews
         "fonts": [],                # extra .ttf/.otf paths to try before the system fonts
         "size_labels": {"us_letter": ["US Letter", "8.5 x 11 in"], "a4": ["A4", "210 x 297 mm"]},
+        "pack_badge": True,         # "20 PAGES" / "SET OF 5" on the cover photo of a pack
+        "desk_niches": ["stationery", "ttrpg"],  # a sixth photo: printed pages on a desk
     },
 }
 
@@ -189,6 +200,7 @@ def run_checks(item: Item, blocklist: Blocklist) -> list[dict]:
     open the paths it approved."""
     from qa.file_text import check_file_text
     from qa.lineart import check_coloring
+    from qa.packs import check_pack, check_print_rules
     from qa.pdf_checks import check_pdf
     from qa.raster import (
         check_assets,
@@ -215,6 +227,8 @@ def run_checks(item: Item, blocklist: Blocklist) -> list[dict]:
     checks += _guard("assets_readable", lambda: check_assets(item))
     if item.manifest.get("niche") == "coloring_pages":
         checks += _guard("line_weight", lambda: check_coloring(item))
+    checks += _guard("pack_checks", lambda: check_pack(item))
+    checks += _guard("print_rules", lambda: check_print_rules(item))
     checks += _guard("compliance_blocklist", lambda: check_compliance(item, blocklist))
     checks += _guard("compliance_file_text", lambda: check_file_text(item, blocklist))
     checks += _guard("generator_needs_review", lambda: [check_generator_review(item)])

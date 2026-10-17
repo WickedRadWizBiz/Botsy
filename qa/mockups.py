@@ -1,8 +1,11 @@
 """Etsy listing photos built with Pillow from an item's page previews and sticker PNGs.
 
 Five generic layouts of our own: hero (fanned pages + title banner), page grid, close-up,
-"what you get" card, and either a two-sizes card or, for stickers, a desk scene. Every
-string drawn on an image goes through the trademark blocklist first, and the random
+"what you get" card, and either a two-sizes card or, for stickers, a desk scene. A pack's
+hero carries a size badge ("20 PAGES", "SET OF 5") and its grid shows the pack's own pages;
+stationery and ttrpg packs get a sixth photo, printed pages on a desk. Every string drawn
+on an image goes through the trademark blocklist first (game-system names included: they
+are never on a mockup, even for a ttrpg item made for that system), and the random
 placement is seeded by the item id so a rerun produces the same photos.
 """
 from __future__ import annotations
@@ -20,7 +23,7 @@ from PIL import Image, ImageDraw
 from core.compliance import Blocklist
 from core.items import content_count as items_content_count
 from qa import draw
-from qa.checks import WARNING, Item, result
+from qa.checks import WARNING, Item, result, system_mentions
 from qa.lineart import iter_pdf_pages
 from qa.raster import open_image
 
@@ -30,6 +33,8 @@ NICHE_LABELS = {
     "coloring_pages": ("Coloring Page", "Coloring Pages", "PRINTABLE COLORING PAGES"),
     "activity_sheets": ("Activity Page", "Activity Pages", "PRINTABLE ACTIVITY PACK"),
     "stickers": ("Sticker", "Stickers", "DIGITAL STICKERS"),
+    "stationery": ("Planner Page", "Planner Pages", "PRINTABLE PLANNER PAGES"),
+    "ttrpg": ("RPG Sheet", "RPG Sheets", "PRINTABLE RPG SHEETS"),
 }
 FILE_TYPES = {"pdf": "PDF", "png": "PNG", "png_transparent": "PNG", "zip": "ZIP", "svg": "SVG"}
 PALETTES = {
@@ -39,6 +44,10 @@ PALETTES = {
                         "accent": (36, 118, 186), "ink": (28, 42, 58)},
     "stickers": {"top": (253, 242, 246), "bottom": (245, 219, 231), "blob": (240, 188, 212),
                  "accent": (186, 66, 120), "ink": (60, 36, 52)},
+    "stationery": {"top": (246, 247, 240), "bottom": (226, 233, 219), "blob": (204, 220, 196),
+                   "accent": (74, 124, 89), "ink": (38, 50, 42)},
+    "ttrpg": {"top": (246, 240, 230), "bottom": (229, 214, 192), "blob": (214, 190, 160),
+              "accent": (128, 54, 44), "ink": (52, 38, 30)},
 }
 WHITE = (255, 255, 255)
 
@@ -77,18 +86,21 @@ def build(item: Item, blocklist: Blocklist) -> tuple[list[str], list[dict]]:
         old.unlink()
     ctx = _context(item, cfg)
     strings = _strings(ctx.text)
-    r = blocklist.check(*strings)
-    checks = [result("mockup_text", not r.blocked,
-                     f"blocked terms in mockup text: {', '.join(r.blocked)}" if r.blocked
+    r = blocklist.check(*strings)  # no game system allowed: never on a mockup
+    blocked = r.blocked + [f"game system {s}" for s in system_mentions(strings)]
+    checks = [result("mockup_text", not blocked,
+                     f"blocked terms in mockup text: {', '.join(blocked)}" if blocked
                      else f"{len(strings)} strings clean")]
     if r.flagged:
         checks.append(result("mockup_review_terms", False, f"review terms in mockup text: {', '.join(r.flagged)}", WARNING))
-    if r.blocked:
+    if blocked:
         return [], checks
     if not ctx.pages and not ctx.stickers:
         return [], checks + [result("mockups", False, "no previews, PDF pages or sticker PNGs to build photos from")]
 
     layouts = [hero, grid, closeup, what_you_get, desk if ctx.niche == "stickers" else sizes_or_detail]
+    if ctx.niche in (cfg.get("desk_niches") or ()) and ctx.niche != "stickers" and ctx.pages:
+        layouts.append(desk_pages)
     out_dir.mkdir(parents=True, exist_ok=True)
     paths, failed, heavy = [], [], []
     for fn in layouts:
@@ -139,15 +151,24 @@ def _context(item: Item, cfg: dict) -> Ctx:
     stickers = _load_stickers(item, cfg) if niche == "stickers" else []
     sizes = _page_sizes(item, cfg)
     seed = int(hashlib.sha1(str(m.get("item_id", item.dir.name)).encode()).hexdigest()[:8], 16)
-    return Ctx(size, niche, pages, stickers, _texts(item, sizes, len(stickers)),
+    text = _texts(item, sizes, len(stickers))
+    if not cfg.get("pack_badge", True):
+        text["badge"] = ""
+    return Ctx(size, niche, pages, stickers, text,
                PALETTES.get(niche, PALETTES["coloring_pages"]), tuple(cfg.get("fonts") or ()), seed, sizes)
 
 
 def _load_pages(item: Item, cfg: dict, size: tuple[int, int]) -> list[Image.Image]:
-    """Page images in page order: the previews, or the first PDF rendered when there are none."""
+    """Page images in page order: the previews, or the first PDF rendered when there are none.
+    The pack's hero page (manifest pack.hero_page, the page its style ranks highest) comes
+    first when it has a preview, so the cover photo leads with it."""
     want = max(int(cfg["max_grid"]), 3)
     cap = max(size) * 1.1  # enough pixels for the close-up, no more
     previews = sorted(item.entries("previews"), key=lambda e: e["page"] if isinstance(e.get("page"), int) else 0)
+    hero_page = (item.manifest.get("pack") or {}).get("hero_page") if isinstance(item.manifest.get("pack"), dict) else None
+    if isinstance(hero_page, int) and not isinstance(hero_page, bool):
+        lead = [e for e in previews if e.get("page") == hero_page][:1]
+        previews = lead + [e for e in previews if e not in lead]
     pages = []
     for e in previews[:want]:
         try:
@@ -194,8 +215,11 @@ def _page_sizes(item: Item, cfg: dict) -> list[tuple[str, str, float, float]]:
     return out
 
 
+ACRONYMS = {"adhd": "ADHD", "wfh": "WFH", "rpg": "RPG", "ttrpg": "TTRPG", "npc": "NPC", "abc": "ABC", "diy": "DIY"}
+
+
 def title_case(text: str) -> str:
-    return " ".join(w[:1].upper() + w[1:] for w in text.split())
+    return " ".join(ACRONYMS.get(w.lower(), w[:1].upper() + w[1:]) for w in text.split())
 
 
 def content_count(m: dict, n_stickers: int) -> int | None:
@@ -224,6 +248,7 @@ def _texts(item: Item, sizes: list, n_stickers: int) -> dict:
         bullets.append("Transparent backgrounds")
     bullets += ["Instant digital download", "Print at home or at a print shop", "No physical item is shipped"]
     return {
+        "badge": pack_badge(m, n),
         "title": title_case(str(m.get("theme") or "").strip()) or many,
         "count": count_line,
         "kicker": kicker,
@@ -236,6 +261,19 @@ def _texts(item: Item, sizes: list, n_stickers: int) -> dict:
         "sizes_title": "Two sizes included",
         "size_labels": [f"{s[0]}|{s[1]}" for s in sizes],
     }
+
+
+def pack_badge(m: dict, n: int | None) -> str:
+    """'20 PAGES' or, for stickers, 'SET OF 5': the pack size on the cover photo. Empty for
+    an item made before packs (no pack.size)."""
+    pack = m.get("pack") if isinstance(m.get("pack"), dict) else {}
+    size = pack.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 1:
+        return ""
+    count = n or size
+    if m.get("niche") == "stickers":
+        return f"SET OF {count}"
+    return f"{count} PAGE" if count == 1 else f"{count} PAGES"
 
 
 def _strings(text: dict) -> list[str]:
@@ -272,8 +310,51 @@ def hero(ctx: Ctx) -> Image.Image:
     x0, x1 = int(0.585 * W), int(0.955 * W)
     pad = int(80 * u)
     panel = _panel(ctx, x1 - x0 - 2 * pad, lambda d, w: _hero_text(ctx, d, w))
-    _card_with(c, ctx, panel, x0, x1, pad, min_h=int(0.5 * H))
+    card = _card_with(c, ctx, panel, x0, x1, pad, min_h=int(0.5 * H))
+    if ctx.text.get("badge"):
+        _badge(c, ctx, ctx.text["badge"], badge_center(ctx, card))
     return c
+
+
+def badge_center(ctx: Ctx, card: tuple[int, int, int, int]) -> tuple[float, float]:
+    """Where the size badge sits: on the title card's top-right corner, half off the card,
+    so it never covers the pages (their titles are what shoppers read first) or the card's
+    text, which starts at the card's left edge and below its top padding."""
+    W, _ = ctx.size
+    r = BADGE_RADIUS * ctx.u
+    _, y0, x1, _ = card
+    cx = min(x1 - 0.35 * r, W - 1.1 * r)
+    cy = max(1.15 * r, y0 - 0.1 * r)
+    return cx, cy
+
+
+BADGE_RADIUS = 150  # at the 2700 px reference width
+
+
+def _badge(c: Image.Image, ctx: Ctx, text: str, center: tuple[float, float]) -> None:
+    """A round accent badge with the pack size ("20 PAGES" on two lines, "SET OF 5")."""
+    u = ctx.u
+    words = text.split()
+    lines = [words[0], " ".join(words[1:])] if words and words[0].isdigit() else [" ".join(words[:-1]), words[-1]]
+    lines = [x for x in lines if x]
+    r = int(BADGE_RADIUS * u)
+    disc = Image.new("RGBA", (2 * r, 2 * r), (0, 0, 0, 0))
+    d = ImageDraw.Draw(disc)
+    d.ellipse((0, 0, 2 * r - 1, 2 * r - 1), fill=ctx.pal["accent"] + (255,))
+    d.ellipse((int(10 * u), int(10 * u), 2 * r - 1 - int(10 * u), 2 * r - 1 - int(10 * u)),
+              outline=WHITE + (255,), width=max(2, int(5 * u)))
+    sizes = [round(118 * u) if x.isdigit() else round(52 * u) for x in lines]   # the number big
+    heights, fonts = [], []
+    for line, px in zip(lines, sizes):
+        f, wrapped = draw.fit_text(d, line, int(1.5 * r), px, min_size=max(8, round(20 * u)), max_lines=1,
+                                   fonts=ctx.fonts)
+        fonts.append((f, wrapped[0]))
+        heights.append(draw.text_size(d, wrapped[0], f)[1])
+    y = r - (sum(heights) + int(10 * u) * (len(heights) - 1)) / 2
+    for (f, line), h in zip(fonts, heights):
+        d.text((r, y + h / 2), line, font=f, fill=WHITE, anchor="mm")
+        y += h + int(10 * u)
+    draw.paste_with_shadow(c, disc, center, angle=-8, blur=18 * u, offset=(6 * u, 10 * u), opacity=90)
 
 
 def _hero_text(ctx: Ctx, d: ImageDraw.ImageDraw, w: int) -> int:
@@ -302,13 +383,16 @@ def _panel(ctx: Ctx, width: int, paint) -> Image.Image:
     return layer.crop((0, 0, width, max(1, min(layer.height, int(used)))))
 
 
-def _card_with(c: Image.Image, ctx: Ctx, panel: Image.Image, x0: int, x1: int, pad: int, min_h: int = 0) -> None:
-    """A white rounded card from x0 to x1, vertically centered, holding the panel."""
+def _card_with(c: Image.Image, ctx: Ctx, panel: Image.Image, x0: int, x1: int, pad: int,
+               min_h: int = 0) -> tuple[int, int, int, int]:
+    """A white rounded card from x0 to x1, vertically centered, holding the panel. Returns
+    the card's box."""
     H = ctx.size[1]
     h = min(int(0.9 * H), max(min_h, panel.height + 2 * pad))
     y0 = (H - h) // 2
     draw.rounded_card(c, (x0, y0, x1, y0 + h), WHITE, radius=int(46 * ctx.u))
     c.paste(panel, (x0 + pad, y0 + (h - panel.height) // 2), panel)
+    return x0, y0, x1, y0 + h
 
 
 def _pill(d: ImageDraw.ImageDraw, ctx: Ctx, text: str, x: int, y: int, max_w: int, size: int) -> int:
@@ -528,6 +612,41 @@ def desk(ctx: Ctx) -> Image.Image:
         area = (0.58 * W, 0.08 * H, 0.97 * W, 0.92 * H)
     _scatter(c, ctx, ctx.stickers[:6], area, 0.28 * H, "desk", opacity=120)
     return c
+
+
+def desk_pages(ctx: Ctx) -> Image.Image:
+    """Stationery and ttrpg: printed pages on a wooden desk with a pencil, drawn by us."""
+    W, H = ctx.size
+    u = ctx.u
+    c = _wood(ctx.size, ctx.seed + 7)
+    rng = ctx.rng("desk-pages")
+    shown = ctx.pages[1:3] if len(ctx.pages) > 2 else ctx.pages[:2]
+    spots = [((0.34, 0.52), -6), ((0.64, 0.48), 5)]
+    for img, ((fx, fy), ang) in zip(shown, spots):
+        sheet = draw.paper(draw.fit(img, (int(0.40 * W), int(0.86 * H))))
+        draw.paste_with_shadow(c, sheet, (fx * W, fy * H), angle=ang + rng.uniform(-1.5, 1.5), blur=28 * u,
+                               offset=(14 * u, 22 * u), opacity=120)
+    draw.paste_with_shadow(c, _pencil(ctx), (0.86 * W, 0.62 * H), angle=58, blur=12 * u, offset=(8 * u, 12 * u),
+                           opacity=110)
+    return c
+
+
+def _pencil(ctx: Ctx) -> Image.Image:
+    """A plain yellow pencil (no brand markings), lying flat."""
+    u = ctx.u
+    length, width = int(980 * u), max(8, int(64 * u))
+    img = Image.new("RGBA", (length, width), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    tip = int(150 * u)
+    d.rectangle((tip, 0, length - int(90 * u), width - 1), fill=(240, 196, 64, 255))
+    d.rectangle((tip, width // 3, length - int(90 * u), 2 * width // 3), fill=(226, 178, 48, 255))
+    d.rectangle((length - int(90 * u), 0, length - int(40 * u), width - 1), fill=(176, 176, 182, 255))
+    d.rounded_rectangle((length - int(52 * u), 0, length - 1, width - 1), radius=width // 3,
+                        fill=(232, 140, 150, 255))
+    d.polygon([(tip, 0), (tip, width - 1), (0, width // 2)], fill=(232, 206, 160, 255))
+    d.polygon([(int(tip * 0.32), int(width * 0.34)), (int(tip * 0.32), int(width * 0.66)), (0, width // 2)],
+              fill=(60, 56, 60, 255))
+    return img
 
 
 def _scatter(c: Image.Image, ctx: Ctx, imgs: list[Image.Image], area: tuple[float, float, float, float],

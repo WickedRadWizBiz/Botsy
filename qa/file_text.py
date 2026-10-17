@@ -2,8 +2,10 @@
 
 That is the words printed on PDF pages (titles, word lists, footers), the PDF document
 properties a viewer shows (title, subject, keywords, author) and the file names inside ZIP
-archives. The generators check what they print; this is QA's own look at the finished
-files, so a slip in a generator cannot reach a listing (CLAUDE.md: no trademarks in designs).
+archives. Game-system names are never printed, in any niche (blocklist `!` terms and the
+spellings core.compliance.system_mentions finds). The generators check what they print;
+this is QA's own look at the finished files, so a slip in a generator cannot reach a
+listing (CLAUDE.md: no trademarks in designs).
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from core.compliance import Blocklist, find_urls
-from qa.checks import WARNING, Item, result
+from qa.checks import WARNING, Item, result, system_mentions
 
 META_KEYS = ("Title", "Subject", "Keywords", "Author")  # Creator/Producer name the tools, not the product
 
@@ -54,9 +56,10 @@ def check_file_text(item: Item, blocklist: Blocklist) -> list[dict]:
             unread.append(rel)
             continue
         checked += 1
-        r = blocklist.check(*texts)
-        if r.blocked:
-            blocked.append(f"{rel}: {', '.join(r.blocked)}")
+        r = blocklist.check(*texts)  # game-system (!) terms are blocked: never printed
+        hits = r.blocked + [f"game system {s}" for s in system_mentions(texts)]
+        if hits:
+            blocked.append(f"{rel}: {', '.join(hits)}")
         urls = find_urls(texts)
         if r.flagged or urls:
             flagged.append(f"{rel}: " + ", ".join(r.flagged + [f"URL {u}" for u in urls[:3]]))

@@ -186,13 +186,47 @@ def check_etsy_limits(item: Item) -> list[dict]:
 # rather than product text. Every other field is checked, so a text field a generator adds
 # later (a subtitle, say) is covered without a change here.
 NOT_TEXT = frozenset({"schema", "item_id", "niche", "shop_id", "brief_id", "brief_file", "created", "status",
-                      "generator", "review_reasons", *GROUPS, "pack"})
+                      "generator", "review_reasons", *GROUPS, "pack", "system"})
+# `system` is a ttrpg item's game-system id from config/ttrpg_systems.yaml (never trademark
+# text); the names it stands for are never printed, in file names or in mockups.
+
+
+def system_mentions(texts) -> list[str]:
+    """Ids of the game systems named in `texts` (core.compliance.system_mentions: every
+    spelling config/ttrpg_systems.yaml lists, also joined ones such as "DnD5e" the blocklist's
+    `!` terms do not match). Printed pages, file names and mockups never name a system,
+    whatever the niche (docs/PACKS.md section 4). [] when the registry cannot be read: the
+    blocklist check still applies."""
+    from core.compliance import system_mentions as mentions
+
+    try:
+        return mentions([t for t in texts if isinstance(t, str) and t.strip()])
+    except Exception:  # a broken registry entry: the blocklist check still applies
+        return []
+
+
+def _known_system_id(value) -> bool:
+    """True for "generic" or an id config/ttrpg_systems.yaml lists (core.compliance.system_catalog)."""
+    if value == "generic":
+        return True
+    try:
+        from core.compliance import system_catalog
+
+        catalog = system_catalog()
+    except Exception:
+        return False
+    ids = {str(e.get("id") or k) for k, e in catalog.items() if isinstance(e, dict)}
+    return isinstance(value, str) and value in ids
 
 
 def manifest_texts(m: dict) -> list[str]:
     """Manifest text that ends up in front of a buyer or a model: theme, keywords, audience,
-    prompts and any other text field, file names and the pack contents (page titles)."""
+    prompts and any other text field, file names and the pack contents (page titles). The
+    `system` field is skipped only when it holds a registry id; anything else in it (a
+    system's name written there by mistake) is checked like text."""
     texts = [s for k, v in m.items() if k not in NOT_TEXT for s in iter_strings(v)]
+    if m.get("system") is not None and not _known_system_id(m.get("system")):
+        texts += list(iter_strings(m.get("system")))
     for group in GROUPS:
         texts += [PurePosixPath(str(e.get("path", "")).replace("\\", "/")).name for e in _dicts(m.get(group))]
     texts += list(iter_strings(m.get("pack") or {}))
@@ -200,12 +234,16 @@ def manifest_texts(m: dict) -> list[str]:
 
 
 def check_compliance(item: Item, blocklist: Blocklist) -> list[dict]:
+    """Game-system (`!`) terms count as blocked here: no system is ever allowed in item
+    data, designs or file names (only a ttrpg listing's copy may name one)."""
     texts = manifest_texts(item.manifest)
     r = blocklist.check(*texts)
     urls = find_urls(texts)
+    systems = system_mentions(texts)
+    blocked = r.blocked + [f"game system {s}" for s in systems]
     return [
-        result("compliance_blocklist", not r.blocked,
-               f"blocked terms: {', '.join(r.blocked)}" if r.blocked else f"no blocked terms in {len(texts)} text fields"),
+        result("compliance_blocklist", not blocked,
+               f"blocked terms: {', '.join(blocked)}" if blocked else f"no blocked terms in {len(texts)} text fields"),
         result("compliance_review_terms", not r.flagged,
                f"review terms: {', '.join(r.flagged)}" if r.flagged else "no review terms", WARNING),
         result("compliance_urls", not urls, f"URLs found: {', '.join(urls[:5])}" if urls else "no URLs"),

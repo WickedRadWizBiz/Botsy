@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.config import load_settings
-from core.items import write_json
+from core.items import read_json, write_json
 
 ITEM_ID = "2026-10-15-coloring_pages-farm-animals-1a2b"
 
@@ -60,6 +60,14 @@ def make_item(root: Path, *, niche: str = "coloring_pages", item_id: str = ITEM_
         files += [{"path": f"files/farm-animals-sticker-sheet-{s}.pdf", "kind": "pdf", "page_size": s, "pages": 1,
                    "dpi": 300} for s in sizes]
         pack = {"stickers": 12, "contents": [{"sticker": 1, "subject": "happy cow"}, {"sticker": 2, "subject": "tractor"}]}
+    elif niche in ("stationery", "ttrpg"):
+        label = "planner" if niche == "stationery" else "rpg-sheets"
+        files = [{"path": f"files/farm-animals-{label}-20-pages-{s}.pdf", "kind": "pdf", "page_size": s, "pages": 20,
+                  "dpi": 300} for s in sizes]
+        types = (["daily_planner"] * 8 + ["brain_dump"] * 6 + ["habit_tracker"] * 6 if niche == "stationery"
+                 else ["character_sheet"] * 8 + ["session_notes"] * 6 + ["npc_tracker"] * 6)
+        pack = {"pages": 20, "title_pages": 0, "page_types": types,
+                "contents": [{"page": i, "type": t, "title": f"Page {i}"} for i, t in enumerate(types, 1)]}
     elif niche == "activity_sheets":
         files = [{"path": f"files/farm-animals-activity-pack-{s}.pdf", "kind": "pdf", "page_size": s, "pages": 14,
                   "dpi": 300} for s in sizes]
@@ -97,6 +105,108 @@ def make_item(root: Path, *, niche: str = "coloring_pages", item_id: str = ITEM_
 @pytest.fixture
 def item(tmp_path) -> Path:
     return make_item(tmp_path / "out")
+
+
+def pack_item(root: Path, *, niche: str = "coloring_pages", size: int = 20, source: str = "master",
+              related=(), item_id: str | None = None, **overrides) -> Path:
+    """A pack item (docs/PACKS.md section 3): manifest pack {size, source, set_id, page_ids,
+    page_types, type_counts, related} on top of make_item's niche fields."""
+    from collections import Counter
+
+    import hashlib
+
+    item_id = item_id or f"2026-10-16-{niche}-farm-animals-{hashlib.sha1(f'{size}{source}'.encode()).hexdigest()[:4]}"
+    d = make_item(root, niche=niche, item_id=item_id, **overrides)
+    m = read_json(d / "manifest.json")
+    pack = dict(m["pack"])
+    n = size
+    if niche == "stickers":
+        pack.update(stickers=n, requested_stickers=n)
+        for f in m["files"]:
+            if f["kind"] == "zip":
+                f["count"] = n
+    elif niche == "activity_sheets":
+        pack.update(activity_pages=n)
+    else:
+        pack["pages"] = n
+        if niche in ("stationery", "ttrpg"):
+            pack["page_types"] = (pack["page_types"] * 3)[:n]
+            pack["contents"] = [{"page": i, "type": t, "title": f"Page {i}"}
+                                for i, t in enumerate(pack["page_types"], 1)]
+            for f in m["files"]:
+                f["pages"] = n
+    types = pack.get("page_types") or [niche] * n
+    pack.update(size=size, source=source, n=1, set_id=f"2026-10-16-{niche}-farm-animals-0a0a", theme=m["theme"],
+                page_ids=[f"p{i:02d}" for i in range(1, n + 1)], page_types=types, type_counts=dict(Counter(types)),
+                related=[dict(r) for r in related])
+    m["pack"] = pack
+    write_json(d / "manifest.json", m)
+    return d
+
+
+# ------------------------------------------------------------------ game systems (fake registry)
+
+SYSTEMS = {
+    "generic": {"id": "generic", "label": "System-Neutral", "names": [], "owner": None, "owner_names": [],
+                "disclaimer": "", "default": True},
+    "dnd5e": {"id": "dnd5e", "label": "D&D 5e",
+              "names": ["D&D 5e", "Dungeons & Dragons 5e", "5e", "DnD 5e", "Fifth Edition", "D&D", "DnD",
+                        "Dungeons & Dragons"],
+              "owner": "Wizards of the Coast", "owner_names": ["Wizards of the Coast"],
+              "disclaimer": "Unofficial fan-made product, not affiliated with or endorsed by Wizards of the Coast. "
+                            "Dungeons & Dragons and D&D are trademarks of Wizards of the Coast.", "default": False},
+    "pf2e": {"id": "pf2e", "label": "Pathfinder 2e", "names": ["Pathfinder 2e", "PF2e", "Pathfinder"],
+             "owner": "Paizo Inc.", "owner_names": ["Paizo"],
+             "disclaimer": "Unofficial fan-made product, not affiliated with or endorsed by Paizo Inc. "
+                           "Pathfinder is a registered trademark of Paizo Inc.", "default": False},
+}
+
+
+class FakeSystems:
+    """Stands in for core.systems (owned by the ttrpg build): the same functions over SYSTEMS."""
+
+    def __init__(self, registry: dict):
+        self.registry = copy.deepcopy(registry)
+
+    def load_systems(self, settings=None, **kw):
+        return copy.deepcopy(self.registry)
+
+    def default_system(self, settings=None, **kw):
+        return "generic"
+
+    def _get(self, sid):
+        if sid not in self.registry:
+            raise KeyError(f"unknown game system id {sid!r}")
+        return self.registry[sid]
+
+    def names_for(self, sid, settings=None, **kw):
+        return list(self._get(sid)["names"])
+
+    def label_for(self, sid, settings=None, **kw):
+        return self._get(sid)["label"]
+
+    def disclaimer_for(self, sid, settings=None, **kw):
+        return self._get(sid)["disclaimer"]
+
+    def detect_systems(self, text, settings=None, **kw):
+        from core.compliance import Blocklist
+
+        out = []
+        for sid, e in self.registry.items():
+            terms = [*e["names"], *([e["owner"]] if e["owner"] else []), *e["owner_names"]]
+            if terms and Blocklist(terms).check(text or "").blocked:
+                out.append(sid)
+        return out
+
+
+@pytest.fixture
+def fake_systems(monkeypatch) -> FakeSystems:
+    import core.systems
+
+    fake = FakeSystems(SYSTEMS)
+    for name in ("load_systems", "default_system", "names_for", "label_for", "disclaimer_for", "detect_systems"):
+        monkeypatch.setattr(core.systems, name, getattr(fake, name))
+    return fake
 
 
 GOOD = {

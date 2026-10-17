@@ -7,6 +7,7 @@ shop names or URLs.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from pathlib import PurePosixPath
 
@@ -19,7 +20,14 @@ NICHES = {
                         "product": "printable activity pages"},
     "stickers": {"one": "digital sticker", "many": "digital stickers", "tag": "stickers",
                  "product": "digital stickers (transparent PNG files) with a printable sticker sheet"},
+    "stationery": {"one": "planner page", "many": "planner pages", "tag": "planner",
+                   "product": "printable planner and productivity pages (PDF)"},
+    "ttrpg": {"one": "RPG sheet", "many": "RPG sheets", "tag": "rpg",
+              "product": "printable tabletop RPG sheets (PDF)"},
 }
+# Niches whose packs mix page types (stationery and ttrpg page types, docs/PACKS.md section 1).
+TYPED_NICHES = ("stationery", "ttrpg")
+PACK_SOURCES = ("master", "derived", "fresh")
 OTHER_NICHE = {"one": "printable page", "many": "printable pages", "tag": "printable", "product": "digital download"}
 
 ACTIVITY_LABELS = {
@@ -28,6 +36,152 @@ ACTIVITY_LABELS = {
     "tracing": ("tracing page", "tracing pages"),
     "dot_to_dot": ("dot-to-dot", "dot-to-dots"),
 }
+
+# (one, many) for the page types of the stationery and ttrpg generators. A type not listed
+# here is named from its id ("npc_tracker" -> "NPC tracker", "NPC trackers"). Our own
+# generic words only: no planner systems or method names (those are brands).
+PAGE_TYPE_LABELS = {
+    # stationery
+    "daily_planner": ("daily planner", "daily planners"),
+    "weekly_planner": ("weekly planner", "weekly planners"),
+    "monthly_planner": ("monthly planner", "monthly planners"),
+    "time_blocked_day": ("time-blocked day", "time-blocked days"),
+    "brain_dump": ("brain dump page", "brain dump pages"),
+    "task_breakdown": ("task breakdown page", "task breakdown pages"),
+    "top3_priorities": ("top 3 priorities page", "top 3 priorities pages"),
+    "priority_matrix": ("priority matrix", "priority matrices"),
+    "habit_tracker": ("habit tracker", "habit trackers"),
+    "routine_checklist": ("routine checklist", "routine checklists"),
+    "focus_sessions": ("focus session tracker", "focus session trackers"),
+    "mood_energy": ("mood and energy tracker", "mood and energy trackers"),
+    "todo_list": ("to-do list", "to-do lists"),
+    "meal_planner": ("meal planner", "meal planners"),
+    "budget_tracker": ("budget tracker", "budget trackers"),
+    "reading_log": ("reading log", "reading logs"),
+    "gratitude": ("gratitude page", "gratitude pages"),
+    "notes_lined": ("lined notes page", "lined notes pages"),
+    "notes_dot": ("dot grid notes page", "dot grid notes pages"),
+    "notes_grid": ("grid notes page", "grid notes pages"),
+    # ttrpg
+    "character_sheet": ("character sheet", "character sheets"),
+    "spell_tracker": ("spell and ability tracker", "spell and ability trackers"),
+    "ability_tracker": ("spell and ability tracker", "spell and ability trackers"),
+    "inventory": ("inventory and loot sheet", "inventory and loot sheets"),
+    "inventory_loot": ("inventory and loot sheet", "inventory and loot sheets"),
+    "campaign_tracker": ("campaign tracker", "campaign trackers"),
+    "session_notes": ("session notes page", "session notes pages"),
+    "npc_tracker": ("NPC tracker", "NPC trackers"),
+    "quest_log": ("quest log", "quest logs"),
+    "initiative_tracker": ("initiative tracker", "initiative trackers"),
+    "encounter_planner": ("encounter planner", "encounter planners"),
+    "worldbuilding_town": ("town worksheet", "town worksheets"),
+    "worldbuilding_faction": ("faction worksheet", "faction worksheets"),
+    "worldbuilding_deity": ("deity worksheet", "deity worksheets"),
+    "worldbuilding_region": ("region worksheet", "region worksheets"),
+    "hex_map": ("hex map page", "hex map pages"),
+    "square_grid": ("square grid map page", "square grid map pages"),
+    "grid_map": ("square grid map page", "square grid map pages"),
+    "dungeon_grid": ("dungeon grid page", "dungeon grid pages"),
+    "dice_log": ("dice and roll log", "dice and roll logs"),
+}
+_TYPE_WORDS = {"npc": "NPC", "rpg": "RPG", "ttrpg": "TTRPG", "gm": "GM", "hp": "HP", "xp": "XP", "3": "3"}
+_UNCOUNTED = ("paper", "notes", "info")
+
+
+def page_type_label(kind, n: int | None = 2) -> str:
+    """'habit_tracker' -> 'habit tracker' (n == 1) or 'habit trackers'."""
+    if kind in PAGE_TYPE_LABELS:
+        one, many = PAGE_TYPE_LABELS[kind]
+    else:
+        words = [_TYPE_WORDS.get(w, w) for w in str(kind or "page").replace("-", "_").split("_") if w]
+        one = " ".join(words) or "page"
+        many = one if one.endswith(("s", *_UNCOUNTED)) else one + "s"
+    return one if n == 1 else many
+
+
+_PLURALS = {one: many for one, many in PAGE_TYPE_LABELS.values()}
+
+
+def plural_label(label: str) -> str:
+    """'habit tracker' -> 'habit trackers'; a plural label stays as it is."""
+    if label in _PLURALS:
+        return _PLURALS[label]
+    if label in _PLURALS.values() or label.endswith(("s", *_UNCOUNTED)):
+        return label
+    return label + "s"
+
+
+_SINGULAR = {**{one: one for one, _ in PAGE_TYPE_LABELS.values()},
+             **{many: one for one, many in PAGE_TYPE_LABELS.values()}}
+_LABEL_TAILS = (" page", " pages", " sheet", " sheets", " worksheet", " worksheets", " paper")
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _squash(text: str) -> str:
+    return "".join(_WORD_RE.findall(str(text).lower()))
+
+
+def _type_aliases() -> dict[str, str]:
+    """{squashed spelling: singular label} for every known page type: its id words
+    ("hex_map" -> "hexmap") and its labels with and without a trailing page/sheet word."""
+    out: dict[str, str] = {}
+    for kind, (one, many) in PAGE_TYPE_LABELS.items():
+        forms = {kind.replace("_", " "), one, many,
+                 *(x[: -len(t)] for x in (one, many) for t in _LABEL_TAILS if x.endswith(t))}
+        for form in forms:
+            if len(_squash(form)) >= 6:   # long enough to name a page type, not an ordinary word
+                out.setdefault(_squash(form), one)
+    return out
+
+
+_TYPE_ALIASES = _type_aliases()
+
+
+def singular_label(label: str) -> str:
+    """'habit trackers' -> 'habit tracker' (a label from page_type_label)."""
+    if label in _SINGULAR:
+        return _SINGULAR[label]
+    return label[:-1] if label.endswith("s") and not label.endswith(("ss", *_UNCOUNTED)) else label
+
+
+def named_types(text: str, facts: dict) -> list[tuple[str, int]]:
+    """(singular label, pages of that type in this pack) for each page type `text` names
+    ("dark fantasy character sheet" -> [("character sheet", 2)]), on whole words ("to-do
+    list", "todo list"; "oatmeal planner" is not a meal planner), longest name first, each
+    word counted once ("dot grid notes" is not also "grid notes"). Only for packs that mix
+    page types (stationery, ttrpg, with page_types); [] otherwise or when it names none."""
+    types = facts.get("page_types") or {}
+    if facts.get("niche") not in TYPED_NICHES or not types:
+        return []
+    counts: dict[str, int] = {}
+    for label, n in types.items():
+        counts[singular_label(label)] = counts.get(singular_label(label), 0) + int(n or 0)
+    aliases = dict(_TYPE_ALIASES)
+    for one in counts:                     # page types without a built-in label
+        aliases.setdefault(_squash(one), one)
+    words = _WORD_RE.findall(str(text).lower())
+    runs = []                              # (squashed run, first word, end word)
+    for i in range(len(words)):
+        for j in range(i + 1, min(len(words), i + 6) + 1):
+            run = "".join(words[i:j])
+            one = aliases.get(run) or (aliases.get(run[:-1]) if run.endswith("s") else None)
+            if one:
+                runs.append((-len(run), i, j, one))
+    used: set[int] = set()
+    found: dict[str, None] = {}
+    for _, i, j, one in sorted(runs):
+        if used.isdisjoint(range(i, j)):
+            used.update(range(i, j))
+            found.setdefault(one, None)
+    return [(one, counts.get(one, 0)) for one in found]
+
+
+def absent_types(text: str, facts: dict) -> list[str]:
+    """Page types `text` names that this pack does not include (a brief keyword such as
+    "rpg campaign tracker" on a pack without one): never in the title, which would promise
+    a page the buyer does not get."""
+    return [one for one, n in named_types(text, facts) if not n]
+
 
 FILE_TYPE_LABELS = {"pdf": "PDF", "png": "PNG", "png_transparent": "PNG (transparent background)",
                     "zip": "ZIP", "svg": "SVG"}
@@ -66,13 +220,47 @@ def mockup_descriptions(manifest: dict, n_images: int, n_sizes: int, cfg: dict) 
     known = list(layouts.get(niche) or layouts.get("default") or [])
     if known and n_images == len(known):
         if niche != "stickers" and n_sizes < 2:  # QA shows a second close-up instead of the sizes card
-            known[-1] = layouts.get("single_size_last") or known[-1]
+            sizes_card = (layouts.get("default") or [None])[-1]
+            at = known.index(sizes_card) if sizes_card in known else len(known) - 1
+            known[at] = layouts.get("single_size_last") or known[at]
         return known
     return [f"listing photo {i} of {n_images}: a preview of the product" for i in range(1, n_images + 1)]
 
 
-def gather(manifest: dict, image_paths: list[str], cfg: dict, settings: dict) -> dict:
-    """The model-facing facts for one item (JSON-serializable, deterministic)."""
+def pack_facts(manifest: dict) -> dict:
+    """The pack this item is (docs/PACKS.md section 3): its size, how it was made (master,
+    derived or fresh), its page types with counts (stationery, ttrpg) and the theme's other
+    packs with whether their pages overlap. Older manifests without these give None / []."""
+    pack = manifest.get("pack") if isinstance(manifest.get("pack"), dict) else {}
+    size = _count(pack.get("size")) or None
+    source = pack.get("source") if pack.get("source") in PACK_SOURCES else None
+    page_types: dict[str, int] = {}
+    if manifest.get("niche") in TYPED_NICHES:
+        counts = pack.get("type_counts")
+        if not isinstance(counts, dict) or not counts:
+            types = pack.get("page_types")
+            if not isinstance(types, list) or not types:
+                types = [c.get("type") for c in pack.get("contents") or [] if isinstance(c, dict)]
+            counts = Counter(t for t in types if isinstance(t, str) and t)
+        for kind, n in counts.items():
+            if isinstance(kind, str) and _count(n):
+                label = page_type_label(kind, n)
+                page_types[label] = page_types.get(label, 0) + n
+    related = []
+    for r in pack.get("related") or []:
+        if isinstance(r, dict) and _count(r.get("size")):
+            related.append({"size": r["size"], "source": r.get("source") if r.get("source") in PACK_SOURCES else None,
+                             "same_set": bool(r.get("same_set"))})
+    related.sort(key=lambda r: (r["size"], str(r["source"])))
+    return {"pack_size": size, "pack_source": source, "page_types": page_types, "related_packs": related}
+
+
+def gather(manifest: dict, image_paths: list[str], cfg: dict, settings: dict, *,
+           game_system: dict | None = None) -> dict:
+    """The model-facing facts for one item (JSON-serializable, deterministic).
+
+    `game_system` ({"label", "names"}) is set only for a ttrpg item made for a system from
+    config/ttrpg_systems.yaml, whose listing may name it (CLAUDE.md exception)."""
     niche = str(manifest.get("niche") or "")
     labels = niche_labels(niche)
     pack = manifest.get("pack") if isinstance(manifest.get("pack"), dict) else {}
@@ -96,7 +284,7 @@ def gather(manifest: dict, image_paths: list[str], cfg: dict, settings: dict) ->
 
     zips = _zips(manifest)
     descriptions = mockup_descriptions(manifest, len(image_paths), len(size_keys), cfg)
-    return {
+    facts = {
         "niche": niche,
         "product_type": labels["product"],
         "theme": str(manifest.get("theme") or "").strip(),
@@ -105,6 +293,7 @@ def gather(manifest: dict, image_paths: list[str], cfg: dict, settings: dict) ->
         "content_count": content_count(manifest),
         "content_unit": labels["many"],
         "answer_key_pages": _count(pack.get("answer_key_pages")),
+        "title_pages": _count(pack.get("title_pages")),
         "activities": activity,
         "subjects": subjects[:max_subjects],
         "page_sizes": [page_size_label(k, cfg, settings) for k in size_keys],
@@ -115,7 +304,12 @@ def gather(manifest: dict, image_paths: list[str], cfg: dict, settings: dict) ->
         "dpi": dpis[0] if len(dpis) == 1 else None,
         "ai_assisted": bool(manifest.get("ai_assisted")),
         "images": [{"image": i, "shows": d} for i, d in enumerate(descriptions, 1)],
+        **pack_facts(manifest),
     }
+    if game_system:
+        facts["game_system"] = str(game_system["label"])
+        facts["game_system_names"] = [str(n) for n in game_system.get("names") or []]
+    return facts
 
 
 def _entries(manifest: dict, key: str) -> list[dict]:

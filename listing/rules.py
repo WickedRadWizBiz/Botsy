@@ -20,16 +20,27 @@ Center (settings `listing:`); the API spec does not state them. The character ru
 limits are shared with the publisher's gates (core/etsy.py).
 
 Our own stricter rules on top: no ™ © ® at all (they imply brand claims), titles start
-with a letter or digit, tags are lowercase, and no copy claims hand drawing or "no AI".
+with a letter or digit, tags are lowercase, no copy claims hand drawing, "no AI" or an
+official product, and no medical or therapeutic claims (CLAUDE.md; docs/PACKS.md section 4:
+treat, cure, heal, diagnose, therapy, therapeutic, clinically, medical, prescription,
+symptom relief and their word forms; "ADHD-friendly" describes a layout and is fine). A
+ttrpg listing may name its game system, but never in alt text (`alt_names`), and the
+system's trademark owner ("Wizards of the Coast") only in the description, where the
+disclaimer names it: never in the title or tags (`owner_names`), which would read as an
+official product.
 """
 from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from functools import lru_cache
 
 from core.compliance import URL_RE, Blocklist, find_urls, normalize
 from core.etsy import MARKS, TITLE_ONCE_ONLY, tag_char_ok, title_char_ok  # noqa: F401 (re-exported)
+
+# text -> the names it holds (a game system's names, its trademark owner); see validate().
+Finder = Callable[[str], list[str]]
 
 ONCE_ONLY = TITLE_ONCE_ONLY  # Etsy: each may appear at most once in a title
 ONCE_ONLY_REPLACEMENTS = {"&": " and ", "+": " and ", ":": ",", "%": " percent"}
@@ -88,6 +99,25 @@ def misleading(text: str, cfg: dict) -> list[str]:
     Standards; AI-assisted designs are not "hand-drawn") or rights beyond personal use."""
     phrases = tuple(cfg.get("misleading_phrases") or ())
     return _phrase_checker(phrases).check(text).blocked if phrases and text else []
+
+
+def medical(text: str, cfg: dict) -> list[str]:
+    """Medical or therapeutic wording our copy must not use (CLAUDE.md compliance rules).
+    Phrases in `medical_ok_phrases` ("trick or treat", "sweet treats") are not claims and
+    are taken out before the check."""
+    terms = tuple(cfg.get("medical_terms") or ())
+    if not terms or not text:
+        return []
+    norm = normalize(text)
+    for ok in cfg.get("medical_ok_phrases") or ():
+        rx = _phrase_checker((str(ok),)).hard[0][1]
+        norm = rx.sub(" | ", norm)
+    return _phrase_checker(terms).check(norm).blocked
+
+
+def banned(text: str, cfg: dict) -> bool:
+    """Misleading claims or medical wording: a part with either is never kept in a repair."""
+    return bool(misleading(text, cfg) or medical(text, cfg))
 
 
 # ------------------------------------------------------------------ normalize
@@ -188,9 +218,26 @@ def section_errors(draft: dict, cfg: dict) -> list[str]:
     return errs
 
 
-def validate(draft: dict, n_images: int, cfg: dict) -> list[str]:
-    """Every rule the final listing must meet, as messages the model can act on."""
+def validate(draft: dict, n_images: int, cfg: dict, *, alt_names: Finder | None = None,
+             owner_names: Finder | None = None, absent_types: Finder | None = None) -> list[str]:
+    """Every rule the final listing must meet, as messages the model can act on.
+    `alt_names(text)` lists the game-system names in a text (a ttrpg item made for a
+    system): those may be in the title, tags and description but never in alt text.
+    `owner_names(text)` lists the system's trademark owner in a text: never in the title
+    or tags (only the description's disclaimer names the owner). `absent_types(text)` lists
+    the page types a text names that the pack does not include (stationery, ttrpg): never
+    in the title, which would promise a page the buyer does not get."""
     errs = title_errors(draft["title"], cfg)
+    missing = absent_types(draft["title"]) if absent_types else []
+    if missing:
+        errs.append(f"the title names page types this pack does not include ({', '.join(missing)}); name only "
+                    "page types listed in page_types")
+    if owner_names:
+        for where, text in (("the title", draft["title"]), *((f"tag '{t}'", t) for t in draft["tags"])):
+            names = owner_names(text)
+            if names:
+                errs.append(f"{where} names the trademark owner ({', '.join(names)}); name only the game system "
+                            "there, the owner is named in the disclaimer")
 
     tags, count = draft["tags"], int(cfg["tags_count"])
     if len(tags) != count:
@@ -216,8 +263,17 @@ def validate(draft: dict, n_images: int, cfg: dict) -> list[str]:
         for url in find_urls(text):
             errs.append(f"{field} contains a URL or web address ({url}); remove it")
         for phrase in misleading(text, cfg):
-            errs.append(f"{field} says '{phrase}'; we never claim that (how it was made or usage rights), "
-                        "remove it")
+            errs.append(f"{field} says '{phrase}'; we never claim that (how it was made, an official product "
+                        "or usage rights), remove it")
+        for word in medical(text, cfg):
+            errs.append(f"{field} uses '{word}'; no medical or therapeutic claims or wording, describe the "
+                        "layout instead")
+    if alt_names:
+        for i, a in enumerate(alts, 1):
+            names = alt_names(a)
+            if names:
+                errs.append(f"alt text {i} names the game system ({', '.join(names)}); alt text describes the "
+                            "photo only and never names a game system")
     return errs
 
 
@@ -275,12 +331,13 @@ def clean_tag(tag: str, cfg: dict, shorten: bool = True) -> str | None:
     return out if len(out) >= 2 else None
 
 
-def pick_tags(sources: list[str], title: str, cfg: dict) -> list[str]:
-    """The first `tags_count` valid, distinct tags from `sources`, in order."""
+def pick_tags(sources: list[str], title: str, cfg: dict, reject: Finder | None = None) -> list[str]:
+    """The first `tags_count` valid, distinct tags from `sources`, in order. A tag for
+    which `reject(tag)` finds something (a trademark owner's name) is skipped."""
     out, seen = [], {tag_key(title)}
     for raw in sources:
         t = clean_tag(raw, cfg)
-        if not t or tag_errors(t, cfg) or misleading(t, cfg) or find_urls(t):
+        if not t or tag_errors(t, cfg) or banned(t, cfg) or find_urls(t) or (reject and reject(t)):
             continue
         k = tag_key(t)
         if k in seen:
@@ -297,7 +354,7 @@ def fit(text: str, limit: int, cfg: dict, cut: str = "sentence") -> str | None:
     cut="sentence" ends at the last full sentence that fits, "words" falls back to a
     word boundary, "none" refuses anything too long."""
     t = scrub_urls(text)
-    if not t or misleading(t, cfg):
+    if not t or banned(t, cfg):
         return None
     if len(t) <= limit:
         return t
@@ -309,14 +366,20 @@ def fit(text: str, limit: int, cfg: dict, cut: str = "sentence") -> str | None:
     return truncate_words(t, limit) if cut == "words" else None
 
 
-def repair(draft: dict, fallback: dict, tag_candidates: list[str], n_images: int, cfg: dict) -> dict:
+def repair(draft: dict, fallback: dict, tag_candidates: list[str], n_images: int, cfg: dict, *,
+           alt_names: Finder | None = None, owner_names: Finder | None = None,
+           absent_types: Finder | None = None) -> dict:
     """Deterministic fix-up: keep every valid part of `draft`, replace or trim the rest
-    with the template `fallback` and tags from our own manifest keywords."""
+    with the template `fallback` and tags from our own manifest keywords. A part with a
+    misleading claim or medical wording is dropped, never edited (`banned`), and so is a
+    title or tag naming the game system's trademark owner (`owner_names`) and a title
+    naming a page type the pack does not include (`absent_types`)."""
     title = clean_title(draft["title"], cfg)
-    if title_errors(title, cfg) or misleading(title, cfg):
+    if (title_errors(title, cfg) or banned(title, cfg) or (owner_names and owner_names(title))
+            or (absent_types and absent_types(title))):
         title = clean_title(fallback["title"], cfg)
 
-    out = {"title": title, "tags": pick_tags([*draft["tags"], *tag_candidates], title, cfg)}
+    out = {"title": title, "tags": pick_tags([*draft["tags"], *tag_candidates], title, cfg, reject=owner_names)}
     for key in TEXT_FIELDS:
         limit = int(cfg[f"{key}_max_chars"])
         out[key] = fit(draft[key], limit, cfg) or fit(fallback[key], limit, cfg, "words") or ""
@@ -333,8 +396,10 @@ def repair(draft: dict, fallback: dict, tag_candidates: list[str], n_images: int
 
     limit = int(cfg["alt_text_max_chars"])
     alts = []
+    clean_alt = (lambda t: t if t and not alt_names(t) else None) if alt_names else (lambda t: t)
     for i in range(n_images):
         mine = draft["alt_texts"][i] if i < len(draft["alt_texts"]) else ""
-        alts.append(fit(mine, limit, cfg, "words") or fit(fallback["alt_texts"][i], limit, cfg, "words") or "")
+        alts.append(clean_alt(fit(mine, limit, cfg, "words"))
+                    or clean_alt(fit(fallback["alt_texts"][i], limit, cfg, "words")) or "")
     out["alt_texts"] = alts
     return out

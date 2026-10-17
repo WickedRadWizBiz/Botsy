@@ -78,8 +78,14 @@ Rules:
 - Never name or hint at brands, companies, trademarked or licensed characters, franchises, films, \
 TV shows, games, toys, apps or celebrities, and never write "in the style of".
 - No URLs, email addresses, social media handles or shop names.
-- Do not say the designs are handmade, hand-drawn, hand-painted or made without AI. Do not offer \
-commercial use or resale rights.
+- Do not say the designs are handmade, hand-drawn, hand-painted or made without AI, or that the product \
+is official, licensed or endorsed. Do not offer commercial use or resale rights.
+- No medical or therapeutic claims: never use the words treat, cure, heal, diagnose, therapy, \
+therapeutic, clinically, medical, prescription or symptom relief (or their other forms). "ADHD-friendly" \
+and "for ADHD brains" may describe a layout; never say a product helps a condition.
+- When the facts list "page_types", the pack mixes those kinds of pages: name only page types listed \
+there, and never write the title as if every page were one kind (not "Character Sheet, 20 Pages" for \
+a pack with 2 character sheets).
 - Do not mention prices, discounts or shipping, and do not write download steps, terms of use or an \
 AI disclosure: those are added separately.
 - Plain US English. No emoji, markdown or HTML."""
@@ -94,12 +100,26 @@ class ModelResult:
     history: list[list[str]] = field(default_factory=list)  # problems per attempt
 
 
-def system_prompt(cfg: dict) -> str:
+GAME_SYSTEM_RULE = """
+
+Game system exception (this product only): the facts name the tabletop game system the sheets are \
+made for ("game_system", with the allowed spellings in "game_system_names"). You may name that system, \
+using only those spellings, as a compatibility reference in the title (for example "... for {label}"), \
+the tags, the hook and the about text. Never name it in alt_texts. Never name the system's publisher or \
+trademark owner (the disclaimer added separately names it), and never name any other game, edition, \
+publisher, setting, place, creature or character from any game. Never suggest the product is official, \
+licensed or endorsed: it is our own unofficial design."""
+
+
+def system_prompt(cfg: dict, facts: dict | None = None) -> str:
     uses = cfg["suggested_uses"]
-    return SYSTEM.format(title_max=cfg["title_max_chars"], tags_count=cfg["tags_count"],
+    text = SYSTEM.format(title_max=cfg["title_max_chars"], tags_count=cfg["tags_count"],
                          tag_max=cfg["tag_max_chars"], hook_max=cfg["hook_max_chars"],
                          about_max=cfg["about_max_chars"], uses_min=uses["min"], uses_max=uses["max"],
                          use_max=uses["max_chars"], alt_max=cfg["alt_text_max_chars"])
+    if facts and facts.get("game_system"):
+        text += GAME_SYSTEM_RULE.format(label=facts["game_system"])
+    return text
 
 
 def user_message(facts: dict, feedback: tuple[dict | None, list[str]] | None = None) -> str:
@@ -194,22 +214,29 @@ def _tokens(usage, name: str) -> int:
 
 
 def write(client, facts: dict, cfg: dict, *, model: str, max_tokens: int, blocklist: Blocklist,
-          settings: dict | None = None, item_id: str | None = None) -> ModelResult:
+          settings: dict | None = None, item_id: str | None = None, allow_systems: tuple[str, ...] = (),
+          alt_names=None, owner_names=None, absent_types=None) -> ModelResult:
     """Ask for a draft, re-asking with the problems found, up to 1 + max_retries calls.
     A blocked term in any draft stops at once with ListingComplianceError: we never
     rewrite our way around a trademark hit; a person looks at the item instead.
+
+    `allow_systems` (a ttrpg item made for a game system) lets that system's names through
+    the blocklist; `alt_names(text)` finds them, and one in an alt text is a rule problem
+    the model is asked to fix (alt text never names a system). `owner_names(text)` finds
+    the system's trademark owner, a rule problem in the title or tags. `absent_types(text)`
+    finds page types the pack does not include, a rule problem in the title.
 
     `settings` and `item_id` are for the spend ledger (settings None = config/settings.yaml).
     core.spend.BudgetExceeded from the check before a request propagates as is."""
     # Each retry is a fresh single-turn request carrying the previous draft and its
     # problems, rather than a replayed conversation: no assistant turns (or thinking
     # blocks) are sent back, so requests stay independent and simple to fake in tests.
-    n_images = len(facts["images"])
+    n_images = len(facts.get("images") or [])
     result = ModelResult(draft=None, errors=["no usable response from the model"])
     feedback = None
     for attempt in range(1, 2 + int(cfg["max_retries"])):
         spend.check_budget("text", settings=settings)  # before every paid request
-        response = call(client, cfg, model=model, max_tokens=int(max_tokens), system=system_prompt(cfg),
+        response = call(client, cfg, model=model, max_tokens=int(max_tokens), system=system_prompt(cfg, facts),
                         messages=[{"role": "user", "content": user_message(facts, feedback)}])
         record_usage(response, model, settings=settings, item_id=item_id)
         result.attempts = attempt
@@ -230,11 +257,12 @@ def write(client, facts: dict, cfg: dict, *, model: str, max_tokens: int, blockl
             if stop == "max_tokens":
                 errors.append("the response was cut off; keep every field shorter")
         if draft is not None:
-            found = blocklist.check(*rules.texts(draft))  # each field on its own
+            found = blocklist.check(*rules.texts(draft), allow_systems=allow_systems)  # each field on its own
             if found.blocked:
                 raise ListingComplianceError(
                     f"model draft contains blocked terms: {', '.join(found.blocked)}", found.blocked)
-            errors = rules.validate(draft, n_images, cfg)
+            errors = rules.validate(draft, n_images, cfg, alt_names=alt_names, owner_names=owner_names,
+                                    absent_types=absent_types)
             if result.draft is None or len(errors) < len(result.errors):
                 result.draft, result.errors, result.model = draft, errors, served
         result.history.append(errors)

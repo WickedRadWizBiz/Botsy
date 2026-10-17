@@ -2,7 +2,11 @@
 
 Gates run before anything is sent (PublishGateError lists every reason):
 QA passed; listing.json present, not written in dry-run mode, blocklist-clean (title,
-tags, description, alt texts and the photo and file names), free of the placeholder shop
+tags, description, alt texts and the photo and file names; game-system `!` names only in
+a ttrpg item's title, tags and description, for the system its manifest names, and then
+with that system's disclaimer in the description; never another system, never in alt text
+or file names, and the system's trademark owner never in the title or tags), free of
+medical or therapeutic wording (listing.rules.medical), free of the placeholder shop
 name and carrying the AI disclosure for the current shop name (required whenever the item
 is AI-assisted, the copy was written by the text model, or listing.always_disclose_ai is
 on, the default); items needing review are `approved` in the review queue (a `rejected`
@@ -34,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from core import etsy
-from core.compliance import Blocklist, has_ai_disclosure
+from core.compliance import Blocklist, has_ai_disclosure, system_mentions
 from core.config import PLACEHOLDER_SHOP_NAMES, get_shop, is_placeholder_shop_name, load_settings, section, today
 from core.items import (
     iter_item_dirs,
@@ -171,14 +175,98 @@ def _form(value) -> str:
     return str(value)
 
 
-def _listing_check(listing: dict, blocklist: Blocklist):
-    """Blocklist result over everything sent to Etsy: title, tags, description, alt texts
-    and the photo and file names (buyers see the download's name)."""
+def _copy_texts(listing: dict) -> list[str]:
+    """Title, tags and description: the only places a ttrpg listing may name its system."""
+    return [(listing.get("title") or "").strip(), *[str(t).strip() for t in listing.get("tags") or []],
+            (listing.get("description") or "").strip()]
+
+
+def _other_texts(listing: dict) -> list[str]:
+    """Alt texts and the photo and file names: never a game-system name."""
     names = [Path(str(rel)).name for rel in [*(listing.get("image_paths") or []), *(listing.get("file_paths") or [])]]
-    return blocklist.check_obj({"title": (listing.get("title") or "").strip(),
-                                "tags": [str(t).strip() for t in listing.get("tags") or []],
-                                "description": (listing.get("description") or "").strip(),
-                                "alt_texts": list(listing.get("alt_texts") or []), "file_names": names})
+    return [*map(str, listing.get("alt_texts") or []), *names]
+
+
+def _listing_check(listing: dict, blocklist: Blocklist, allow_systems: tuple[str, ...] = ()):
+    """Blocklist result over everything sent to Etsy: title, tags, description, alt texts
+    and the photo and file names (buyers see the download's name). `allow_systems` (a
+    ttrpg item's own game system) applies to the title, tags and description only."""
+    return blocklist.check(*_copy_texts(listing), allow_systems=allow_systems).merge(
+        blocklist.check(*_other_texts(listing)))
+
+
+def _game_system(manifest: dict, settings: dict) -> dict | None:
+    """{id, disclaimer, catalog} for a ttrpg item whose manifest names a game system other
+    than the default; None otherwise (nothing allowed). Raises PublishGateError when the
+    system cannot be read: such an item is never drafted until config/ttrpg_systems.yaml
+    is fixed, because its copy may name the system."""
+    if manifest.get("niche") != "ttrpg" or manifest.get("system") in (None, "", "generic"):
+        return None
+    sid = str(manifest["system"])
+    try:
+        from core import systems  # lazy: only ttrpg items need the registry
+
+        if sid == systems.default_system(settings):
+            return None
+        catalog = systems.load_systems(settings)
+        if sid not in catalog:
+            raise KeyError(f"unknown game system id {sid!r}")
+        disclaimer = " ".join(str(systems.disclaimer_for(sid, settings) or "").split())
+        entry = catalog[sid]
+        owners = list(dict.fromkeys(o for o in [entry.get("owner"), *(entry.get("owner_names") or [])]
+                                    if isinstance(o, str) and o.strip()))
+    except Exception as e:
+        raise PublishGateError(f"{manifest.get('item_id')}: game system {sid!r} cannot be read from "
+                               f"config/ttrpg_systems.yaml ({type(e).__name__}: {e})") from None
+    return {"id": sid, "disclaimer": disclaimer, "owners": owners, "catalog": catalog}
+
+
+def _system_problems(listing: dict, found, system: dict | None, settings: dict) -> list[str]:
+    """Game-system names in the copy need that system's disclaimer; other systems, and any
+    system in alt texts or file names, are refused. core.compliance.system_mentions also
+    finds spellings the blocklist does not ("DnD5e")."""
+    problems = []
+    named = set()
+    catalog = system["catalog"] if system else None
+    detected_copy = set(system_mentions(_copy_texts(listing), catalog))
+    detected_other = set(system_mentions(_other_texts(listing), catalog))
+    own = system["id"] if system else None
+    others = sorted(detected_copy - {own}) if own else sorted(detected_copy)
+    if others:
+        problems.append(f"the copy names game systems it may not name: {', '.join(others)}")
+    if detected_other:
+        problems.append(f"alt texts or file names name a game system ({', '.join(sorted(detected_other))}); "
+                        "only the title, tags and description of a ttrpg listing may")
+    if found.allowed or (own and own in detected_copy):
+        named.add(own)
+    if system and system.get("owners"):  # the owner only in the description (its disclaimer)
+        owners = Blocklist([], [], {o: own for o in system["owners"]})
+        title_tags = [(listing.get("title") or "").strip(), *[str(t).strip() for t in listing.get("tags") or []]]
+        in_title_tags = owners.check(*title_tags).blocked
+        if in_title_tags:
+            problems.append(f"the title or tags name the trademark owner ({', '.join(in_title_tags)}); only the "
+                            "description's disclaimer may; re-list the item")
+    if named and system:
+        squash = lambda t: " ".join(str(t).split()).casefold()
+        if not system["disclaimer"] or squash(system["disclaimer"]) not in squash(listing.get("description") or ""):
+            problems.append(f"the copy names game system {own!r} but the description lacks its disclaimer "
+                            "(config/ttrpg_systems.yaml); re-list the item")
+    return problems
+
+
+def _medical_problems(listing: dict, settings: dict) -> list[str]:
+    """No medical or therapeutic claims in anything sent to Etsy (CLAUDE.md), with the
+    listing stage's own word list and safe phrases (listing.rules.medical), so a
+    hand-edited listing.json cannot carry one."""
+    from listing import listing_config, rules  # lazy: only the gate needs the copy rules
+
+    cfg = listing_config(settings)
+    texts = [*_copy_texts(listing), *map(str, listing.get("alt_texts") or [])]
+    words = sorted({w for t in texts for line in str(t).splitlines() for w in rules.medical(line, cfg)})
+    if words:
+        return [f"the listing uses medical or therapeutic wording ({', '.join(words)}); listings never make "
+                "medical claims, re-list the item"]
+    return []
 
 
 def _review_gate(item_id: str, item_dir: Path, manifest: dict, listing: dict, qa_report: dict | None,
@@ -220,9 +308,15 @@ def review_wait(item_dir: str | Path, *, settings: dict | None = None,
         raise PublishGateError(f"invalid item id {item_id!r} in {item_dir / 'manifest.json'}")
     listing = _load(item_dir / "listing.json", item_id) if (item_dir / "listing.json").exists() else {}
     qa_report = _load(item_dir / "qa_report.json", item_id) if (item_dir / "qa_report.json").exists() else None
-    blocklist = Blocklist.load(section(settings, "compliance", {}).get("trademark_blocklist"))
+    try:
+        system = _game_system(manifest, settings)
+    except PublishGateError:
+        system = None  # check_ready reports it; review terms do not depend on it
+    blocklist = Blocklist.load(section(settings, "compliance", {}).get("trademark_blocklist"),
+                               catalog=system["catalog"] if system else None)
+    allow = (system["id"],) if system else ()
     problem, _ = _review_gate(item_id, item_dir, manifest, listing, qa_report,
-                              _listing_check(listing, blocklist).flagged, settings, review_dir)
+                              _listing_check(listing, blocklist, allow).flagged, settings, review_dir)
     return problem
 
 
@@ -294,12 +388,21 @@ def check_ready(item_dir: str | Path, *, settings: dict | None = None,
     files = [str(x) for x in listing.get("file_paths") or []]
 
     comp = section(settings, "compliance", {})
-    blocklist = Blocklist.load(comp.get("trademark_blocklist"))
+    # A ttrpg item made for a game system may name it in title, tags and description only.
+    try:
+        system = _game_system(manifest, settings)
+    except PublishGateError as e:  # nothing allowed then: a copy naming the system is blocked too
+        problems.append(str(e).split(": ", 1)[-1])
+        system = None
+    allow = (system["id"],) if system else ()
+    blocklist = Blocklist.load(comp.get("trademark_blocklist"), catalog=system["catalog"] if system else None)
     # File names are sent to Etsy too; buyers see the download's name.
-    found = _listing_check(listing, blocklist)
+    found = _listing_check(listing, blocklist, allow)
     blocked = sorted(set(found.blocked) | set((listing.get("compliance") or {}).get("blocked") or []))
     if blocked:
         problems.append(f"blocked trademark terms: {', '.join(blocked)}")
+    problems += _system_problems(listing, found, system, settings)
+    problems += _medical_problems(listing, settings)
     # The copy is AI-written even when the designs are procedural (activity sheets), so the
     # listing stage discloses on every listing by default; the gate follows the same rule
     # and never relies on the listing's own claim alone.
