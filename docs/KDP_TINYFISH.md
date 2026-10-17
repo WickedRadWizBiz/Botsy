@@ -1,5 +1,7 @@
 # KDP market reader through TinyFish Fetch (docs/KDP_TINYFISH.md)
 
+> **Decided (user, 2026-10-17):** accept TinyFish on the basis in section 1 (recorded in CLAUDE.md). The weekly Saturday run is split into **3 batches, 10 minutes apart** (about 60 pages each, same 200-page weekly cap and stop rule; a block in any batch ends the remaining batches that day). No note to Open Library (volume is small). Separate Google Books API key restricted to the Books API. First KDP seeds: undated planner, habit tracker journal, brainstorming journal, rpg campaign journal, kids activity book, adult coloring book, chill manga slice of life coloring book (no password book, no fishing log book). All seven pass the trademark and health checks (2026-10-17).
+
 > **Status: design, 2026-10-17, skeptic-checked, not built.** It follows the dated exception in CLAUDE.md ("I want to use TinyFish and see how that goes"). Everything that touches Amazon is the user's accepted risk; this document only makes the trial small, slow and easy to switch off. Outside facts were read on 2026-10-17 unless a line says otherwise. "Estimate" and "unverified" mean exactly that. No Amazon page was opened while writing this; Amazon's page layout is confirmed only by the first test (section 8).
 
 ## 0. In one paragraph
