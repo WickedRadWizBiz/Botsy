@@ -1,12 +1,15 @@
-"""Botsy helper for Windows: sends EverBee and eRank exports to the Botsy server.
+"""Botsy helper for Windows: sends research exports to the Botsy server.
 
 It runs at logon from Task Scheduler with pythonw.exe (no window). Every poll it looks
-in the Downloads folder for new CSV files that look like EverBee or eRank exports and
-uploads each one, once, into the server inbox with the Windows OpenSSH sftp client.
+in the Downloads folder for new CSV files that look like research exports (eRank,
+EverBee, BookBeam and similar tools, or a filled-in Botsy template) and uploads each one,
+once, into the server inbox with the Windows OpenSSH sftp client. The server sorts them:
+Etsy data goes to research, book (KDP) data waits in its own folder.
 Once an hour it fetches the weekly search list, the status file and the daily log into
 Documents\\Botsy, and opens the search list when it changed (only the search list: the
-status file and the daily log are just kept up to date). See docs/SERVER.md sections 7
-and 11, and windows/README.md.
+status file and the daily log are just kept up to date). The same fetch brings Botsy's
+blank templates into Documents\\Botsy\\templates; a copy the user has typed in is never
+replaced. See docs/SERVER.md sections 7 and 11, and windows/README.md.
 
 Rules this file keeps:
 - Standard library only, so it runs on a plain python.org install with nothing else.
@@ -88,7 +91,11 @@ MIN_UPLOAD_BYTES_PER_SECOND = 20_000
 LOG_MAX_BYTES = 1_000_000
 LOG_BACKUPS = 3
 # Fetched from the server's outbox into Documents\Botsy. Only SEARCH_LIST is opened.
-OUTBOX_FILES = ("search-list.txt", "status.txt", "daily-log.txt")
+# Fetched hourly from the server's outbox. The templates have fixed content: they are
+# saved under templates\\ and a local copy that differs (the user typed in it) is kept.
+TEMPLATE_FILES = ("etsy-insights-template.csv", "kdp-manual-template.csv")
+TEMPLATES_SUBDIR = "templates"
+OUTBOX_FILES = ("search-list.txt", "status.txt", "daily-log.txt", *TEMPLATE_FILES)
 SEARCH_LIST = "search-list.txt"
 
 # Host and user end up on the sftp command line: a value starting with "-" would be
@@ -208,7 +215,9 @@ def _norm(cell: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", folded.lower())
 
 
-# Headers that only research exports carry: demand numbers from EverBee or eRank.
+# Headers that only research exports carry: demand numbers from eRank, EverBee and
+# similar tools, Etsy's Marketplace Insights numbers typed into the Botsy template, and
+# book data (BookBeam exports, the kdp_manual template: BSR, print length ...).
 SIGNAL_HEADERS = frozenset(_norm(h) for h in (
     "Mo. Sales", "Monthly Sales", "Est. Mo. Sales", "Est. Monthly Sales",
     "Estimated Monthly Sales", "Est. Sales", "Estimated Sales", "Est. Total Sales",
@@ -222,16 +231,36 @@ SIGNAL_HEADERS = frozenset(_norm(h) for h in (
     "Etsy Searches", "Est. Searches", "Searches", "Monthly Searches", "Search Volume",
     "Google Searches", "Search Trend", "Avg. Clicks", "Average Clicks", "CTR", "Avg. CTR",
     "Click Through Rate", "Etsy Competition", "Competition", "Competing Listings",
-    "Tag Occurrences",
+    "Tag Occurrences", "Search Results",
+    "BSR", "Best Sellers Rank", "Best Seller Rank", "Sales Rank", "ASIN", "Print Length",
+    "Page Count", "Publication Date", "Trim Size", "Ratings Count",
 ))
 # Headers research exports share with many other CSVs (order histories, the shop's own
 # listing download). They count toward the two, but cannot carry a file on their own.
 GENERIC_HEADERS = frozenset(_norm(h) for h in (
     "Product Name", "Title", "Listing Title", "Product Title", "Listing Name", "Item Title",
     "Shop Name", "Price", "Tags", "Category", "Keywords", "Keyword", "Keyword Phrase",
-    "Search Term", "Search Terms",
+    "Search Term", "Search Terms", "Author", "Dimensions", "Ratings",
 ))
+# The first line of a Botsy template ("# botsy-template: etsy_insights v1"); Excel may
+# pad it with empty cells or quote it when it saves the file as CSV.
+TEMPLATE_MARKER_RE = re.compile(
+    r'^\ufeff?\s*"?\s*#\s*botsy-template\s*:\s*[a-z0-9_]+(?:\s+v\d+)?\s*"?\s*[,;\t|]*\s*$', re.I)
 KNOWN_HEADERS = SIGNAL_HEADERS | GENERIC_HEADERS
+# Column names only order, customer or payment files carry. An Amazon order history has
+# ASIN and Product Name (so it would pass the header test) next to the shipping address:
+# a header row with one of these is never uploaded (no personal data leaves this PC;
+# research/columns.py PERSONAL_HEADERS is the same list and the server refuses them too).
+PERSONAL_HEADERS = frozenset((
+    "shippingaddress", "billingaddress", "shipaddress", "shipaddress1", "shipaddress2",
+    "shippingaddress1", "shippingaddress2", "streetaddress", "address", "address1", "address2",
+    "addressline1", "addressline2", "shipname", "shiptoname", "shipto", "shipcity",
+    "shipzipcode", "shippostalcode", "zipcode", "postalcode", "postcode", "recipient",
+    "recipientname", "buyer", "buyername", "buyeruserid", "buyeremail", "buyerusername",
+    "customer", "customername", "customeremail", "fullname", "firstname", "lastname",
+    "email", "emailaddress", "phone", "phonenumber", "telephone", "orderid", "ordernumber",
+    "transactionid", "paymentmethod", "paymenttype", "paymentinstrumenttype", "cardnumber",
+    "trackingnumber", "carriernametrackingnumber", "giftmessage", "ipaddress"))
 MIN_KNOWN_HEADERS = 2
 SNIFF_LINES = 20
 SNIFF_BYTES = 256 * 1024
@@ -295,12 +324,32 @@ def is_header_row(line: str) -> bool:
     return False
 
 
-def looks_like_export(path: str | os.PathLike) -> bool:
-    """True when one of the first 20 lines is an EverBee or eRank style header row.
+def has_personal_headers(line: str) -> bool:
+    """True when some delimiter split of `line` names a personal-data column."""
+    for delim in DELIMITERS:
+        try:
+            cells = next(csv.reader([line], delimiter=delim))
+        except (csv.Error, StopIteration):
+            continue
+        if {_norm(c) for c in cells} & PERSONAL_HEADERS:
+            return True
+    return False
 
-    That row needs at least two known research headers, and one of them has to be a
-    demand number (sales, favorites, searches, competition ...). A bank statement or
-    an order history has neither, so it is never uploaded.
+
+def is_template_marker(line: str) -> bool:
+    """True for the first line of a Botsy template, trailing commas or quotes included."""
+    return bool(TEMPLATE_MARKER_RE.match(line))
+
+
+def looks_like_export(path: str | os.PathLike) -> bool:
+    """True when one of the first 20 lines is a research-export header row, or the
+    "# botsy-template:" line of a Botsy template.
+
+    A header row needs at least two known research headers, and one of them has to be a
+    demand number (sales, favorites, searches, competition, BSR ...). A bank statement
+    or an order history has neither, so it is never uploaded. A header row that also
+    names personal data (Shipping Address, Buyer, Order ID ...: an Amazon order history
+    has ASIN and Product Name) is never uploaded either, template marker or not.
     """
     try:
         with open(path, "rb") as fh:
@@ -310,7 +359,15 @@ def looks_like_export(path: str | os.PathLike) -> bool:
     text = decode_head(data)
     if not text:
         return False
-    return any(is_header_row(line) for line in text.splitlines()[:SNIFF_LINES])
+    marker = False
+    for line in text.splitlines()[:SNIFF_LINES]:
+        if is_template_marker(line):
+            marker = True
+        elif is_header_row(line):
+            return not has_personal_headers(line)
+        elif has_personal_headers(line):
+            return False   # an order file whose header row the test above did not catch
+    return marker
 
 
 # ------------------------------------------------------------------ finding new files
@@ -590,8 +647,8 @@ def upload(path: str | os.PathLike, cfg: Mapping, *, sha256: str | None = None) 
             return UploadResult(False, "", f"{src.name} changed while it was being read",
                                 backoff=False)
         if not looks_like_export(snapshot):
-            return UploadResult(False, "", f"{src.name} does not look like an EverBee or "
-                                           "eRank export", backoff=False)
+            return UploadResult(False, "", f"{src.name} does not look like a research export",
+                                backoff=False)
         if size > int(cfg["max_upload_bytes"]):
             return UploadResult(False, "", f"{src.name} is larger than the server accepts",
                                 backoff=False)
@@ -639,16 +696,34 @@ def _same_bytes(path: Path, data: bytes) -> bool:
         return False
 
 
-def fetch_outbox(cfg: Mapping) -> dict[str, str]:
-    """Copy outbox/search-list.txt, status.txt and daily-log.txt into Documents\\Botsy.
+def _file_sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
 
-    Returns {file name: "changed" | "same" | "missing" | "error"}. "changed" means the
-    server has content this PC has not fetched before: only then is the local copy
-    replaced, and the search list opened. Fetches are compared with the last fetch
+
+def local_outbox_path(out_dir: str | os.PathLike, name: str) -> Path:
+    """Where a fetched outbox file goes: Documents\\Botsy\\<name>, templates under templates\\."""
+    out_dir = Path(out_dir)
+    return out_dir / TEMPLATES_SUBDIR / name if name in TEMPLATE_FILES else out_dir / name
+
+
+def fetch_outbox(cfg: Mapping) -> dict[str, str]:
+    """Copy outbox/search-list.txt, status.txt, daily-log.txt and the blank templates
+    into Documents\\Botsy (templates into its templates\\ subfolder).
+
+    Returns {file name: "changed" | "same" | "kept" | "missing" | "error"}. "changed"
+    means the server has content this PC has not fetched before: only then is the local
+    copy replaced, and the search list opened. Fetches are compared with the last fetch
     (recorded in outbox_state_file), not with the local copy, so a list the user ticked
     off or wrote notes in is left alone and not opened again every hour. A local copy
     the user deleted is put back quietly. Only the search list is ever opened; the
     status file and the daily log are saved for the user to open when they like.
+    A template has fixed content, so a local copy that is neither the server's copy nor
+    the blank one from the last fetch is one the user typed in: it is never replaced
+    ("kept"), whatever the server sends. A blank copy is updated when the server's
+    template changes.
     """
     out_dir = Path(cfg["outbox_dir"])
     record_path = Path(cfg["outbox_state_file"])
@@ -665,13 +740,21 @@ def fetch_outbox(cfg: Mapping) -> dict[str, str]:
             return {name: "error" for name in OUTBOX_FILES}
         for name in OUTBOX_FILES:
             got = Path(tmp) / name
-            dest = out_dir / name
+            dest = local_outbox_path(out_dir, name)
             try:
                 if not got.is_file():
                     results[name] = "missing"
                     continue
                 new = got.read_bytes()
                 digest = hashlib.sha256(new).hexdigest()
+                if name in TEMPLATE_FILES and dest.is_file() and not _same_bytes(dest, new) \
+                        and _file_sha256(dest) != fetched.get(name):
+                    # Not the server's new copy and not the blank one from the last fetch:
+                    # the user typed in it, so it stays as it is. (A blank copy from the last
+                    # fetch is replaced below when the server's template changes.)
+                    results[name] = "kept"
+                    fetched[name] = digest
+                    continue
                 seen_before = (fetched.get(name) == digest if name in fetched
                                else _same_bytes(dest, new))  # first run of this version
                 if seen_before:
@@ -756,7 +839,7 @@ class Helper:
             if not looks_like_export(cand.path):
                 self.ignored.add(cand.sha256)
                 summary["ignored"].append(cand.path.name)
-                log.info("Not uploading %s: it does not look like an EverBee or eRank export.",
+                log.info("Not uploading %s: it does not look like a research export.",
                          cand.path.name)
                 continue
             if now < self.next_upload_at:
@@ -913,7 +996,7 @@ def _log_config_problem(message: str) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="botsy_helper",
-                                description="Uploads EverBee/eRank exports to the Botsy server.")
+                                description="Uploads research exports to the Botsy server.")
     p.add_argument("--config", help=f"settings file (default {CONFIG_PATH})")
     p.add_argument("--once", action="store_true", help="do one pass and exit (for testing)")
     p.add_argument("--check", action="store_true",

@@ -386,8 +386,9 @@ def test_a_settings_mistake_in_one_rule_does_not_stop_the_others(tmp_path):
 def test_nothing_to_do_on_a_fresh_server(env):
     settings, _ = env
     res = run(settings)
-    assert res == {"rejected_uploads": [], "old_exports": [], "practice_items": [], "practice_run_summaries": [],
-                   "practice_sets": []}
+    assert res == {"rejected_uploads": [], "old_exports": [], "old_kdp_exports": [],
+                   "old_performance_files": [], "practice_items": [],
+                   "practice_run_summaries": [], "practice_sets": []}
     assert res.freed_bytes == 0 and res.problems == [] and cleanup.describe(res) == ""
 
 
@@ -402,8 +403,110 @@ def test_result_holds_only_removals(tmp_path):
 
 
 def test_defaults():
-    assert cleanup.DEFAULTS == {"rejected_max_mb": 200, "rejected_keep_days": 30, "dry_run_keep_days": 14}
+    assert cleanup.DEFAULTS == {"rejected_max_mb": 200, "rejected_keep_days": 30, "dry_run_keep_days": 14,
+                                "performance_keep_days": 400, "sales_files_keep_days": 90}
     assert cleanup.RESEARCH_DEFAULTS["keep_days"] == 180
+    assert cleanup.RESEARCH_DEFAULTS["kdp_keep_days"] == 90
+
+
+# ---------------------------------------------------------------- book (KDP) files
+
+def kdp_csv(seed: int = 0) -> bytes:
+    rows = "".join(f"Book {seed}-{i},A Writer,7.99,{10 + i},{1000 + i}\n" for i in range(3))
+    return f"Title,Author,Price,Reviews,BSR\n{rows}".encode("utf-8")
+
+
+def store_kdp(paths, data: bytes, day: str, *, ledger: bool = True, name: str | None = None) -> str:
+    """A book file as ingest routes it: research_inputs/kdp/<tool>-<date>-<sha8>.csv, ledger file kdp/<name>."""
+    sha = hashlib.sha256(data).hexdigest()
+    name = name or f"kdp-unknown-{day}-{sha[:8]}.csv"
+    folder = paths.inputs / "kdp"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_bytes(data)
+    if ledger:
+        book = inbox.load_ledger(paths.inputs / inbox.LEDGER_NAME)
+        book[sha] = {"file": f"kdp/{name}", "received": f"{day}T08:00:00+00:00",
+                     "original_name": "books.csv", "routed": inbox.KDP_REASON}
+        items.write_json(paths.inputs / inbox.LEDGER_NAME, book)
+    return name
+
+
+def test_old_book_files_are_removed_after_90_days_and_stay_in_the_ledger(env):
+    settings, paths = env
+    old_data, new_data, etsy_data = kdp_csv(1), kdp_csv(2), everbee_csv(seed=3)
+    old = store_kdp(paths, old_data, days_ago(91))
+    new = store_kdp(paths, new_data, days_ago(90))
+    etsy = store_export(paths, etsy_data, days_ago(91))        # an Etsy export: 180-day rule
+    res = run(settings)
+    assert res["old_kdp_exports"] == [old] and res["old_exports"] == []
+    assert not (paths.inputs / "kdp" / old).exists() and (paths.inputs / "kdp" / new).exists()
+    assert (paths.inputs / etsy).exists()
+    book = ledger(paths)
+    old_sha = hashlib.sha256(old_data).hexdigest()
+    assert book[old_sha]["deleted"] == TODAY.isoformat() and book[old_sha]["file"] == f"kdp/{old}"
+    assert "deleted" not in book[hashlib.sha256(new_data).hexdigest()]
+    assert "deleted" not in book[hashlib.sha256(etsy_data).hexdigest()]
+    assert "old book (KDP) file(s)" in cleanup.describe(res)
+    # Uploading the removed book file again is still a duplicate, not a new routed file.
+    upload(paths.incoming, "books again.csv", old_data)
+    again = inbox.ingest(paths.incoming, paths.inputs, paths.rejected, settings=settings, date=TODAY.isoformat())
+    assert again.routed == [] and again.duplicates == ["books again.csv"]
+
+
+def test_routed_book_file_is_kept_for_90_days_then_removed(env):
+    """End to end through ingest: a book file routed today is not touched by cleanup."""
+    settings, paths = env
+    upload(paths.incoming, "books.csv", kdp_csv(5))
+    res = inbox.ingest(paths.incoming, paths.inputs, paths.rejected, settings=settings, date=TODAY.isoformat())
+    stored = res.routed[0][1]
+    assert run(settings)["old_kdp_exports"] == [] and stored.exists()
+    later = cleanup.run(settings, now=TODAY + dt.timedelta(days=91))
+    assert later["old_kdp_exports"] == [stored.name] and not stored.exists()
+
+
+def test_book_file_date_comes_from_the_ledger_when_the_name_has_none(env):
+    settings, paths = env
+    old = store_kdp(paths, kdp_csv(6), days_ago(100), name="old-books.csv")
+    new = store_kdp(paths, kdp_csv(7), days_ago(10), name="new-books.csv")
+    res = run(settings)
+    assert res["old_kdp_exports"] == [old] and (paths.inputs / "kdp" / new).exists()
+
+
+def test_files_not_stored_by_ingest_in_the_kdp_folder_are_left_alone(env):
+    settings, paths = env
+    folder = paths.inputs / "kdp"
+    folder.mkdir(parents=True)
+    by_hand = folder / "my-notes.csv"
+    by_hand.write_bytes(kdp_csv(8))
+    set_mtime(by_hand, 400)
+    (folder / "readme.txt").write_text("not a csv", encoding="utf-8")
+    set_mtime(folder / "readme.txt", 400)
+    assert run(settings)["old_kdp_exports"] == []
+    assert by_hand.exists() and (folder / "readme.txt").exists()
+
+
+def test_kdp_keep_days_zero_switches_the_rule_off(tmp_path):
+    settings, _ = make_settings(tmp_path, research={"kdp_keep_days": 0})
+    paths = service_paths(settings)
+    old = store_kdp(paths, kdp_csv(9), days_ago(400))
+    assert run(settings)["old_kdp_exports"] == [] and (paths.inputs / "kdp" / old).exists()
+    settings, _ = make_settings(tmp_path / "b", research={"kdp_keep_days": 30})
+    paths = service_paths(settings)
+    old = store_kdp(paths, kdp_csv(9), days_ago(31))
+    assert run(settings)["old_kdp_exports"] == [old]
+
+
+def test_missing_kdp_folder_and_linked_kdp_folder(env, tmp_path):
+    settings, paths = env
+    paths.inputs.mkdir(parents=True, exist_ok=True)
+    assert run(settings)["old_kdp_exports"] == [] and run(settings).problems == []
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / f"kdp-unknown-{days_ago(200)}-deadbeef.csv").write_bytes(kdp_csv(1))
+    os.symlink(elsewhere, paths.inputs / "kdp")
+    res = run(settings)
+    assert res["old_kdp_exports"] == [] and any("link" in p for p in res.problems)
+    assert list(elsewhere.iterdir())
 
 
 # ---------------------------------------------------------------- practice design sets
@@ -450,3 +553,50 @@ def test_practice_set_cleanup_skips_links_and_unreadable_sets(env, tmp_path):
     link.symlink_to(outside, target_is_directory=True)
     res = run(settings)
     assert res["practice_sets"] == [] and bad.is_dir() and outside.is_dir() and link.is_symlink()
+
+
+# ---------------------------------------------------------------- own-shop performance files
+
+def perf_file(root, sub: str, name: str):
+    folder = root / sub
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_text("{}", encoding="utf-8")
+    return folder / name
+
+
+def test_old_performance_files_are_removed_by_the_date_in_their_name(env, tmp_path):
+    settings, _ = env
+    root = tmp_path / "data" / "performance"
+    keep = [perf_file(root, "etsy", f"{days_ago(400)}.json"), perf_file(root, "reviews", f"{days_ago(10)}.json"),
+            perf_file(root, "sales", f"{days_ago(90)}.json"), perf_file(root, "sales", "notes.json"),
+            perf_file(root, "etsy", f"{days_ago(900)}-copy.json")]
+    (root / "etsy_quota.json").write_text("{}", encoding="utf-8")
+    gone = [perf_file(root, "etsy", f"{days_ago(401)}.json"), perf_file(root, "reviews", f"{days_ago(500)}.json"),
+            perf_file(root, "sales", f"{days_ago(91)}.json")]
+    dry = items.dry_run_root(settings) / "performance"
+    gone.append(perf_file(dry, "sales", f"{days_ago(120)}.json"))
+    result = run(settings)
+    assert all(p.exists() for p in keep) and (root / "etsy_quota.json").exists()
+    assert not any(p.exists() for p in gone)
+    assert sorted(result["old_performance_files"]) == sorted(
+        [f"etsy/{days_ago(401)}.json", f"reviews/{days_ago(500)}.json", f"sales/{days_ago(91)}.json",
+         f"sales/{days_ago(120)}.json"])
+    assert "old shop performance file(s)" in cleanup.describe(result)
+
+
+def test_zero_keeps_performance_files(tmp_path):
+    settings, _ = make_settings(tmp_path, service={"performance_keep_days": 0, "sales_files_keep_days": 0})
+    root = tmp_path / "data" / "performance"
+    old = [perf_file(root, "etsy", f"{days_ago(1000)}.json"), perf_file(root, "sales", f"{days_ago(1000)}.json")]
+    assert run(settings)["old_performance_files"] == [] and all(p.exists() for p in old)
+
+
+def test_a_performance_folder_that_is_a_link_is_not_cleaned(tmp_path):
+    real = tmp_path / "elsewhere"
+    perf_file(real, "sales", f"{days_ago(500)}.json")
+    link = tmp_path / "perf-link"
+    link.symlink_to(real, target_is_directory=True)
+    settings, _ = make_settings(tmp_path, publisher={"performance_dir": str(link)})
+    result = run(settings)
+    assert (real / "sales" / f"{days_ago(500)}.json").exists()
+    assert any("is a link" in p for p in result.problems)

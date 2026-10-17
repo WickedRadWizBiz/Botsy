@@ -52,7 +52,10 @@ def _section(text, title):
 def test_empty_history_gives_seeds_and_a_note(tmp_path):
     text = searchlist.build(_settings(), tmp_path / "history", date=DAY)
     assert re.search(r"(?<!\r)\n", text) is None and text.endswith("\r\n")   # CRLF only
-    assert "EverBee Product Analytics" in text and "Export CSV" in text
+    assert "Marketplace Insights" in text and "etsy-insights-template.csv" in text
+    assert "Save As" in text and "Downloads" in text and "eRank Basic" in text
+    assert "EverBee" not in text and "10 minutes" not in text
+    assert "(check: health?)" in text                     # the legend explains the note
     assert "smarter after your first exports" in text
     assert "Sunday 18 October 2026" in text
     assert _section(text, "COLORING PAGES") == [
@@ -182,8 +185,15 @@ def test_write_saves_latest_and_dated_copy_with_crlf(tmp_path):
     assert path == outbox / "search-list.txt"
     dated = outbox / f"search-list-{DAY}.txt"
     assert path.read_bytes() == dated.read_bytes() == b"line one\r\nline two\r\nthree\r\n"
-    assert sorted(p.name for p in outbox.iterdir()) == ["search-list-2026-10-18.txt",
-                                                       "search-list.txt"]   # no temp files left
+    assert sorted(p.name for p in outbox.iterdir()) == [
+        "etsy-insights-template.csv", "kdp-manual-template.csv",   # the blank templates ride along
+        "search-list-2026-10-18.txt", "search-list.txt"]           # no temp files left
+    for name in searchlist.TEMPLATE_NAMES:
+        assert (outbox / name).read_bytes() == (searchlist.TEMPLATES_DIR / name).read_bytes()
+        assert (outbox / name).stat().st_mode & 0o777 == searchlist.FILE_MODE
+    only = tmp_path / "only-list"
+    searchlist.write(only, "x\n", DAY, templates=False)
+    assert sorted(p.name for p in only.iterdir()) == ["search-list-2026-10-18.txt", "search-list.txt"]
     with pytest.raises(ValueError):
         searchlist.write(outbox, "x", "18-10-2026")
     with pytest.raises(ValueError):
@@ -456,3 +466,115 @@ def test_ttrpg_near_miss_from_research_names_no_game_system(tmp_path, monkeypatc
     text = searchlist.build(five_niche_settings(), hist, date=DAY)
     assert "  cosmic horror rpg sheets  (7 of 10 listings, 2 of 3 shops so far)" in _section(text, "TTRPG")
     assert not re.search(r"\b(dnd|d ?& ?d|5e|dungeons)\b", text.lower())
+
+
+# ---------------------------------------------------------------- instructions and health notes
+
+def test_instructions_can_be_replaced_in_settings(tmp_path):
+    text = searchlist.build(_settings(instructions=["Step one.", "Step two."]), tmp_path / "history", date=DAY)
+    assert "What to do:\r\n  Step one.\r\n  Step two.\r\n" in text
+    assert "Marketplace Insights" not in text
+    text = searchlist.build(_settings(instructions="One line\nTwo line\n"), tmp_path / "history", date=DAY)
+    assert "  One line\r\n  Two line\r\n" in text
+    cfg = searchlist.search_config(_settings(instructions=""))
+    assert cfg["instructions"] == list(searchlist.INSTRUCTIONS)
+
+
+class _HealthBlocklist(Blocklist):
+    """The duck-typed `health_terms` path, with placeholder words. The real health file
+    never lists lifestyle words like these (test_the_shipped_health_file_keeps_lifestyle_
+    searches_clean checks the shipped config)."""
+
+    health_terms = {"sleep", "workout", "Mood"}
+
+
+def test_health_terms_get_a_review_note_not_a_block(tmp_path, monkeypatch):
+    base = searchlist.load_blocklist(_settings())
+    monkeypatch.setattr(searchlist, "load_blocklist",
+                        lambda settings: _HealthBlocklist([t for t, _ in base.hard], [t for t, _ in base.review]))
+    hist = tmp_path / "history"
+    _snap(hist, "2026-10-17", "stationery", [
+        _theme("sleep tracker", 6, 2, 0.9),
+        _theme("workout log", 5, 2, 0.8),
+        _theme("blood pressure log", 5, 2, 0.75),      # a medical log: research's blocklist drops it
+        _theme("budget", 5, 2, 0.7),
+    ])
+    from tests.research.conftest import five_niche_settings
+
+    s = five_niche_settings()
+    s.setdefault("service", {})["search_list"] = {
+        "seeds": {"stationery": ["mood journal printable", "adhd planner printable"]}}
+    text = searchlist.build(s, hist, date=DAY)
+    lines = _section(text, "STATIONERY")
+    assert lines[:2] == ["  mood journal printable  (every week)  (check: health?)",
+                         "  adhd planner printable  (every week)"]
+    assert "  sleep tracker planner pages  (6 of 10 listings, 2 of 3 shops so far)  (check: health?)" in lines
+    assert "  workout log planner pages  (5 of 10 listings, 2 of 3 shops so far)  (check: health?)" in lines
+    assert "blood pressure log" not in text
+    assert "  budget planner pages  (5 of 10 listings, 2 of 3 shops so far)" in lines
+    assert "sleeping" not in text  # whole words only: the pattern is word-bounded
+
+
+def test_borderline_health_review_terms_get_the_health_note_not_the_trademark_one(tmp_path):
+    """The compliance Blocklist (core/compliance.py): medical topics are hard terms and
+    borderline ones `?` review terms, both listed in Blocklist.health / is_health()."""
+    if not hasattr(Blocklist, "is_health"):
+        pytest.skip("Blocklist.is_health not built yet")
+    bl = Blocklist(["disney", "blood pressure"], ["period tracker", "peter rabbit"],
+                   health=["blood pressure", "period tracker"])
+    pick = searchlist._Picker(bl)
+    assert pick.line("period tracker planner pages", "(every week)").notes == ["(every week)", "(check: health?)"]
+    assert pick.line("peter rabbit stickers", "(every week)").notes == ["(every week)", "(check: trademark?)"]
+    assert pick.line("blood pressure log pages", "(every week)") is None     # medical: dropped
+    assert pick.line("sleep journal pages", "(every week)").notes == ["(every week)"]
+    assert searchlist.health_patterns(bl) and not searchlist.health_patterns(Blocklist(["x"], []))
+
+
+def test_health_patterns_accept_the_shapes_a_blocklist_may_offer():
+    class A:
+        health_terms = {"sleep": "lifestyle", "blood sugar": "medical"}
+
+    class B:
+        health_terms = None
+
+    class C:
+        pass
+
+    pats = searchlist.health_patterns(A())
+    assert [bool(rx.search("blood sugar log")) for rx in pats].count(True) == 1
+    assert not any(rx.search("sleepy owl") for rx in pats)
+    assert searchlist.health_patterns(B()) == [] and searchlist.health_patterns(C()) == []
+
+    class D:                      # the compliance Blocklist's own attribute name
+        health = frozenset({"weight loss"})
+
+    assert [bool(rx.search("weight loss tracker")) for rx in searchlist.health_patterns(D())] == [True]
+
+
+def test_publish_templates_copies_fixed_files_once(tmp_path):
+    outbox = tmp_path / "outbox"
+    written = searchlist.publish_templates(outbox)
+    assert sorted(p.name for p in written) == sorted(searchlist.TEMPLATE_NAMES)
+    etsy = (outbox / "etsy-insights-template.csv").read_text(encoding="utf-8")
+    assert etsy == "# botsy-template: etsy_insights v1\nkeyword,searches,competition,checked_on\n"
+    assert (outbox / "kdp-manual-template.csv").read_text(encoding="utf-8").startswith(
+        "# botsy-template: kdp_manual v1\nsearch_term,page_type,position,title,author,")
+    assert all(stat.S_IMODE((outbox / n).stat().st_mode) == 0o640 for n in searchlist.TEMPLATE_NAMES)
+    assert searchlist.publish_templates(outbox) == []                       # unchanged: nothing rewritten
+    (outbox / "etsy-insights-template.csv").write_text("damaged", encoding="utf-8")
+    assert [p.name for p in searchlist.publish_templates(outbox)] == ["etsy-insights-template.csv"]
+    assert [p.name for p in searchlist.publish_templates(outbox, tmp_path / "nowhere")] == []
+
+
+def test_the_shipped_health_file_keeps_lifestyle_searches_clean():
+    """User decisions of 2026-10-17 with the real config: lifestyle terms and "stress relief"
+    carry no note, borderline topics get the health note, medical logs are dropped."""
+    pick = searchlist._Picker(Blocklist.load())
+    for phrase in ("stress relief coloring pages", "adhd planner printable", "anxiety journal pages",
+                   "sleep tracker planner", "mindfulness journal", "calm coloring pages",
+                   "sugar cookie stickers"):
+        assert pick.line(phrase, "(every week)").notes == ["(every week)"], phrase
+    for phrase in ("period tracker printable", "weight loss tracker pages"):
+        assert pick.line(phrase, "(every week)").notes == ["(every week)", "(check: health?)"], phrase
+    for phrase in ("blood pressure log pages", "pill stickers", "medication tracker printable"):
+        assert pick.line(phrase, "(every week)") is None, phrase

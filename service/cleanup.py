@@ -2,7 +2,7 @@
 
     run(settings, *, now=None) -> CleanupResult   (a dict of what was removed)
 
-Three folders, each with its own rule:
+Five folders, each with its own rule:
 - Rejected uploads (service.rejected_dir, data/inbox_rejected/): a kept file and its
   `.reason.txt` go together. Entries older than service.rejected_keep_days (30) go
   first, then the oldest ones until they hold at most service.rejected_max_mb (200 MB).
@@ -19,6 +19,16 @@ Three folders, each with its own rule:
   ledger does not know), and a file whose sha256 cannot be worked out is kept. Files
   ingest did not store there (the publisher's own_shop_stats.csv, files copied in by
   hand) are left alone.
+- Book (KDP) files (research.inputs_dir/kdp/): files ingest routed there (ledger entries
+  whose file is `kdp/<name>`, or named the ingest way) received more than
+  research.kdp_keep_days (90) days ago, with the same ledger rules as the exports above
+  (docs/RESEARCH_COSTS.md section 5: raw KDP files are deleted after 90 days).
+- Own-shop performance files (publisher.performance_dir, data/performance/; docs/CONTRACTS.md
+  section 7): `etsy/<YYYY-MM-DD>.json` snapshots and `reviews/<YYYY-MM-DD>.json` older than
+  service.performance_keep_days (400) days, and `sales/<YYYY-MM-DD>.json` older than
+  service.sales_files_keep_days (90) days, by the date in the file name. Only files named
+  exactly that way are removed; etsy_quota.json and anything else is left alone. The same
+  rule runs on the dry-run copy (<dry-run folder>/performance).
 - Practice items (pipeline.dry_run_output_dir, output/dry-run/): item folders made in
   a dry run (manifest generator.dry_run true) and created more than
   service.dry_run_keep_days (14) days ago, with their review entries, plus run summaries
@@ -64,13 +74,19 @@ DEFAULTS: dict = {
     "rejected_max_mb": 200,      # data/inbox_rejected/ holds at most this much, oldest removed first
     "rejected_keep_days": 30,    # rejected uploads and reason files older than this are removed
     "dry_run_keep_days": 14,     # output/dry-run/ practice items older than this are removed
+    "performance_keep_days": 400,   # data/performance/etsy/ and reviews/ daily files older than this
+    "sales_files_keep_days": 90,    # data/performance/sales/ daily files older than this
 }
 # Read with section(settings, "research", ...); research/defaults.py has the same values.
-RESEARCH_DEFAULTS: dict = {"keep_days": 180, "window_days": 35}
+RESEARCH_DEFAULTS: dict = {"keep_days": 180, "window_days": 35, "kdp_keep_days": 90}
 LEDGER_NAME = ".ingested.json"        # service/inbox.py LEDGER_NAME
+KDP_SUBDIR = "kdp"                    # service/inbox.py KDP_SUBDIR: routed book files
 REASON_SUFFIX = ".reason.txt"
 DATED_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-")                       # rejected: <date>-<name>
 INGEST_NAME_RE = re.compile(r"(?:^|[-_])(\d{4}-\d{2}-\d{2})-[0-9a-f]{8}\.csv$", re.I)   # accepted exports
+PERF_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.json$")          # performance: <date>.json
+PERF_SUBDIRS = (("etsy", "performance_keep_days"), ("reviews", "performance_keep_days"),
+                ("sales", "sales_files_keep_days"))
 RUN_NAME_RE = re.compile(r"^run-(\d{4}-\d{2}-\d{2})-[0-9]{6}(?:-\d+)?\.json$")
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
@@ -82,7 +98,8 @@ class CleanupResult(dict):
     values (status.txt: "Old files tidied away") counts nothing else. `freed_bytes` and
     `problems` (plain text, e.g. a folder that is a link) are attributes."""
 
-    KEYS = ("rejected_uploads", "old_exports", "practice_items", "practice_run_summaries", "practice_sets")
+    KEYS = ("rejected_uploads", "old_exports", "old_kdp_exports", "old_performance_files", "practice_items",
+            "practice_run_summaries", "practice_sets")
 
     def __init__(self):
         super().__init__({k: [] for k in self.KEYS})
@@ -91,12 +108,13 @@ class CleanupResult(dict):
 
 
 def run(settings: dict, *, now: _dt.datetime | _dt.date | None = None) -> CleanupResult:
-    """Apply the three disk rules (module docstring). `now` (default: now, server local
+    """Apply the disk rules (module docstring). `now` (default: now, server local
     time) sets "today". Never raises for a disk or settings problem: it is logged and
     kept in the result's `problems`."""
     today = _today(now)
     result = CleanupResult()
     for name, step in (("rejected uploads", _rejected), ("old exports", _exports),
+                       ("old book files", _kdp_exports), ("performance files", _performance),
                        ("practice items", _dry_run)):
         try:
             step(settings, today, result)
@@ -115,6 +133,8 @@ def describe(result: dict) -> str:
     """One plain line about what run() removed ("" when nothing was removed)."""
     parts = []
     for key, what in (("rejected_uploads", "rejected upload(s)"), ("old_exports", "old export(s)"),
+                      ("old_kdp_exports", "old book (KDP) file(s)"),
+                      ("old_performance_files", "old shop performance file(s)"),
                       ("practice_items", "practice item(s)"),
                       ("practice_run_summaries", "old practice run summary(s)"),
                       ("practice_sets", "unused practice design set(s)")):
@@ -225,6 +245,49 @@ def _unlink(fd: int, name: str, result: dict) -> int:
     return st.st_size
 
 
+# ---------------------------------------------------------------- own-shop performance files
+
+def _performance_roots(settings: dict) -> list[Path]:
+    from core.config import resolve
+    from publisher.defaults import load_cfg
+
+    roots = [resolve(load_cfg(settings)["performance_dir"])]
+    dry = items.dry_run_root(settings) / "performance"
+    if not any(_overlaps(dry, r) for r in roots):
+        roots.append(dry)
+    return roots
+
+
+def _performance(settings: dict, today: _dt.date, result: dict) -> None:
+    cfg = section(settings, "service", DEFAULTS)
+    for root in _performance_roots(settings):
+        if root.is_symlink():
+            result.problems.append(_link_problem(root))
+            continue
+        for sub, key in PERF_SUBDIRS:
+            keep_days = _number(cfg, key, DEFAULTS)
+            if not keep_days:
+                continue
+            folder = root / sub
+            try:
+                fd = _open_dir(folder)
+            except _LinkedFolder:
+                result.problems.append(_link_problem(folder))
+                continue
+            if fd is None:
+                continue
+            try:
+                for name, _st in sorted(_plain_files(fd)):
+                    m = PERF_NAME_RE.match(name)
+                    day = _day(m.group(1)) if m else None
+                    if day is None or (today - day).days <= keep_days:
+                        continue
+                    if _unlink(fd, name, result):
+                        result["old_performance_files"].append(f"{sub}/{name}")
+            finally:
+                os.close(fd)
+
+
 # ---------------------------------------------------------------- rejected uploads
 
 def _rejected(settings: dict, today: _dt.date, result: dict) -> None:
@@ -333,6 +396,25 @@ def _exports(settings: dict, today: _dt.date, result: dict) -> None:
                     "for %d days so research never loses one it still counts", keep_days, window, window)
         keep_days = window
     folder = service_paths(settings).inputs
+    _purge_exports(folder, folder, keep_days, today, result, key="old_exports", prefix="",
+                   what="old exports")
+
+
+def _kdp_exports(settings: dict, today: _dt.date, result: dict) -> None:
+    """Book files ingest routed to research_inputs/kdp/ go after research.kdp_keep_days."""
+    rcfg = section(settings, "research", {**RESEARCH_PATH_DEFAULTS, **RESEARCH_DEFAULTS})
+    keep_days = _number(rcfg, "kdp_keep_days", RESEARCH_DEFAULTS)
+    if not keep_days:
+        return
+    inputs = service_paths(settings).inputs
+    _purge_exports(inputs / KDP_SUBDIR, inputs, keep_days, today, result, key="old_kdp_exports",
+                   prefix=f"{KDP_SUBDIR}/", what="old book files")
+
+
+def _purge_exports(folder: Path, ledger_dir: Path, keep_days: int, today: _dt.date, result: dict, *,
+                   key: str, prefix: str, what: str) -> None:
+    """Remove ingest-stored CSV files in `folder` received more than keep_days ago, the
+    ledger (ledger_dir/.ingested.json, where a file is listed as `<prefix><name>`) first."""
     try:
         fd = _open_dir(folder)
     except _LinkedFolder:
@@ -341,30 +423,32 @@ def _exports(settings: dict, today: _dt.date, result: dict) -> None:
     if fd is None:
         return
     try:
-        ledger_path = folder / LEDGER_NAME
+        ledger_path = ledger_dir / LEDGER_NAME
         try:
-            st = os.stat(LEDGER_NAME, dir_fd=fd, follow_symlinks=False)
+            st = os.lstat(ledger_path)
         except FileNotFoundError:
             st = None
         if st is not None and not stat.S_ISREG(st.st_mode):
-            result.problems.append("old exports: the ingest ledger is not a normal file, so old exports "
-                                      "were kept (a re-upload must still be recognised)")
+            result.problems.append(f"{what}: the ingest ledger is not a normal file, so {what} "
+                                   "were kept (a re-upload must still be recognised)")
             return
         try:
             ledger = items.read_json(ledger_path) if st is not None else {}
             if not isinstance(ledger, dict):
                 raise ValueError("not a JSON object")
         except (OSError, ValueError):
-            result.problems.append("old exports: the ingest ledger could not be read, so old exports "
-                                      "were kept (a re-upload must still be recognised)")
+            result.problems.append(f"{what}: the ingest ledger could not be read, so {what} "
+                                   "were kept (a re-upload must still be recognised)")
             return
         by_file: dict[str, list[str]] = {}
         received: dict[str, str] = {}
         for sha, entry in ledger.items():
-            if isinstance(entry, dict) and isinstance(entry.get("file"), str):
-                by_file.setdefault(entry["file"], []).append(sha)
+            if isinstance(entry, dict) and isinstance(entry.get("file"), str) \
+                    and entry["file"].startswith(prefix) and "/" not in entry["file"][len(prefix):]:
+                name = entry["file"][len(prefix):]
+                by_file.setdefault(name, []).append(sha)
                 if isinstance(entry.get("received"), str):
-                    received[entry["file"]] = entry["received"]
+                    received[name] = entry["received"]
         old: list[tuple[str, list[str]]] = []
         for name, st in sorted(_plain_files(fd)):
             if not name.lower().endswith(".csv") or not (name in by_file or INGEST_NAME_RE.search(name)):
@@ -377,7 +461,7 @@ def _exports(settings: dict, today: _dt.date, result: dict) -> None:
                 continue
             shas = by_file.get(name) or [s for s in [_sha256(fd, name)] if s]
             if not shas:
-                result.problems.append(f"old exports: {name} could not be read, so it was kept "
+                result.problems.append(f"{what}: {name} could not be read, so it was kept "
                                        "(a re-upload of it must still be recognised)")
                 continue
             old.append((name, shas))
@@ -392,13 +476,14 @@ def _exports(settings: dict, today: _dt.date, result: dict) -> None:
                 marked.setdefault(name, []).append((sha, dict(before) if isinstance(before, dict) else None))
                 entry = ledger.get(sha)
                 if not isinstance(entry, dict):
-                    entry = ledger[sha] = {"file": name, "received": received.get(name), "original_name": name}
+                    entry = ledger[sha] = {"file": prefix + name, "received": received.get(name),
+                                           "original_name": name}
                 entry["deleted"] = today.isoformat()
         items.write_json(ledger_path, ledger)
         kept = []
         for name, _ in old:
             if _unlink(fd, name, result) or not os.path.lexists(folder / name):
-                result["old_exports"].append(name)
+                result[key].append(name)
             else:
                 kept.append(name)
         if kept:  # not removed after all: its ledger entry goes back to how it was (sha kept)

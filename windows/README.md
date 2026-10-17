@@ -1,19 +1,23 @@
 # Botsy helper for Windows
 
 The Botsy helper is a small program that runs quietly on your Windows PC. When you
-export a CSV from EverBee or eRank, it sends that file to your Botsy server, and the
-server takes it from there. Once a week it also brings back your **search list**: the
-searches worth exporting next.
+save a research export as a CSV (from eRank, EverBee, BookBeam or a similar tool) or
+fill in one of Botsy's templates (see "The Etsy insights template" below), it sends
+that file to your Botsy server, and the server takes it from there. Once a week it also
+brings back your **search list**: the searches worth looking up next.
 
 **What it does**
-- Every 30 seconds it looks in your **Downloads** folder for new EverBee or eRank export files.
-- It sends each new export to your server once.
-- Once an hour it copies three files from the server into **Documents\Botsy**:
+- Every 30 seconds it looks in your **Downloads** folder for new research export files.
+- It sends each new export to your server once. The server sorts them: Etsy data goes
+  into research, book (KDP) data waits in its own folder until Botsy can read it.
+- Once an hour it copies these files from the server into **Documents\Botsy**:
   - `status.txt`: what the server did with your files;
   - `daily-log.txt`: the server's daily log, written every morning (what happened in the
     last 24 hours, items waiting for your review, spending, problems). Open it when you like;
   - `search-list.txt`: this week's searches. This one opens in Notepad by itself when it
-    changes (the other two never open by themselves).
+    changes (the other files never open by themselves);
+  - `templates\etsy-insights-template.csv` and `templates\kdp-manual-template.csv`: blank
+    Botsy templates. A copy you have typed in is never replaced.
 
 **What it never does**
 - It never sends any other file. A bank statement, an order history, a spreadsheet you
@@ -111,25 +115,56 @@ log in to Windows. You will not see a window; that is normal.
 
 ## Everyday use
 
-1. In EverBee (Product Analytics) or eRank, click **Export CSV** as usual.
+1. Make a research export: in eRank (or another research tool) click **Export CSV** as
+   usual, or fill in the Etsy insights template (next section) and save it as CSV.
 2. The file lands in your Downloads folder.
 3. Within about a minute the helper sends it to the server. You do not need to do anything.
 
 You can leave the file in Downloads, or move it somewhere else afterwards. The helper
 remembers what it sent: if you download the same file again, it is not sent a second time.
 
-Each week, when the new **search list** opens in Notepad, search each line in EverBee and
-click Export CSV. That is all.
+Each week, when the new **search list** opens in Notepad, follow the "What to do" lines
+at the top: they say where to look each search up and how to get the numbers to Botsy.
 
 You can tick off lines or write notes in `search-list.txt` and save it. The helper leaves
 your copy alone until the server has a new list, and only then replaces it (and opens it).
+
+## The Etsy insights template
+
+Etsy's own **Marketplace Insights** (Shop Manager > Stats > Marketplace Insights) shows
+real Etsy numbers for a keyword: **Searches** and **Search Results**, for the keyword you
+typed and for similar keywords. A standard Etsy account gets 15 keyword searches a week.
+Etsy has no export button, so you type the numbers into Botsy's template:
+
+1. Open **Documents\Botsy\templates\etsy-insights-template.csv** in Excel (or any
+   spreadsheet program). Leave the first two lines as they are: the `# botsy-template`
+   line tells the server what the file is, and the second line names the columns.
+2. For each search on the search list, add one row for the keyword you searched and one
+   row for each similar keyword Etsy shows:
+   - `keyword`: the words as Etsy shows them;
+   - `searches`: Etsy's **Searches** number;
+   - `competition`: Etsy's **Search Results** number (how many listings compete);
+   - `checked_on`: today's date, like `2026-10-17`.
+   Numbers with commas ("1,234") are fine. About 2-3 minutes per search.
+3. When the list is done: **File > Save As**, choose **CSV UTF-8 (Comma delimited)**,
+   pick your **Downloads** folder and give it a new name, for example
+   `etsy-insights-week-42.csv`. Click **Yes** if Excel warns about the CSV format.
+4. The helper uploads it within a minute. Keep the template itself blank for next week
+   (or just delete the rows after saving the copy).
+
+If you have typed into the template file itself, that is fine too: the helper never
+replaces a template copy that differs from the blank one. To get a fresh blank copy,
+delete yours and wait for the next hourly fetch.
+
+`kdp-manual-template.csv` is for book (KDP) research. Botsy cannot read it yet; filled-in
+copies you upload are kept on the server until it can.
 
 ## How to see that it is working
 
 - **What the helper did**: the log file. Press **Windows key + R**, paste
   `%APPDATA%\Botsy` and press Enter, then open `helper.log`. Lines like
   `Uploaded EverBee Export.csv as ...` mean a file was sent. Lines like
-  `Not uploading statement.csv: it does not look like an EverBee or eRank export` mean
+  `Not uploading statement.csv: it does not look like a research export` mean
   a file was (correctly) left alone.
 - **What the server did**: open **Documents\Botsy\status.txt**. It is updated once an
   hour (and about 15 minutes after an upload). It lists files received, any files the
@@ -147,10 +182,12 @@ A file is sent only when **all** of these are true:
 - it has finished downloading (its size stopped changing);
 - it is no bigger than 25 MB;
 - it has not been sent before (the same content under another name counts as sent);
-- its first 20 lines contain a header row with at least two column names that EverBee or
-  eRank use, and one of them is a demand number such as **Mo. Sales**, **Revenue**,
+- its first 20 lines contain a header row with at least two column names that research
+  tools use, and one of them is a demand number such as **Mo. Sales**, **Revenue**,
   **Favorites**, **Hearts**, **Reviews**, **Listing Age**, **Avg. Searches**, **Avg. Clicks**,
-  **CTR** or **Etsy Competition**.
+  **CTR**, **Etsy Competition**, **Searches**, **Search Results**, or a book number such as
+  **BSR**, **Best Sellers Rank**, **ASIN**, **Print Length** or **Publication Date**;
+  or its first 20 lines contain a Botsy template line (`# botsy-template: ...`).
 
 The last rule is what keeps your other CSV files private. A bank statement (Date,
 Description, Amount), an order history, or Etsy's own download of your listings (Title,
@@ -204,7 +241,7 @@ the installer again instead. If you do edit the file (with Notepad), sign out an
 | `watch_dir` | the folder it watches | `%USERPROFILE%\Downloads` |
 | `poll_seconds` | how often it looks | `30` |
 | `max_age_days` | ignore files older than this | `14` |
-| `outbox_dir` | where the search list, status and daily log go | `%USERPROFILE%\Documents\Botsy` |
+| `outbox_dir` | where the search list, status, daily log and templates go | `%USERPROFILE%\Documents\Botsy` |
 
 If your browser saves downloads somewhere else, put that folder in `watch_dir`, for
 example `"C:\\Users\\you\\OneDrive\\Downloads"` (two backslashes each time). If the file
@@ -221,6 +258,7 @@ is not written exactly right, the helper does not start and says so in `helper.l
 | What the last fetch of the search list, status and daily log got | `%APPDATA%\Botsy\outbox.json` |
 | The server line from Step 5 | `%APPDATA%\Botsy\server-command.txt` |
 | Search list, status and daily log | `Documents\Botsy` |
+| Blank Botsy templates | `Documents\Botsy\templates` |
 | This PC's key (keep it private, never share it) | `%USERPROFILE%\.ssh\botsy_upload` |
 
 **New PC?** Do the same steps there. It gets its own key, so paste its line on the server too.

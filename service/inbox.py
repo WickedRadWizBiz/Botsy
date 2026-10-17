@@ -17,6 +17,18 @@ it has been read once, safely, and recognized as a research export:
   they go into logs, the ledger, reason files or status.txt; one odd name must never
   stop the rest of the inbox from being processed.
 
+A file with personal or order columns (Shipping Address, Buyer, Order ID, Email ...:
+research.columns.PERSONAL_HEADERS) is refused and deleted, never stored or kept in the
+rejected folder: an Amazon order history carries ASIN and would otherwise look like a
+book file.
+
+Book files (BookBeam exports, the kdp_manual template, anything with BSR / ASIN / print
+length headers or amazon links) are research exports too, but not Etsy ones: they are
+stored in data/research_inputs/kdp/ with a ledger entry (reason "kdp export, waits for
+the KDP reader") and reported as `routed`, never as accepted (no research run) and never
+rejected. Research reads only files directly in research_inputs/, so they stay out of
+Etsy briefs until the KDP reader exists.
+
 A rejected file is moved to data/inbox_rejected/<date>-<name> with a .reason.txt next
 to it in plain words. Links, special files and files over the size limit are deleted
 instead of kept (only the reason file is written): the server never reads them, and a
@@ -51,8 +63,11 @@ SHAPES = ("listing", "keyword")       # what research.columns can aggregate
 FILE_MODE = 0o640                     # the botsy group may read stored files
 _UNSAFE = re.compile(r"[^A-Za-z0-9._ -]+")
 _LINK = "it is a link (shortcut) to another file, and the server never follows links"
-_HELP = ("The server only uses CSV files exported from EverBee or eRank (their Export CSV "
-         "button). Your own copy of the file was not changed.")
+_HELP = ("The server only uses CSV research exports: a file exported from a research tool "
+         "(its Export CSV button) or a filled-in Botsy template saved as CSV. Your own copy "
+         "of the file was not changed.")
+KDP_SUBDIR = "kdp"                    # research_inputs/kdp/: book files, waiting for the KDP reader
+KDP_REASON = "kdp export, waits for the KDP reader"
 
 
 @dataclass
@@ -60,13 +75,16 @@ class IngestResult:
     accepted: list[Path] = field(default_factory=list)       # stored files in inputs_dir
     duplicates: list[str] = field(default_factory=list)      # original names
     rejected: list[tuple[str, str]] = field(default_factory=list)  # (original name, reason)
+    routed: list[tuple[str, Path, str]] = field(default_factory=list)  # (original name, stored file, reason)
 
     def to_dict(self) -> dict:
         return {"accepted": [p.name for p in self.accepted], "duplicates": list(self.duplicates),
-                "rejected": [{"name": n, "reason": r} for n, r in self.rejected]}
+                "rejected": [{"name": n, "reason": r} for n, r in self.rejected],
+                "routed": [{"name": n, "file": f"{p.parent.name}/{p.name}", "reason": r}
+                           for n, p, r in self.routed]}
 
     def empty(self) -> bool:
-        return not (self.accepted or self.duplicates or self.rejected)
+        return not (self.accepted or self.duplicates or self.rejected or self.routed)
 
 
 class _Refused(Exception):
@@ -221,9 +239,21 @@ def _check_export(data: bytes, name: str, overrides: dict, source_tool: str) -> 
             detail = display_name(_plain_detail(str(e)))[:160]
             raise _Refused(f"it could not be read as a CSV table ({type(e).__name__}: {detail})",
                            data) from None
+    personal = columns.personal_columns(export.headers)
+    if personal:
+        # An order, customer or payment file (an Amazon order history has ASIN and Product
+        # Name next to the shipping address). No copy is kept: the server never stores
+        # personal data, so `data` is not passed on.
+        shown = ", ".join(display_name(h)[:40] for h in personal[:3])
+        raise _Refused(f"it has columns with personal or order details ({shown}), so it is not "
+                       "a research export; the server deleted it")
+    if columns.is_kdp_tool(export.tool):
+        if export.frame.empty:
+            raise _Refused("it has column names but no rows of data", data)
+        return export  # a book file: routed to the kdp/ folder, never read as Etsy data
     if export.shape not in SHAPES:
         raise _Refused("no product-title or keyword column was found, so it does not look like "
-                       "an EverBee or eRank export", data)
+                       "a research export", data)
     if export.frame.empty:
         raise _Refused("it has column names but no rows of data", data)
     return export
@@ -322,7 +352,18 @@ def ingest(incoming: str | Path, inputs_dir: str | Path, rejected_dir: str | Pat
                 log.info("duplicate %s (already received as %s)", shown, ledger[sha].get("file"))
                 continue
             export = _check_export(data, name, overrides, source_tool)
-            dest = _write_bytes(inputs_dir / accepted_name(name, export.tool, sha, day, known), data)
+            stored = accepted_name(name, export.tool, sha, day, known)
+            if columns.is_kdp_tool(export.tool):
+                dest = _write_bytes(inputs_dir / KDP_SUBDIR / stored, data)
+                ledger[sha] = {"file": f"{KDP_SUBDIR}/{dest.name}", "received": received,
+                               "original_name": shown, "routed": KDP_REASON}
+                write_json(ledger_path, ledger)
+                _remove(path)
+                result.routed.append((shown, dest, KDP_REASON))
+                log.info("kept %s as %s/%s: %s (%s, %d rows)", shown, KDP_SUBDIR, dest.name,
+                         KDP_REASON, export.tool, len(export.frame))
+                continue
+            dest = _write_bytes(inputs_dir / stored, data)
             ledger[sha] = {"file": dest.name, "received": received, "original_name": shown}
             # Saved before the upload is removed: a crash in between means a duplicate later, never a loss.
             write_json(ledger_path, ledger)

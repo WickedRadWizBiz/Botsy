@@ -83,7 +83,11 @@ class MarketFile:
     received: str = ""           # YYYY-MM-DD the export arrived (research/window.py)
 
 
-def discover_inputs(inputs_dir: Path, known_niches) -> InputFiles:
+def discover_inputs(inputs_dir: Path, known_niches, source_tool: str = "auto") -> InputFiles:
+    """The CSV files directly in `inputs_dir` by role. Subfolders (research_inputs/kdp/)
+    are never read, and a market file whose detected tool is a KDP one (a BookBeam export
+    or a kdp_manual template that reached the folder another way) is skipped: book data
+    never counts as Etsy data (the KDP reader comes with the KDP build)."""
     found = InputFiles()
     if not inputs_dir.is_dir():
         return found
@@ -96,6 +100,9 @@ def discover_inputs(inputs_dir: Path, known_niches) -> InputFiles:
             found.own_shop.append(p)
         elif role.startswith("trends"):
             found.trends.append(p)
+        elif columns.is_kdp_tool(columns.sniff_tool(p, source_tool)):
+            log.info("%s: a KDP/book export, not Etsy data; skipped (it waits for the KDP reader)",
+                     p.name)
         else:
             found.market.append(p)
     return found
@@ -162,6 +169,8 @@ def load_market_file(path: Path, cfg: dict, niche_rules, known_niches) -> Market
                     "row can show >= %d listings; none of its rows count. Export it with the "
                     "competition column, or add a listing-level export.",
                     path.name, cfg["min_listings_per_pattern"])
+    if export.estimated_monthly:
+        log.info("%s: sales figures are %s", path.name, export.sales_basis)
     return MarketFile(path.name, export.tool, export.shape, df, has_competition,
                       shop_names, titles)
 
@@ -515,7 +524,7 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
     read_dir = hist_dir if hist_dir is not None else resolve(hist_cfg["history_dir"])
 
     if blocklist is None:
-        blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
+        blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"), health_path=(settings.get("compliance") or {}).get("health_terms"))
     blocklist = extend_blocklist(blocklist, cfg["extra_blocked_terms"], cfg["extra_review_terms"])
     systems = game_system_names(settings)
     system_ids = known_system_ids(settings)

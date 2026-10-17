@@ -13,6 +13,11 @@ Listings tab has Listing, Age (Days), Views, Daily Views, Est. Sales, Price,
 Est. Revenue, Hearts, Tags. EverBee does not publish its export headers, so its
 aliases below are plausible spellings to confirm against a real export.
 
+Botsy's own templates (data/templates/, first line "# botsy-template: <kind> v1") are
+read the same way; the marker names the tool (botsy_etsy_insights, botsy_kdp_manual).
+Book files (BookBeam exports, the kdp_manual template, anything with BSR / ASIN / print
+length headers or amazon links) get a KDP tool name and never count as Etsy data.
+
 Identifying columns (shop_name, url, listing_id, image) are read only so the
 pipeline can dedupe rows and capture shop names for the compliance check; they are
 dropped right after that (see research.pipeline).
@@ -122,6 +127,44 @@ TOOL_SIGNATURES = {
 }
 KNOWN_TOOLS = ("erank", "everbee")
 
+# Botsy's own hand-typed templates (data/templates/). The first line of the file is
+# "# botsy-template: <kind> v<n>"; Excel may add trailing commas or quotes when it saves.
+TEMPLATE_MARKER_RE = re.compile(
+    r'^\ufeff?\s*"?\s*#\s*botsy-template\s*:\s*([a-z0-9_]+)(?:\s+v(\d+))?\s*"?\s*[,;\t|]*\s*$',
+    re.I | re.M)
+TEMPLATE_TOOLS = {"etsy_insights": "botsy_etsy_insights", "kdp_manual": "botsy_kdp_manual"}
+# KDP / Amazon book data (BookBeam exports, the kdp_manual template, other book tools).
+# Research never reads these as Etsy data: the inbox routes them to research_inputs/kdp/
+# and discover_inputs skips them (the KDP reader comes with the KDP build).
+KDP_TOOLS = ("bookbeam", "botsy_kdp_manual", "kdp_unknown")
+# One of these headers alone marks a book file.
+KDP_STRONG_HEADERS = frozenset({"bsr", "bestsellersrank", "bestsellerrank", "salesrank",
+                                "amazonbestsellersrank", "asin", "printlength", "pagecount",
+                                "publicationdate", "trimsize"})
+# Two of these together (or one next to a strong header) also do.
+KDP_WEAK_HEADERS = frozenset({"author", "authors", "dimensions", "pages", "publisher",
+                              "ratingscount", "numberofratings", "ratings", "format", "binding"})
+AMAZON_LINK_RE = re.compile(r"(?:^|[^a-z])(?:amazon\.[a-z]{2,3}(?:\.[a-z]{2})?|amzn\.to)/", re.I)
+# "kdp" as a word in the file name is a last resort; "amazon" is not (an Etsy export about
+# an "amazon rainforest" sticker pack must stay Etsy data).
+_KDP_NAME_RE = re.compile(r"(?:^|[^a-z0-9])kdp(?:[^a-z0-9]|$)")
+
+# Column names that only order, customer or payment files carry (an Amazon order history
+# has ASIN and Product Name next to Shipping Address; an Etsy sold-orders file has Buyer
+# and Ship Address1). Research exports never have them. A file with one of these is not
+# a research export, and the server never keeps it (CLAUDE.md: never collect personal data;
+# windows/botsy_helper.py PERSONAL_HEADERS is the same list).
+PERSONAL_HEADERS = frozenset(norm for norm in (
+    "shippingaddress", "billingaddress", "shipaddress", "shipaddress1", "shipaddress2",
+    "shippingaddress1", "shippingaddress2", "streetaddress", "address", "address1", "address2",
+    "addressline1", "addressline2", "shipname", "shiptoname", "shipto", "shipcity",
+    "shipzipcode", "shippostalcode", "zipcode", "postalcode", "postcode", "recipient",
+    "recipientname", "buyer", "buyername", "buyeruserid", "buyeremail", "buyerusername",
+    "customer", "customername", "customeremail", "fullname", "firstname", "lastname",
+    "email", "emailaddress", "phone", "phonenumber", "telephone", "orderid", "ordernumber",
+    "transactionid", "paymentmethod", "paymenttype", "paymentinstrumenttype", "cardnumber",
+    "trackingnumber", "carriernametrackingnumber", "giftmessage", "ipaddress"))
+
 
 def norm_header(header) -> str:
     """'Avg. Searches ' -> 'avgsearches'. Also drops a UTF-8 BOM and accents."""
@@ -187,17 +230,85 @@ def map_columns(headers: list[str], overrides: dict | None = None) -> dict[str, 
     return mapping
 
 
-def detect_tool(headers: list[str], filename: str = "", preamble: str = "") -> str:
-    """'erank', 'everbee' or 'unknown'. File name, then preamble text, then headers."""
+def template_kind(preamble: str) -> str | None:
+    """'etsy_insights' / 'kdp_manual' from a "# botsy-template: ..." line, else None."""
+    m = TEMPLATE_MARKER_RE.search(preamble or "")
+    return m.group(1).lower() if m else None
+
+
+def is_kdp_tool(tool: str | None) -> bool:
+    return str(tool or "") in KDP_TOOLS
+
+
+def kdp_headers(headers) -> bool:
+    """True when the header row names book data (BSR, ASIN, print length ...)."""
+    normed = {norm_header(h) for h in headers}
+    strong = normed & KDP_STRONG_HEADERS
+    weak = normed & KDP_WEAK_HEADERS
+    return bool(strong) or len(weak) >= 2
+
+
+def personal_columns(headers) -> list[str]:
+    """The header names that mark personal data (PERSONAL_HEADERS), in file order."""
+    return [str(h) for h in headers if norm_header(h) in PERSONAL_HEADERS]
+
+
+def resolve_tool(source_tool: str | None, detected: str) -> str:
+    """The tool to use: research.source_tool when it names one, except that a book file
+    (a KDP tool detected) stays a book file whatever the setting says."""
+    if source_tool in ("auto", "", None) or is_kdp_tool(detected):
+        return detected
+    return str(source_tool)
+
+
+def detect_tool(headers: list[str], filename: str = "", preamble: str = "",
+                sample: str = "") -> str:
+    """The export's source, best guess:
+    'botsy_etsy_insights' / 'botsy_kdp_manual' (a "# botsy-template:" first line),
+    'erank' / 'everbee' / 'bookbeam' (file name or preamble text, then header fingerprints),
+    'kdp_unknown' (book headers, amazon links in `sample`, or "kdp" as a word in the name),
+    else 'unknown'."""
+    kind = template_kind(preamble)
+    if kind in TEMPLATE_TOOLS:
+        return TEMPLATE_TOOLS[kind]
+    normed = {norm_header(h) for h in headers}
+    named = normalize(filename + " " + preamble)
+    if normed & KDP_STRONG_HEADERS:  # BSR or ASIN in the header row: a book file whatever its name
+        return "bookbeam" if "bookbeam" in named else "kdp_unknown"
     for text in (filename, preamble):
         low = normalize(text)
-        for tool in KNOWN_TOOLS:
+        for tool in (*KNOWN_TOOLS, "bookbeam"):
             if tool in low:
                 return tool
-    normed = {norm_header(h) for h in headers}
+    if kdp_headers(headers) or AMAZON_LINK_RE.search(sample or ""):
+        return "kdp_unknown"
     scores = {tool: len(normed & sig) for tool, sig in TOOL_SIGNATURES.items()}
     tool, score = max(sorted(scores.items()), key=lambda kv: kv[1])
-    return tool if score >= 2 else "unknown"
+    if score >= 2:
+        return tool
+    if _KDP_NAME_RE.search(normalize(filename)):
+        return "kdp_unknown"
+    return "unknown"
+
+
+SAMPLE_LINES = 60   # lines of the decoded file detect_tool may scan for amazon links
+
+
+def sniff_tool(path: str | Path, source_tool: str = "auto") -> str:
+    """The tool of the export at `path` without parsing its rows ('unknown' when the file
+    cannot be read). research.pipeline uses it to keep book files out of Etsy research.
+    A forced `source_tool` (research.source_tool) wins, except over a book file."""
+    path = Path(path)
+    try:
+        text, _ = decode(path.read_bytes())
+        lines = text.splitlines(keepends=True)
+        idx, delim = find_header(lines)
+        headers = _cells(lines[idx], delim) if idx < len(lines) else []
+        detected = detect_tool(headers, path.name, "".join(lines[:idx]),
+                               "".join(lines[:SAMPLE_LINES]))
+    except (OSError, UnicodeError, csv.Error, ValueError):
+        detected = "unknown"
+    return resolve_tool(source_tool, detected)
 
 
 def detect_shape(mapping: dict[str, str]) -> str | None:
@@ -399,6 +510,20 @@ class Export:
     tool: str
     shape: str | None
     shop_names: set[str] = field(default_factory=set)  # from etsy.com/shop/<name> links in any cell
+    # eRank Top Listings give Est. Sales / Est. Revenue over the life of a listing. With an
+    # Age (Days) column they are turned into per-month estimates (value * 30.4 / max(age,
+    # 30.4)); the exported values stay here, keyed by canonical column.
+    lifetime: dict[str, pd.Series] = field(default_factory=dict)
+    estimated_monthly: tuple[str, ...] = ()   # canonical columns converted that way
+    headers: list[str] = field(default_factory=list)   # the file's own header row
+
+    @property
+    def sales_basis(self) -> str:
+        """A label for the sales and revenue figures: "as exported" or the monthly estimate."""
+        if self.estimated_monthly:
+            cols = " and ".join(self.estimated_monthly)
+            return f"estimated monthly ({cols} from lifetime figures and listing age)"
+        return "as exported"
 
 
 # Etsy shop links ("etsy.com/shop/Name", "etsy.com/de/shop/Name") anywhere in the file,
@@ -416,8 +541,8 @@ def load_export(path: str | Path, overrides: dict | None = None,
     raw = read_raw(path)
     headers = list(raw.frame.columns)
     mapping = map_columns(headers, overrides)
-    tool = detect_tool(headers, path.name, raw.preamble) if source_tool in ("auto", "", None) \
-        else str(source_tool)
+    sample = "".join(raw.text.splitlines(keepends=True)[:SAMPLE_LINES])
+    tool = resolve_tool(source_tool, detect_tool(headers, path.name, raw.preamble, sample))
     data: dict[str, pd.Series] = {}
     for canon, header in mapping.items():
         col = raw.frame[header].fillna("").astype(str).str.strip()
@@ -435,4 +560,37 @@ def load_export(path: str | Path, overrides: dict | None = None,
         keep = joined.ne("") & ~joined.str.lower().isin(_JUNK_ROWS)
         frame = frame[keep].reset_index(drop=True)
     shops = set(SHOP_URL_RE.findall(raw.text))
-    return Export(path, frame, mapping, tool, detect_shape(mapping), shops)
+    shape = detect_shape(mapping)
+    lifetime, converted = _monthly_from_lifetime(frame, mapping, tool, shape)
+    return Export(path, frame, mapping, tool, shape, shops, lifetime, converted,
+                  [str(h) for h in headers])
+
+
+DAYS_PER_MONTH = 30.4
+_MONTHLY_HEADER_RE = re.compile(r"\b(mo|month|monthly|30 day|per month|daily)\b")
+
+
+def _monthly_from_lifetime(frame: pd.DataFrame, mapping: dict[str, str], tool: str,
+                           shape: str | None) -> tuple[dict[str, pd.Series], tuple[str, ...]]:
+    """eRank Top Listings: Est. Sales and Est. Revenue are lifetime figures (eRank help
+    center). With a listing age they become per-month estimates in place, so
+    sales_per_listing is not skewed toward old listings: value * 30.4 / max(age, 30.4).
+    A column whose header already says monthly is left alone. A row with no age cannot
+    be converted, so its figure becomes missing (the column is labelled monthly, and a
+    lifetime number in it would favour old listings); the exported value stays in
+    `lifetime`. Returns (exported values by column, columns converted)."""
+    if tool != "erank" or shape != "listing" or "listing_age" not in frame or frame.empty:
+        return {}, ()
+    age = pd.to_numeric(frame["listing_age"], errors="coerce")
+    factor = DAYS_PER_MONTH / age.clip(lower=DAYS_PER_MONTH)
+    lifetime: dict[str, pd.Series] = {}
+    converted: list[str] = []
+    for col in ("sales", "revenue"):
+        if col not in frame or _MONTHLY_HEADER_RE.search(spaced_header(mapping.get(col, ""))):
+            continue
+        raw = frame[col].copy()
+        monthly = raw * factor
+        frame[col] = monthly   # NaN where the age is missing
+        lifetime[col] = raw
+        converted.append(col)
+    return lifetime, tuple(converted)

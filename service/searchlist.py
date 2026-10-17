@@ -1,8 +1,11 @@
-"""Weekly search list: which searches to export from EverBee next (docs/SERVER.md section 4).
+"""Weekly search list: which searches to look up next (docs/SERVER.md section 4).
 
-Competitor data may only come from exports the user makes in a licensed tool (CLAUDE.md:
-no scraping, no browser automation on etsy.com). So instead of fetching data, the
-server tells the user, once a week, which searches would help most:
+Competitor data may only come from exports the user makes in a licensed tool, or from
+numbers the user reads in Etsy's own Marketplace Insights and types into Botsy's
+etsy-insights template (CLAUDE.md: no scraping, no browser automation on etsy.com;
+docs/RESEARCH_COSTS.md). So instead of fetching data, the server tells the user, once a
+week, which searches would help most, with instructions per source (Marketplace Insights
+now, eRank Basic exports later; service.search_list.instructions):
 1. seed searches for each niche, repeated every week;
 2. near misses from research history: themes close to the brief thresholds, with how
    far along they are ("7 of 10 listings, 2 of 3 shops so far"; in the refined research
@@ -14,8 +17,12 @@ server tells the user, once a week, which searches would help most:
 The progress text uses the active research stage's thresholds (research/stages.py).
 
 The file is plain text with CRLF line endings, because the user opens it in Notepad on
-Windows (the helper downloads it from the outbox). Every phrase passes the trademark
-blocklist: blocked phrases are dropped, flagged ones are marked "(check: trademark?)".
+Windows (the helper downloads it from the outbox, with the blank templates that
+publish_templates() puts there). Every phrase passes the trademark blocklist: blocked
+phrases are dropped, flagged ones are marked "(check: trademark?)", and a phrase naming
+a health term (the blocklist's health file, core.compliance Blocklist.health_terms) is
+marked "(check: health?)": lifestyle journals are fine, medical logs are not (user,
+2026-10-17; docs/HEALTH_TERMS.md).
 The text is our own wording plus theme n-grams from history, which already passed the
 brief guard; nothing here goes to a model.
 """
@@ -24,14 +31,15 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import re
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date as Date
 from pathlib import Path
 
 from core.compliance import Blocklist, find_urls, normalize
-from core.config import check_date, resolve, section
+from core.config import ROOT, check_date, resolve, section
 from research import history, stages
 from research.defaults import load_config
 from research.window import iso_week
@@ -41,10 +49,29 @@ log = logging.getLogger(__name__)
 
 # Read with core.config.section(settings, "service", DEFAULTS)["search_list"]; settings win
 # (a seeds list in settings replaces that niche's default list).
+# The "What to do" block at the top of the list, one source at a time. Settings may
+# replace it (service.search_list.instructions: a list of lines or one multi-line string).
+INSTRUCTIONS: tuple[str, ...] = (
+    "Etsy Marketplace Insights (free; 15 keyword searches a week on a standard account;",
+    "about 2-3 minutes per search, so 30-45 minutes for a full list):",
+    "  1. In Etsy, open Shop Manager > Stats > Marketplace Insights and search for a line",
+    "     below. Type only the words before the brackets.",
+    "  2. Open the Botsy template Documents\\Botsy\\templates\\etsy-insights-template.csv in",
+    "     Excel. Add one row for the keyword you searched and one for each similar keyword",
+    "     Etsy shows: the keyword, Etsy's \"Searches\" number, Etsy's \"Search Results\" number,",
+    "     and today's date (columns keyword, searches, competition, checked_on).",
+    "  3. When the list is done: File > Save As > \"CSV UTF-8\" into your Downloads folder,",
+    "     with a new name (for example etsy-insights-week-42.csv). The Botsy helper on your",
+    "     PC uploads it for you. Keep the template itself blank for next week.",
+    "Later, with eRank Basic: look each line up in the Keyword Tool and click Export on",
+    "Keyword Ideas and on Top Listings. Leave the files in Downloads; the helper uploads them.",
+)
+
 DEFAULTS: dict = {
     "search_list": {
         "max_per_niche": 6,       # search lines per niche section
         "recheck_weeks": 2,       # a qualified theme not seen for this long is listed again
+        "instructions": list(INSTRUCTIONS),
         # Our own generic searches. No brands: "goodnotes stickers" would be flagged
         # (?GoodNotes in config/trademark_blocklist.txt), so it is not a default.
         "seeds": {
@@ -67,7 +94,12 @@ DEFAULTS: dict = {
 }
 
 FLAG_NOTE = "(check: trademark?)"
+HEALTH_NOTE = "(check: health?)"
 LATEST_NAME = "search-list.txt"
+# Botsy's blank templates (data/templates/), copied into the outbox so the helper brings
+# them to the PC. Fixed content: the helper never replaces a copy the user typed in.
+TEMPLATES_DIR = ROOT / "data" / "templates"
+TEMPLATE_NAMES = ("etsy-insights-template.csv", "kdp-manual-template.csv")
 CRLF = "\r\n"
 # The outbox is group botsy, mode 2750, and the upload account (in group botsy) downloads
 # from it. mkstemp creates files with mode 600, so the mode is set before the rename;
@@ -75,18 +107,18 @@ CRLF = "\r\n"
 FILE_MODE = 0o640
 
 HEADER = """\
-What to do (about 10 minutes):
-  1. Search for each line below in EverBee Product Analytics.
-     Type only the words before the brackets.
-  2. Click "Export CSV" and leave the file in your Downloads folder.
-  3. That's it. The Botsy helper on your PC uploads it for you.
+What to do:
+{instructions}
 {stage_note}
 What the notes in brackets mean:
-  (every week)          a starter search. Export it every week.
+  (every week)          a starter search. Look it up every week.
   (7 of {t} listings...) an idea that is close. Botsy needs {t} listings from {s} different
 {close}
   (recheck...)          an idea Botsy already uses. A fresh export keeps it up to date.
   (check: trademark?)   might be a brand or character name. If it is, skip it.
+  (check: health?)      a health word. A lifestyle journal (sleep, mood, workout, gratitude)
+                        is fine; a medical log (blood pressure, medication, symptoms) is
+                        not. Skip it if it is a medical one.
 """
 CLOSE = {
     "discovery": "                        shops before it makes a design, and more exports get it there.",
@@ -126,6 +158,12 @@ def search_config(settings: dict) -> dict:
     seeds = cfg.get("seeds")
     seeds = copy.deepcopy(base["seeds"]) if seeds is None else seeds
     cfg["seeds"] = {n: [v] if isinstance(v, str) else list(v or []) for n, v in seeds.items()}
+    lines = cfg.get("instructions")
+    if lines is None or lines == "":
+        lines = list(base["instructions"])
+    elif isinstance(lines, str):
+        lines = lines.replace("\r\n", "\n").rstrip("\n").split("\n")
+    cfg["instructions"] = [str(ln).rstrip() for ln in lines]
     return cfg
 
 
@@ -142,7 +180,7 @@ def shop_niches(settings: dict) -> list[str]:
 def load_blocklist(settings: dict) -> Blocklist:
     """The blocklist research uses: the trademark file plus research.extra_*_terms."""
     rcfg = load_config(settings)
-    base = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
+    base = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"), health_path=(settings.get("compliance") or {}).get("health_terms"))
     return extend_blocklist(base, rcfg["extra_blocked_terms"], rcfg["extra_review_terms"])
 
 
@@ -251,12 +289,36 @@ def _weeks_ago(days: int) -> str:
     return "1 week ago" if weeks == 1 else f"{weeks} weeks ago"
 
 
+def health_patterns(blocklist) -> list[re.Pattern]:
+    """Word-bounded patterns for the blocklist's health terms (Blocklist.health_terms, else
+    Blocklist.health: a set, list or mapping of the terms that came from the health file;
+    an older Blocklist with neither means no health notes from here)."""
+    terms = getattr(blocklist, "health_terms", None)
+    if terms is None:
+        terms = getattr(blocklist, "health", None)
+    terms = terms or ()
+    if callable(terms):
+        terms = terms() or ()
+    if isinstance(terms, Mapping):
+        terms = terms.keys()
+    if isinstance(terms, str) or not isinstance(terms, Iterable):
+        terms = [terms] if isinstance(terms, str) else []
+    out = []
+    for t in terms:
+        norm = " ".join(normalize(str(t)).split())
+        if norm:
+            out.append(re.compile(r"(?<![a-z0-9])" + re.escape(norm).replace(r"\ ", r"\s+")
+                                  + r"(?![a-z0-9])"))
+    return out
+
+
 class _Picker:
     """Builds phrases, checks each against the blocklist and drops repeats."""
 
     def __init__(self, blocklist: Blocklist):
         self.blocklist = blocklist
         self.seen: set[str] = set()
+        self.health = health_patterns(blocklist)
 
     def line(self, phrase: str, note: str, flagged: bool = False) -> Line | None:
         phrase = " ".join(str(phrase or "").split())
@@ -267,7 +329,15 @@ class _Picker:
         if result.blocked:
             return None  # a licensed name never goes on the list
         self.seen.add(key)
-        notes = [note] + ([FLAG_NOTE] if flagged or result.flagged else [])
+        # A review term from the health file (a borderline topic: period, weight loss,
+        # sobriety ...) is a health note, not a trademark one. A medical term is a hard
+        # term and was dropped above; lifestyle words never reach the health file.
+        is_health = getattr(self.blocklist, "is_health", None)
+        health_hits = [t for t in result.flagged if callable(is_health) and is_health(t)]
+        trademark_hits = [t for t in result.flagged if t not in health_hits]
+        notes = [note] + ([FLAG_NOTE] if flagged or trademark_hits else [])
+        if health_hits or getattr(result, "health", None) or any(rx.search(key) for rx in self.health):
+            notes.append(HEALTH_NOTE)
         return Line(phrase, notes)
 
 
@@ -396,6 +466,7 @@ def build(settings: dict, history_dir=None, *, date: str, status: Mapping | None
     refined = stage == "refined"
     w = th["min_weeks_seen"]
     header = HEADER.format(t=th["min_listings"], s=th["min_shops"],
+                           instructions="\n".join(f"  {ln}".rstrip() for ln in cfg["instructions"]),
                            close=CLOSE["refined" if refined else "discovery"].format(w=w),
                            stage_note=REFINED_NOTE.format(w=w) if refined else "")
     out = [title, "=" * len(title), "", *header.splitlines()]
@@ -430,14 +501,49 @@ def _atomic_write(path: Path, data: bytes) -> Path:
     return path
 
 
-def write(outbox: str | Path, text: str, date: str) -> Path:
+def publish_templates(outbox: str | Path, templates_dir: str | Path | None = None) -> list[Path]:
+    """Copy Botsy's blank templates (TEMPLATE_NAMES, from data/templates/) into the outbox,
+    mode 640, when they are missing there or differ; returns the files written. The
+    helper downloads them into Documents\\Botsy\\templates. Never raises for a missing
+    template (it is logged): the search list must still go out."""
+    outbox = Path(outbox)
+    src_dir = Path(templates_dir) if templates_dir else TEMPLATES_DIR
+    written: list[Path] = []
+    for name in TEMPLATE_NAMES:
+        src = src_dir / name
+        try:
+            data = src.read_bytes()
+        except OSError as e:
+            log.warning("template %s not published: %s", name, e)
+            continue
+        dest = outbox / name
+        try:
+            if dest.is_file() and dest.read_bytes() == data:
+                continue
+        except OSError:
+            pass
+        outbox.mkdir(parents=True, exist_ok=True)
+        written.append(_atomic_write(dest, data))
+    return written
+
+
+def write(outbox: str | Path, text: str, date: str, *, templates: bool = True) -> Path:
     """Save outbox/search-list-<date>.txt and outbox/search-list.txt (latest); return the latest.
 
-    Line endings are made CRLF whatever `text` uses; the file is UTF-8.
+    Line endings are made CRLF whatever `text` uses; the file is UTF-8. The blank Botsy
+    templates go into the outbox at the same time (publish_templates; `templates=False`
+    skips that), so the helper's hourly fetch brings them to the PC with the list. A
+    problem with the templates is logged and never stops the list.
     """
     day = check_date(date)
     outbox = Path(outbox)
     outbox.mkdir(parents=True, exist_ok=True)
     data = _crlf(text).encode("utf-8")
     _atomic_write(outbox / f"search-list-{day}.txt", data)
-    return _atomic_write(outbox / LATEST_NAME, data)
+    latest = _atomic_write(outbox / LATEST_NAME, data)
+    if templates:
+        try:
+            publish_templates(outbox)
+        except Exception as e:  # noqa: BLE001 - the list itself is already written
+            log.warning("templates not published to the outbox: %s", e)
+    return latest

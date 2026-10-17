@@ -34,6 +34,19 @@ ETSY_ADS = ("Listing,Views,Clicks,Click rate,Orders,Revenue,Spend,ROAS\n"
 SOLD_ORDERS = ("Sale Date,Item Name,Buyer,Quantity,Price,Coupon Code,Order ID,Ship Name,"
                "Ship Address1,Ship City,Ship Zipcode\n"
                "10/01/26,Planner,buyer1,1,4.00,,1,A Person,1 Road,Town,12345\n")
+# Book data: a BookBeam-style export and the two Botsy templates (data/templates/) as
+# Excel saves them after the user typed in them (BOM, padded first line).
+BOOKBEAM = ("Title,Author,Price,Reviews,BSR,Print Length,Publication Date\n"
+            "Big Sudoku Book,A Writer,7.99,120,12345,120,2025-03-01\n")
+KDP_TEMPLATE = ("\ufeff# botsy-template: kdp_manual v1,,,,,,,,,,\r\n"
+                "search_term,page_type,position,title,author,price,ratings_count,bsr,print_length,"
+                "publication_date,dimensions\r\n"
+                "sudoku,search,1,Big Sudoku Book,A Writer,7.99,120,\"#12,345 in Books\",120,2025-03-01,"
+                "8.5 x 0.3 x 11 inches\r\n")
+ETSY_TEMPLATE = ("\ufeff\"# botsy-template: etsy_insights v1\",,,\r\nkeyword,searches,competition,checked_on\r\n"
+                 "frog stickers,1234,5600,2026-10-17\r\n")
+TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "data" / "templates"
+NO_TEMPLATES = {"etsy-insights-template.csv": "missing", "kdp-manual-template.csv": "missing"}
 
 
 def write(path: Path, text: str | bytes, age_s: float = 3600) -> Path:
@@ -61,6 +74,14 @@ def write(path: Path, text: str | bytes, age_s: float = 3600) -> Path:
     ("odd-spacing", '" PRODUCT  NAME ","mo sales",price\nx,1,2\n'.encode()),
     ("keyword-only", "Keyword,Searches,Competition\nfrog stickers,500,2000\n".encode()),
     ("erank-top-listings", ERANK_TOP.encode()),
+    ("insights-results", "Keyword,Searches,Search Results\nfrog stickers,500,2000\n".encode()),
+    ("bookbeam", BOOKBEAM.encode()),
+    ("asin", b"Title,ASIN,Price\nBig Sudoku Book,B0TEST1234,7.99\n"),
+    ("kdp-template", KDP_TEMPLATE.encode("utf-8")),
+    ("etsy-template", ETSY_TEMPLATE.encode("utf-8")),
+    ("etsy-template-blank", (TEMPLATES_DIR / "etsy-insights-template.csv").read_bytes()),
+    ("kdp-template-blank", (TEMPLATES_DIR / "kdp-manual-template.csv").read_bytes()),
+    ("marker-only", b"# botsy-template: etsy_insights v1\nsomething,else\n"),
 ])
 def test_looks_like_export_accepts_research_exports(bh, tmp_path, name, data):
     assert bh.looks_like_export(write(tmp_path / f"{name}.csv", data)) is True
@@ -79,6 +100,8 @@ def test_looks_like_export_accepts_research_exports(bh, tmp_path, name, data):
     ("words-in-a-row", b"I like Mo. Sales and Favorites a lot\n"),
     ("etsy-ads", ETSY_ADS.encode()),
     ("sold-orders", SOLD_ORDERS.encode()),
+    ("author-only", b"Title,Author,Price\nA Book,Someone,7.99\n"),      # generic headers only
+    ("not-a-marker", b"# my notes: botsy-template is nice\nTitle,Price\nx,1\n"),
 ])
 def test_looks_like_export_rejects_everything_else(bh, tmp_path, name, data):
     assert bh.looks_like_export(write(tmp_path / f"{name}.csv", data)) is False
@@ -427,16 +450,18 @@ def test_fetch_outbox_opens_search_list_only_on_change(bh, cfg, fake_sftp, monke
                         "outbox/status.txt": b"last tick: ok\r\n"}
     out = Path(cfg["outbox_dir"])
     assert bh.fetch_outbox(cfg) == {"search-list.txt": "changed", "status.txt": "changed",
-                                    "daily-log.txt": "missing"}
+                                    "daily-log.txt": "missing", **NO_TEMPLATES}
     assert opened == [str(out / "search-list.txt")]
     assert (out / "status.txt").read_bytes() == b"last tick: ok\r\n"
     assert fake_sftp.calls[0]["batch"] == ['-get "outbox/search-list.txt" "search-list.txt"',
                                            '-get "outbox/status.txt" "status.txt"',
-                                           '-get "outbox/daily-log.txt" "daily-log.txt"']
+                                           '-get "outbox/daily-log.txt" "daily-log.txt"',
+                                           '-get "outbox/etsy-insights-template.csv" "etsy-insights-template.csv"',
+                                           '-get "outbox/kdp-manual-template.csv" "kdp-manual-template.csv"']
 
     fake_sftp.outbox["outbox/status.txt"] = b"last tick: newer\r\n"
     assert bh.fetch_outbox(cfg) == {"search-list.txt": "same", "status.txt": "changed",
-                                    "daily-log.txt": "missing"}
+                                    "daily-log.txt": "missing", **NO_TEMPLATES}
     assert len(opened) == 1
 
     fake_sftp.outbox["outbox/search-list.txt"] = b"frog stickers\r\n"
@@ -449,10 +474,9 @@ def test_fetch_outbox_missing_files_and_errors(bh, cfg, monkeypatch):
     monkeypatch.setattr(bh.os, "startfile", lambda p: opened.append(p), raising=False)
     monkeypatch.setattr(bh.subprocess, "run", FakeSftp())
     assert bh.fetch_outbox(cfg) == {"search-list.txt": "missing", "status.txt": "missing",
-                                    "daily-log.txt": "missing"}
+                                    "daily-log.txt": "missing", **NO_TEMPLATES}
     monkeypatch.setattr(bh.subprocess, "run", FakeSftp(returncode=255, stderr="timed out"))
-    assert bh.fetch_outbox(cfg) == {"search-list.txt": "error", "status.txt": "error",
-                                    "daily-log.txt": "error"}
+    assert bh.fetch_outbox(cfg) == {name: "error" for name in bh.OUTBOX_FILES}
     assert opened == []
 
 
@@ -734,3 +758,115 @@ def test_run_sftp_timeout_returns_promptly(bh, cfg, tmp_path):
     assert time.monotonic() - started < 3.5
     assert not res.ok and "did not answer within 1 seconds" in res.message
     assert "still connecting" in res.stderr
+
+
+# ------------------------------------------------------------------ templates and wording
+
+@pytest.mark.parametrize("line, ok", [
+    ("# botsy-template: etsy_insights v1", True),
+    ("# botsy-template: kdp_manual v1,,,,,,,,,,", True),
+    ('"# botsy-template: etsy_insights v1",,,', True),
+    ("\ufeff# botsy-template: etsy_insights v1", True),
+    ("#botsy-template:etsy_insights", True),
+    ("# botsy-template: etsy_insights v1,notes", False),
+    ("botsy-template: etsy_insights v1", False),
+    ("keyword,searches,competition,checked_on", False),
+])
+def test_is_template_marker(bh, line, ok):
+    assert bh.is_template_marker(line) is ok
+
+
+def test_kdp_header_names_are_signals_and_author_is_not(bh):
+    assert {"bsr", "bestsellersrank", "salesrank", "asin", "printlength", "pagecount",
+            "publicationdate", "trimsize", "ratingscount", "searchresults"} <= bh.SIGNAL_HEADERS
+    assert {"author", "dimensions"} <= bh.GENERIC_HEADERS
+    assert not ({"author", "dimensions"} & bh.SIGNAL_HEADERS)
+
+
+def test_messages_say_research_export(bh, cfg, fake_sftp, winenv, caplog):
+    import logging
+
+    src = write(Path(winenv["USERPROFILE"]) / "Downloads" / "bank.csv", BANK)
+    res = bh.upload(src, cfg)
+    assert res.message == "bank.csv does not look like a research export"
+    helper = bh.Helper(cfg)
+    with caplog.at_level(logging.INFO, logger="botsy_helper"):
+        helper.poll()
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "bank.csv: it does not look like a research export" in said
+    assert "EverBee" not in said and "eRank" not in said
+
+
+def test_book_files_upload_like_any_export(bh, cfg, fake_sftp, winenv):
+    down = Path(winenv["USERPROFILE"]) / "Downloads"
+    for name, text in (("BookBeam Export.csv", BOOKBEAM), ("kdp-coloring-oct.csv", KDP_TEMPLATE),
+                       ("etsy-insights-week-42.csv", ETSY_TEMPLATE)):
+        res = bh.upload(write(down / name, text.encode("utf-8")), cfg)
+        assert res.ok, res.message
+    sent = [c["batch"][0] for c in fake_sftp.calls]
+    assert len(sent) == 3 and all(ln.startswith("put ") for ln in sent)
+
+
+def test_fetch_outbox_saves_templates_under_templates_and_never_overwrites_a_filled_copy(
+        bh, cfg, fake_sftp, monkeypatch):
+    opened = []
+    monkeypatch.setattr(bh.os, "startfile", lambda p: opened.append(p), raising=False)
+    etsy = (TEMPLATES_DIR / "etsy-insights-template.csv").read_bytes()
+    kdp = (TEMPLATES_DIR / "kdp-manual-template.csv").read_bytes()
+    fake_sftp.outbox = {"outbox/etsy-insights-template.csv": etsy, "outbox/kdp-manual-template.csv": kdp,
+                        "outbox/search-list.txt": b"frog stickers\r\n"}
+    out = Path(cfg["outbox_dir"])
+    res = bh.fetch_outbox(cfg)
+    assert res["etsy-insights-template.csv"] == "changed" and res["kdp-manual-template.csv"] == "changed"
+    local = out / "templates" / "etsy-insights-template.csv"
+    assert local.read_bytes() == etsy and (out / "templates" / "kdp-manual-template.csv").read_bytes() == kdp
+    assert bh.local_outbox_path(out, "status.txt") == out / "status.txt"
+    assert opened == [str(out / "search-list.txt")]            # templates never open by themselves
+
+    # Hourly fetches of the same fixed content change nothing.
+    assert bh.fetch_outbox(cfg)["etsy-insights-template.csv"] == "same"
+    # A blank copy the user never touched follows the server when the template changes.
+    v2 = etsy.replace(b"v1", b"v2")
+    fake_sftp.outbox["outbox/etsy-insights-template.csv"] = v2
+    assert bh.fetch_outbox(cfg)["etsy-insights-template.csv"] == "changed"
+    assert local.read_bytes() == v2
+    # The user types into the template: it is kept, even when the server's copy is newer.
+    local.write_bytes(v2 + b"frog stickers,1234,5600,2026-10-17\n")
+    assert bh.fetch_outbox(cfg)["etsy-insights-template.csv"] == "kept"
+    v3 = etsy.replace(b"v1", b"v3")
+    fake_sftp.outbox["outbox/etsy-insights-template.csv"] = v3
+    assert bh.fetch_outbox(cfg)["etsy-insights-template.csv"] == "kept"
+    assert local.read_bytes() == v2 + b"frog stickers,1234,5600,2026-10-17\n"
+    # A deleted copy is put back quietly.
+    local.unlink()
+    assert bh.fetch_outbox(cfg)["etsy-insights-template.csv"] == "same"
+    assert local.read_bytes() == v3 and len(opened) == 1
+
+
+# ------------------------------------------------------------------ personal data (review 2026-10-17)
+
+# Amazon's own order-history download ("Retail.OrderHistory.1.csv") has ASIN and Product
+# Name, which pass the header test, next to addresses and payment details.
+AMAZON_RETAIL_HISTORY = ("Website,Order ID,Order Date,Unit Price,ASIN,Product Name,"
+                         "Shipping Address,Billing Address,Payment Instrument Type\n"
+                         "Amazon.com,111-1,2026-10-01,9.99,B000000000,A Book,1 Road,1 Road,Visa\n")
+
+
+@pytest.mark.parametrize("name,data", [
+    ("Retail.OrderHistory.1", AMAZON_RETAIL_HISTORY),
+    ("asin-and-email", "ASIN,Title,BSR,Email\nB0,A Book,10,a@example.invalid\n"),
+    ("template-with-orders", "# botsy-template: etsy_insights v1,,,\n"
+                             "keyword,searches,Buyer,Ship Address1\nfrog,10,someone,1 Road\n"),
+])
+def test_files_with_personal_columns_are_never_uploaded(bh, tmp_path, name, data):
+    assert bh.looks_like_export(write(tmp_path / f"{name}.csv", data)) is False
+
+
+def test_personal_header_words_inside_data_rows_do_not_block_an_export(bh, tmp_path):
+    data = "Keyword,Searches,Competition\nphone,120,4000\nemail stickers,30,900\n"
+    assert bh.looks_like_export(write(tmp_path / "kw.csv", data)) is True
+
+
+def test_helper_and_server_personal_lists_match(bh):
+    from research.columns import PERSONAL_HEADERS
+    assert bh.PERSONAL_HEADERS == PERSONAL_HEADERS

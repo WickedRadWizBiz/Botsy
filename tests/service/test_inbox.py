@@ -382,3 +382,161 @@ def test_csv_error_detail_never_quotes_the_export(env, monkeypatch):
     assert "RivalShop" not in reason and "etsy.com" not in reason
     reason_file = next(paths.rejected.glob("*.reason.txt")).read_text(encoding="utf-8")
     assert "RivalShop" not in reason_file and "etsy.com" not in reason_file
+
+
+# ---------------------------------------------------------------- book (KDP) files
+
+KDP_ROWS = [["Big Sudoku Book, Large Print", "$7.99", "120", "300", "12,345"],
+            ["Owl Coloring Book for Adults", "$6.99", "80", "150", "45,678"]]
+
+
+def _csv(headers, rows) -> bytes:
+    import csv as _csv
+    import io
+    buf = io.StringIO()
+    w = _csv.writer(buf, lineterminator="\n")
+    w.writerow(headers)
+    w.writerows(rows)
+    return buf.getvalue().encode("utf-8")
+
+
+def test_book_file_with_etsy_looking_headers_is_routed_to_kdp_not_taken_as_erank(env):
+    """Title/Price/Reviews/Est. Sales next to BSR used to pass as an eRank listing export,
+    so book titles would have been sorted into the coloring or planner niches."""
+    settings, paths = env
+    data = _csv(["Title", "Price", "Reviews", "Est. Sales", "BSR"], KDP_ROWS)
+    upload(paths.incoming, "books export.csv", data)
+    res = run_ingest(settings, paths)
+    assert res.accepted == [] and res.rejected == [] and res.duplicates == []
+    assert [(n, r) for n, _, r in res.routed] == [("books export.csv", inbox.KDP_REASON)]
+    stored = res.routed[0][1]
+    sha = hashlib.sha256(data).hexdigest()
+    assert stored == paths.inputs / "kdp" / f"kdp-unknown-{DATE}-{sha[:8]}.csv"
+    assert stored.read_bytes() == data
+    assert not list(paths.inputs.glob("*.csv"))            # nothing for Etsy research to read
+    assert list(paths.incoming.iterdir()) == [] and not paths.rejected.exists()
+    entry = ledger(paths)[sha]
+    assert entry["file"] == f"kdp/{stored.name}" and entry["routed"] == inbox.KDP_REASON
+    assert entry["original_name"] == "books export.csv"
+    d = res.to_dict()
+    assert d["routed"] == [{"name": "books export.csv", "file": f"kdp/{stored.name}",
+                            "reason": inbox.KDP_REASON}]
+    assert d["accepted"] == [] and d["rejected"] == [] and not res.empty()
+
+
+@pytest.mark.parametrize("name, headers, tool", [
+    ("BookBeam Export.csv", ["Title", "Author", "Price", "Reviews"], "bookbeam"),
+    ("research.csv", ["Title", "Author", "Price", "Best Sellers Rank"], "kdp_unknown"),
+    ("research.csv", ["Title", "ASIN", "Price", "Reviews"], "kdp_unknown"),
+    ("research.csv", ["Title", "Author", "Print Length", "Publication Date"], "kdp_unknown"),
+])
+def test_book_files_are_routed_by_name_or_headers(env, name, headers, tool):
+    settings, paths = env
+    rows = [[f"Book {i}", "A Writer", "$7.99", str(i)] for i in range(3)]
+    upload(paths.incoming, name, _csv(headers, rows))
+    res = run_ingest(settings, paths)
+    assert res.accepted == [] and res.rejected == []
+    assert len(res.routed) == 1 and res.routed[0][1].name.startswith(f"{tool.replace('_', '-')}-{DATE}-")
+    assert res.routed[0][1].parent == paths.inputs / "kdp"
+
+
+def test_amazon_links_in_rows_route_the_file(env):
+    settings, paths = env
+    data = _csv(["Title", "Price", "Reviews", "Link"],
+                [["Big Sudoku Book", "$7.99", "120", "https://www.amazon.com/dp/B0TEST1234"]])
+    upload(paths.incoming, "list.csv", data)
+    res = run_ingest(settings, paths)
+    assert res.accepted == [] and len(res.routed) == 1
+
+
+def test_kdp_manual_template_is_routed_and_the_etsy_template_is_accepted(env):
+    settings, paths = env
+    templates = inbox.Path(inbox.__file__).resolve().parents[1] / "data" / "templates"
+    kdp = templates / "kdp-manual-template.csv"
+    filled = kdp.read_text(encoding="utf-8").replace("\n", ",,\r\n", 1) + (
+        "sudoku large print,search,1,Big Sudoku Book,A Writer,$7.99,120,\"#12,345 in Books\","
+        "120 pages,2025-03-01,8.5 x 0.3 x 11 inches\r\n")
+    upload(paths.incoming, "kdp-coloring-oct.csv", ("﻿" + filled).encode("utf-8"))
+    etsy = templates / "etsy-insights-template.csv"
+    filled_etsy = ("﻿# botsy-template: etsy_insights v1,,,\r\nkeyword,searches,competition,checked_on\r\n"
+                   "frog stickers,1234,5600,2026-10-17\r\n").encode("utf-8")
+    assert etsy.read_text(encoding="utf-8").splitlines()[1] == "keyword,searches,competition,checked_on"
+    upload(paths.incoming, "etsy-insights-week-42.csv", filled_etsy)
+    res = run_ingest(settings, paths)
+    assert [p.name.split("-2026")[0] for p in res.accepted] == ["botsy-etsy-insights"]
+    assert [p.name.split("-2026")[0] for _, p, _ in res.routed] == ["botsy-kdp-manual"]
+    assert res.rejected == []
+
+
+def test_blank_templates_are_not_rows_of_data(env):
+    settings, paths = env
+    templates = inbox.Path(inbox.__file__).resolve().parents[1] / "data" / "templates"
+    for t in ("etsy-insights-template.csv", "kdp-manual-template.csv"):
+        upload(paths.incoming, t, (templates / t).read_bytes())
+    res = run_ingest(settings, paths)
+    assert res.accepted == [] and res.routed == []
+    assert sorted(n for n, _ in res.rejected) == ["etsy-insights-template.csv", "kdp-manual-template.csv"]
+    assert all("no rows of data" in r for _, r in res.rejected)
+
+
+def test_routed_book_file_is_a_duplicate_next_time(env):
+    settings, paths = env
+    data = _csv(["Title", "Price", "Reviews", "Est. Sales", "BSR"], KDP_ROWS)
+    upload(paths.incoming, "books.csv", data)
+    assert len(run_ingest(settings, paths).routed) == 1
+    upload(paths.incoming, "books again.csv", data)
+    res = run_ingest(settings, paths)
+    assert res.routed == [] and res.duplicates == ["books again.csv"]
+
+
+def test_refusal_wording_is_generic(env):
+    settings, paths = env
+    upload(paths.incoming, "bank.csv", b"Date,Description,Amount\n2026-01-01,Coffee,3.50\n")
+    res = run_ingest(settings, paths)
+    reason = res.rejected[0][1]
+    assert "does not look like a research export" in reason
+    text = _reason(paths, f"{DATE}-bank.csv")
+    assert "EverBee" not in text and "eRank" not in text and "research export" in text
+
+
+def test_an_etsy_export_about_the_amazon_rainforest_is_etsy_data(env):
+    """Only headers and amazon links mark a book file; "amazon" in a file name is a theme."""
+    settings, paths = env
+    data = _csv(["Product Name", "Mo. Sales", "Shop Name", "Price"],
+                [["Amazon Rainforest Animal Stickers", "12", "SomeShop", "3.50"]])
+    upload(paths.incoming, "amazon rainforest stickers.csv", data)
+    res = run_ingest(settings, paths)
+    assert res.routed == [] and res.rejected == []
+    assert [p.parent for p in res.accepted] == [paths.inputs]
+
+
+# ---------------------------------------------------------------- review fixes (2026-10-17)
+
+def test_order_history_with_asin_is_refused_and_not_kept(env):
+    """An Amazon order history has ASIN (a book header) next to addresses: it must not be
+    routed to kdp/ or kept in the rejected folder, because the server never stores
+    personal data."""
+    settings, paths = env
+    data = _csv(["Website", "Order ID", "Order Date", "Unit Price", "ASIN", "Product Name",
+                 "Shipping Address", "Payment Instrument Type"],
+                [["Amazon.com", "111-1", "2026-10-01", "9.99", "B000000000", "A Book", "1 Road", "Visa"]])
+    upload(paths.incoming, "Retail.OrderHistory.1.csv", data)
+    res = run_ingest(settings, paths)
+    assert res.accepted == [] and res.routed == []
+    [(name, reason)] = res.rejected
+    assert name == "Retail.OrderHistory.1.csv" and "personal or order details" in reason
+    assert "Shipping Address" in reason and "1 Road" not in reason
+    assert not (paths.inputs / "kdp").exists() or not any((paths.inputs / "kdp").iterdir())
+    kept = sorted(p.name for p in paths.rejected.iterdir())
+    assert kept == [f"{DATE}-Retail.OrderHistory.1.csv.reason.txt"]       # only the reason file
+    assert "did not keep a copy" in (paths.rejected / kept[0]).read_text(encoding="utf-8")
+    assert list(paths.incoming.iterdir()) == []
+
+
+def test_forced_source_tool_still_routes_book_files(tmp_path):
+    settings, _ = make_settings(tmp_path, research={"source_tool": "erank"})
+    paths = service_paths(settings)
+    data = _csv(["Title", "Price", "Reviews", "Est. Sales", "BSR"], KDP_ROWS)
+    upload(paths.incoming, "books.csv", data)
+    res = run_ingest(settings, paths)
+    assert res.accepted == [] and [n for n, _, _ in res.routed] == ["books.csv"]

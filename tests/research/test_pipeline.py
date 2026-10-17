@@ -291,3 +291,42 @@ def test_min_shops_setting_is_never_below_three(dirs, value):
     write_csv(inputs / "everbee-products.csv", EVERBEE, listing_rows("Octopus", 10, shop="OnlyShop"))
     doc = load(_run(inputs, out, niche="coloring_pages", settings=settings)[0])
     assert doc["min_shops_per_pattern"] == 3 and "octopus" not in _themes(doc)
+
+
+# ---------------------------------------------------------------- KDP files never count
+
+def test_discover_inputs_skips_book_files_and_the_kdp_folder(tmp_path, caplog):
+    import logging
+
+    from research.pipeline import discover_inputs
+    from .conftest import write_csv
+
+    inputs = tmp_path / "inputs"
+    write_csv(inputs / "everbee-2026-10-17-aaaaaaaa.csv",
+              ["Product Name", "Shop Name", "Price", "Mo. Sales"], [["Frog Stickers", "ShopA", "$3", "10"]])
+    # Title/Price/Reviews/Est. Sales look like eRank until BSR gives the file away.
+    write_csv(inputs / "erank-looking-books.csv", ["Title", "Price", "Reviews", "Est. Sales", "BSR"],
+              [["Big Sudoku Book", "$7.99", "120", "300", "12,345"]])
+    write_csv(inputs / "BookBeam Export.csv", ["Title", "Author", "Price", "Reviews"],
+              [["Big Sudoku Book", "A Writer", "$7.99", "120"]])
+    (inputs / "kdp-template.csv").write_text("# botsy-template: kdp_manual v1\n"
+                                              "search_term,page_type,position,title,author,price,"
+                                              "ratings_count,bsr,print_length,publication_date,dimensions\n"
+                                              "sudoku,search,1,Big Sudoku Book,A Writer,7.99,1,2,3,2025,6x9\n",
+                                              encoding="utf-8")
+    write_csv(inputs / "kdp" / "kdp_unknown-2026-10-17-bbbbbbbb.csv", ["Title", "BSR"], [["Book", "1"]])
+    write_csv(inputs / "own_shop_stats.csv", ["Title", "Views"], [["Frog Stickers", "5"]])
+    (inputs / "etsy-insights-week-42.csv").write_text("# botsy-template: etsy_insights v1,,,\n"
+                                                      "keyword,searches,competition,checked_on\n"
+                                                      "frog stickers,1234,5600,2026-10-17\n", encoding="utf-8")
+    with caplog.at_level(logging.INFO, logger="research.pipeline"):
+        found = discover_inputs(inputs, ["stickers", "coloring_pages"])
+    assert sorted(p.name for p in found.market) == ["etsy-insights-week-42.csv",
+                                                     "everbee-2026-10-17-aaaaaaaa.csv"]
+    assert [p.name for p in found.own_shop] == ["own_shop_stats.csv"] and found.trends == []
+    skipped = [r.getMessage() for r in caplog.records if "KDP" in r.getMessage()]
+    assert len(skipped) == 3 and all("waits for the KDP reader" in m for m in skipped)
+    # A forced source_tool setting names the Etsy tool, but never makes a book file Etsy data.
+    forced = discover_inputs(inputs, ["stickers"], source_tool="everbee")
+    assert sorted(p.name for p in forced.market) == ["etsy-insights-week-42.csv",
+                                                      "everbee-2026-10-17-aaaaaaaa.csv"]
