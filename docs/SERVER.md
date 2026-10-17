@@ -116,7 +116,7 @@ User guides: `deploy/lightsail/README.md` (server) and `windows/README.md` (PC).
   3. **Recheck**: qualified themes with no fresh rows for `service.search_list.recheck_weeks` weeks (default 2), stalest first, to keep evidence fresh.
      The age is measured from the last snapshot in which the theme had fresh rows (`last_fresh`).
      When there are rechecks, one slot is kept for them, so near misses never crowd them out.
-- Each search phrase is the theme plus the niche's noun from `service.search_list.nouns` (coloring_pages: "coloring pages", stickers: "stickers", activity_sheets: "activity sheets").
+- Each search phrase is the theme plus the niche's noun from `service.search_list.nouns` (coloring_pages: "coloring pages", stickers: "stickers", activity_sheets: "activity sheets", stationery: "planner pages", ttrpg: "rpg sheets"). The stationery seeds are "adhd planner printable" and "productivity planner pages"; the ttrpg seeds "ttrpg character sheet" and "hex map paper printable".
 - Every phrase passes the blocklist used by research (blocked terms dropped; flagged ones marked "(check: trademark?)"). Phrases holding a URL are dropped.
 - A short header explains what to do: search each phrase in EverBee Product Analytics, click Export CSV, and the helper uploads it. It also says the notes in brackets need not be typed.
   In the refined stage it adds that a theme must show up in exports from 3 different weeks before it becomes a design.
@@ -321,12 +321,14 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
 
 ## 13. Theme cooldown (no duplicate products)
 
-- Before generating, the pipeline skips a brief when the same shop and niche already has an item, in the run's output folder, with the same normalized theme.
+- Before generating, the pipeline skips a pack when the same shop and niche already has an item of the same pack size, in the run's output folder, with the same normalized theme (themed packs, docs/PACKS.md section 4: the key is (shop, niche, theme, pack size)).
+  - An existing item whose size is unknown (made before packs) blocks every size of its theme.
+  - So a theme made at 5 and 20 pages is not made again at those sizes, but a new size of it (a top-seller size research adds later) may be: it is cut from the theme's master set made within the cooldown, or made fresh when there is none. When a brief's master size is cooled down, its other sizes are planned the same way.
   - The theme is matched with `core.compliance.normalize` plus slug (`pipeline.run.theme_key`); apostrophes are ignored, so "cat's pajamas" matches "cats pajamas".
   - The existing item must have been created within `pipeline.theme_cooldown_days` (default 60), or carry a real Etsy draft at any age.
   - null or 0 means only real drafts block. A value that is not a number means the default 60 (with a note).
 - `--regenerate` lifts the days, but a real Etsy draft always blocks. A rejected review entry keeps its current meaning.
-- Skips use no `max_items` slot. They are reported in the run summary as `generate: skip (theme cooldown: <item_id>)` (record key `cooldown`), and `status.txt` shows "Skipped: N (same theme made recently)".
+- Skips use no `max_items` slot. They are reported in the run summary as `generate: skip (theme cooldown: <item_id>)` (record key `cooldown`, with the pack's `size` and `source`), and `status.txt` shows "Skipped: N (same theme made recently)".
 
 ## 14. Server-only settings and disk caps
 
@@ -335,11 +337,13 @@ Common options, before or after the command: `--settings FILE`, `--inbox DIR` (o
 - Guards on the local file (it can never loosen a CLAUDE.md rule):
   - research floors are clamped: `min_listings_per_pattern` and `research.stages.*.min_listings` at least 10, `min_shops_per_pattern` and `min_shops` at least 3 (with a warning);
   - `compliance.*` changes are ignored (`publisher_mode` stays `draft_only`), and so is `listing.always_disclose_ai: false`;
+  - `listing.medical_terms` and `listing.misleading_phrases` can only add words and `listing.medical_ok_phrases` can only drop exemptions (the listing stage and research read them that way, from any settings file);
   - a top-level section replaced by a single value (`service: true`), or a file that is not valid YAML, is a setup error (exit 2); an empty section keeps the shipped one;
   - a `monthly_cap_usd` typed outside `spend:` is used as `spend.monthly_cap_usd`, with a warning.
 - `setup.sh` creates `settings.local.yaml` once (test mode, `spend: monthly_cap_usd: null`) and never overwrites it. The deploy README tells the user to edit it with nano. It also makes `data/spend/` as the botsy user.
 - Disk caps (`service/cleanup.py`, `run(settings, *, now=None)`; also `python -m service cleanup`):
   - `data/inbox_rejected/` keeps at most `service.rejected_max_mb` (200 MB) and `service.rejected_keep_days` (30), deleting the oldest first. Only files ingest named `<YYYY-MM-DD>-<name>` (and their reason files) are ever removed;
   - accepted exports received more than `research.keep_days` ago (never fewer days than `window_days`) are deleted, with the same received date research uses. Their sha256 stays in `.ingested.json` marked `deleted`, so a re-upload is still a duplicate. The ledger is saved before any export is removed; an export that cannot be hashed, or whose date cannot be read, is kept;
-  - `output/dry-run/` practice items (made in a dry run, with no real `publish.json`) older than `service.dry_run_keep_days` (14) are deleted, with their review entries and old run summaries.
+  - `output/dry-run/` practice items (made in a dry run, with no real `publish.json`) older than `service.dry_run_keep_days` (14) are deleted, with their review entries and old run summaries;
+  - practice design sets (`output/dry-run/sets/<set_id>/`, docs/PACKS.md section 3) made in a dry run more than that many days ago are deleted once none of the items in their `set.json` is left. A set with `dry_run: false` or an unreadable `set.json` is never removed, and `sets/packs_state.json` stays.
 - Cleanup runs at the end of every tick and logs what it removed. Folders it could not tidy (for example a link) are listed in `status.txt` under "Could not tidy".

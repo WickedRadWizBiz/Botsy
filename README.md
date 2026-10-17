@@ -1,7 +1,7 @@
 # etsy-agents
 
 Pipeline for our own Etsy digital-download shop: research → brief → generate → QA → listing → **draft** → human approval.
-Niches: digital stickers, coloring pages, children's activity sheets.
+Niches: digital stickers, coloring pages, children's activity sheets, stationery (planner and productivity pages, including ADHD-friendly layouts) and tabletop RPG sheets. Every product is a themed pack (5 pages, 20 pages, plus the size top sellers use), each its own listing (`docs/PACKS.md`).
 `CLAUDE.md` holds the compliance rules (no scraping, own shop only, drafts only, no trademarks); `task_state.md` tracks progress and open decisions; `docs/CONTRACTS.md` describes the files each stage reads and writes.
 
 ## Setup
@@ -20,13 +20,14 @@ pytest -q              # offline; about 2 minutes (the end-to-end tests are mark
 ## Quick start (offline)
 A dry run needs no secrets and makes no API calls: fake images, template listings and a fake Etsy client, on the synthetic exports in `data/samples/`.
 ```bash
-python -m pipeline run --dry-run --inputs data/samples --briefs-dir /tmp/briefs --out /tmp/out --max-items 6
+python -m pipeline run --dry-run --inputs data/samples --briefs-dir /tmp/briefs --out /tmp/out --max-items 10
 python -m pipeline status --out /tmp/out
 ```
 The same, one stage at a time:
 ```bash
 python -m research --demo --out /tmp/stages/briefs
 python -m generators.coloring_pages --brief /tmp/stages/briefs/coloring_pages-<date>.json --dry-run --out /tmp/stages/out
+python -m generators.ttrpg --brief /tmp/stages/briefs/ttrpg-<date>.json --dry-run --out /tmp/stages/out
 python -m qa --out /tmp/stages/out
 python -m listing --dry-run --out /tmp/stages/out
 python -m publisher publish --dry-run --out /tmp/stages/out
@@ -37,7 +38,9 @@ python -m publisher publish --dry-run --out /tmp/stages/out
 |---|---|
 | `data/research_inputs/` | your licensed CSV exports (gitignored, never committed) |
 | `data/briefs/<niche>-<date>.json` | aggregated briefs (committed; the weekly Action starts from them) |
-| `output/<item_id>/` | `manifest.json`, `files/` (what the buyer downloads), `previews/`, `assets/`, `mockups/` (listing photos), `qa_report.json`, `listing.json`, `publish.json` |
+| `output/<item_id>/` | one pack: `manifest.json`, `files/` (what the buyer downloads), `previews/`, `assets/`, `mockups/` (listing photos), `qa_report.json`, `listing.json`, `publish.json` |
+| `output/sets/<set_id>/` | design sets: the pages made for a theme, which the theme's packs are cut from |
+| `data/packs_state.json` | pack counters (which pack of a size is fresh) for `output/` (gitignored; dry runs and `--out` keep theirs in `<out>/sets/`) |
 | `output/review/<item_id>.json` | review queue entries |
 | `output/runs/run-<date>-<HHMMSS>.json` | pipeline run summaries |
 | `output/dry-run/` | everything from a `--dry-run` without `--out` (setting `pipeline.dry_run_output_dir`), including its review queue, runs and research briefs |
@@ -55,12 +58,29 @@ python -m pipeline run [--stages research,generate,qa,listing,publish] [--niche 
                        [--max-items N] [--regenerate] [--date YYYY-MM-DD] [--settings FILE]
 python -m pipeline status [--out DIR]
 ```
-- `generate` takes the newest `data/briefs/<niche>-<date>.json` per niche (or the files named with `--brief`), checks each file against the brief rules (patterns from at least 10 listings, no URLs, image names, listing ids or blocked terms) and round-robins across niches up to `--max-items` (default `pipeline.max_items_per_run`, 10).
+- `generate` takes the newest `data/briefs/<niche>-<date>.json` per niche (or the files named with `--brief`), checks each file against the brief rules (patterns from at least 10 listings, no URLs, image names, listing ids, blocked terms or game-system names) and makes each brief's packs, round-robin across niches, up to `--max-items` packs (default `pipeline.max_items_per_run`, 10): first one pack (the master) of every niche's first brief, then their smaller packs, then the next briefs.
 - Reruns are cheap. An item that already exists for a brief (same shop and `brief_id`, any date) is reused at its current status, so a rerun only retries what failed; reused items count toward `--max-items`. `--regenerate` rebuilds them (new images, new API spend) and resets an earlier approval. Items with a real Etsy draft, or rejected in the review queue, are never rebuilt.
 - Without `generate` in `--stages`, the later stages work on every item in `--out`, filtered by `--niche` / `--shop`; `--max-items` then caps the listings written. A real `--stages listing,publish` run also re-lists items whose copy the publisher would refuse as stale (dry-run template text, or written before the shop name was set).
 - Live runs skip a niche's newest brief file when it is older than `pipeline.max_brief_age_days` (6 days), so the weekly Action drafts each committed brief file only once. Files named with `--brief` are exempt.
-- **No duplicates.** A brief is skipped when the shop already has an item of the same theme made in the last 60 days, or one with an Etsy draft at any age (`pipeline.theme_cooldown_days`). `--regenerate` lifts the 60 days, never a real draft.
+- **No duplicates.** A pack is skipped when the shop already has an item of the same theme and pack size made in the last 60 days, or one with an Etsy draft at any age (`pipeline.theme_cooldown_days`). `--regenerate` lifts the 60 days, never a real draft.
 - Exit status: `0` every stage that ran succeeded (items waiting for review count as success; so does a run stopped by the spending cap), `1` an item, brief or stage failed, `2` setup error (missing secret, no Etsy tokens, safety-layer refusal, a spending log that cannot be written). A setup error stops that stage instead of being retried once per item.
+
+## Themed packs
+A brief becomes several packs of one theme, each its own Etsy listing ("Summer Coloring Pages, 20 Pages", "Set of 5"). Details: `docs/PACKS.md`.
+- **Sizes.** Research gives every brief 5 and 20 pages plus the size the theme's top sellers use (`pack_sizes`), within `packs.max_size` per niche.
+- **Master, derived, fresh.** The largest size gets new pages: the theme's master set. Smaller packs are cut from it ("derived"), except every 3rd 5-page pack and every 6th 20-page pack of a niche, which get all-new pages ("fresh", `packs.fresh_every`). The listing says so plainly: "These 5 pages are also included in our 20-page ... pack", or "All-new pages, not included in our other packs".
+- **Costs.** Derived packs cost no new images. Reruns reuse the design sets, so nothing is paid for twice.
+- **Photos.** The cover photo shows the pack's pages with a "20 PAGES" / "SET OF 5" badge; planner and RPG packs also get a desk photo.
+- **Prices.** Every pack of a theme has the same price for now (the theme's median, clamped around `shops[].default_price_usd`); a per-size rule is still to be decided.
+
+## Tabletop RPG sheets and game-system names
+RPG sheets are our own layouts, printed without any game-system name. A listing may name the system the sheets are made for as a compatibility reference only, for example "Character Sheet for D&D 5e" (CLAUDE.md exception, user, 2026-10-16):
+- only in that ttrpg listing's title, tags and description, and only when research found the system in at least half of the theme's rows (the brief then carries the system's id, such as `dnd5e`, never its name);
+- never in designs, image prompts, printed pages, file names, photos or alt text, and never in any other niche;
+- always with "Made for use with D&D 5e. This is an unofficial product of our own design." and the owner's disclaimer from `config/ttrpg_systems.yaml` ("Unofficial fan-made product, not affiliated with or endorsed by Wizards of the Coast. ...");
+- never logos, official art, settings or product-identity creatures (these are hard-blocked), and never anything that suggests the product is official.
+
+The system names are `!term` lines in `config/trademark_blocklist.txt`; QA and the publisher refuse an item that breaks any of these rules. Stationery listings may say "ADHD-friendly" to describe a layout, never a medical claim (treat, cure, therapy, ...).
 
 ## Research inputs
 Download CSV exports from eRank, EverBee or a similar licensed tool into `data/research_inputs/`. They are licensed data: they stay on your machine (gitignored) and are never committed or passed to a model.
@@ -70,6 +90,8 @@ Download CSV exports from eRank, EverBee or a similar licensed tool into `data/r
 
 `python -m research [--niche N] [--inputs DIR] [--out DIR] [--date D] [--history DIR] [--stage auto|discovery|refined] [--dry-run] [--demo]` writes `data/briefs/<niche>-<date>.json` (and, with `--history`, a history snapshot per niche in `DIR/<date>/`). A brief pattern needs at least 10 listings from at least 3 different shops (`research.min_shops_per_pattern`), and briefs contain no shop names, listing URLs, images or verbatim titles. Commit the brief files.
 - Only exports received in the last 35 days count (`research.window_days`). Older ones are ignored, and the server deletes them after 180 days (`research.keep_days`).
+- **Low competition first.** Briefs are ranked by opportunity: demand, sales per listing and low competition (`research.opportunity_weights`). Each brief records its pack sizes (5, 20 and the top sellers' size).
+- **Cut words.** Game-system names, planner and virtual-tabletop brands, rulebook titles and medical-claim words are cut from themes and keywords in every niche; a ttrpg brief names its system only by id.
 - **Refined stage.** Once the shop has 20 real Etsy drafts, research gets stricter by itself (`research.stage: auto`): a theme then needs 15 listings from 3 shops, must show up in exports from 3 different weeks, and its demand may not be falling. Our own sales count for more. The first stage, "discovery", uses the rules above. Settings: `research.stage` and `research.stages.refined`.
 
 ## Stage commands
@@ -80,6 +102,8 @@ Each stage runs on its own. The generator, QA, listing and `publisher publish` c
 | `python -m generators.activity_sheets --brief FILE [--index N \| --all] [--dry-run]` | procedural mazes, word searches, tracing, dot-to-dot (no image model) |
 | `python -m generators.coloring_pages --brief FILE [--index N \| --all] [--dry-run]` | image API → potrace → PDF (Letter and A4) |
 | `python -m generators.stickers --brief FILE [--index N \| --all] [--dry-run]` | image API → transparent PNGs (ZIP) + sticker sheet PDFs |
+| `python -m generators.stationery --brief FILE [--index N \| --all] [--dry-run]` | procedural planner and productivity pages (Letter and A4) |
+| `python -m generators.ttrpg --brief FILE [--index N \| --all] [--dry-run]` | procedural tabletop RPG sheets (Letter and A4) |
 | `python -m qa [--item ID] [--no-mockups]` | automated checks, listing photos, review queue entry; exits 1 when an item fails |
 | `python -m listing [--item ID] [--dry-run]` | title, 13 tags, description, alt text, AI disclosure; exits 2 without `ANTHROPIC_API_KEY` in a real run |
 | `python -m publisher publish [--item ID] [--dry-run]` | Etsy **drafts** for listed items (never activates); a dry run on real items (`--out output`) only previews |
@@ -107,7 +131,7 @@ python -m qa review reject ID --reason "..." [--out DIR]
    - use `python -m publisher auth --paste` and paste the redirected URL from the address bar (the page itself may fail to load).
 
    Tokens go to `.etsy_tokens.json` (mode 600, gitignored), with the date the refresh token was issued; the publisher warns from day 80 (refresh tokens last 90 days). The command prints the shop id: set `ETSY_SHOP_ID` in `.env`.
-3. **Taxonomy ids.** `python -m publisher taxonomy --search sticker` (and `coloring`, `activity`). Put the most specific ids under `listing.taxonomy_ids` in `config/settings.yaml`; Etsy needs one to create a draft.
+3. **Taxonomy ids.** `python -m publisher taxonomy --search sticker` (and `coloring`, `activity`, `planner`, `role playing`). Put the most specific ids under `listing.taxonomy_ids` in `config/settings.yaml`; Etsy needs one to create a draft.
 4. **Shop name and prices.** Set `shops[0].name` in `config/settings.yaml`. Real drafts are refused while it is still `YOUR_SHOP_NAME`, because the AI disclosure shows the shop name. Check `default_price_usd` too.
 
 The publisher only creates drafts, only in our own shop, and refuses any other request (`publisher/safety.py`). Before creating a draft it checks our shop's drafts and active listings for the same title, so a lost `publish.json` does not lead to a second draft.
@@ -178,7 +202,7 @@ The server runs these by itself: `tick` when an upload arrives, `tick --force --
 | Folder | Role |
 |---|---|
 | `research/` | Parse licensed research exports in `data/research_inputs/` → aggregated briefs in `data/briefs/` |
-| `generators/` | Activity sheets (procedural), coloring pages and stickers (Gemini Nano Banana 2.1) |
+| `generators/` | The pack engine (`packs/`: design sets, fresh and derived packs), activity sheets, stationery and RPG sheets (procedural), coloring pages and stickers (Gemini Nano Banana 2.1) |
 | `qa/` | Automated checks and mockups, then the review queue in `output/review/` |
 | `listing/` | Title, 13 tags, description, alt text, AI disclosure |
 | `publisher/` | Etsy Open API v3, own shop, drafts only |
@@ -187,5 +211,5 @@ The server runs these by itself: `tick` when an upload arrives, `tick --force --
 | `deploy/lightsail/` | Server setup (`setup.sh`, installed as `botsy-setup`), SSH rules and systemd units |
 | `windows/` | The Botsy helper for your PC (`botsy_helper.py`) and its installer |
 | `core/` | Shared settings, compliance (blocklist, AI disclosure, brief checks), Etsy limits, item helpers, the spending tracker and the event journal |
-| `config/` | `settings.yaml`, trademark blocklist, AI disclosure |
-| `data/samples/` | synthetic exports for dry runs and CI |
+| `config/` | `settings.yaml`, trademark blocklist, AI disclosure, game-system registry (`ttrpg_systems.yaml`) |
+| `data/samples/` | synthetic exports for dry runs and CI (all five niches; written by `research.demo`) |

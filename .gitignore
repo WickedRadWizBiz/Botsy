@@ -42,6 +42,10 @@ data/spend/
 data/events.jsonl
 data/events-*.jsonl
 data/.service_state.json
+# Pack counters and assignments (docs/PACKS.md section 3): they point at design sets under
+# output/sets/, which are never committed either
+data/packs_state.json
+data/.packs_state.json.*.tmp
 
 # Server-only settings overrides (docs/SERVER.md section 14)
 config/settings.local.yaml

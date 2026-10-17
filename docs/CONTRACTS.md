@@ -14,7 +14,8 @@ Dry runs use `output/dry-run/` instead of `output/` unless `--out` is given (set
 
 Shared helpers live in `core/`. Use them instead of local copies:
 - `core.config`: `load_settings()`, `section(settings, name, DEFAULTS)`, `deep_merge()`, `resolve(path)` (repo-relative → absolute), `get_shop(settings, shop_id)` (KeyError for an unknown id), `load_env()`, `require_env(name)` (raises `MissingSecretError`), `check_date(value)` (a real `YYYY-MM-DD`, nothing else; `DATE_RE`), `today()` (`PIPELINE_DATE` or today, checked the same way), `is_placeholder_shop_name(shop)` / `PLACEHOLDER_SHOP_NAMES`.
-- `core.compliance`: `Blocklist.load().check(*texts)` / `.check_obj(obj)` → `ComplianceResult(blocked, flagged)` (each string is checked on its own, so a term never spans two fields), `normalize(text)` (the text form the blocklist matches on: lowercase, no accents, ™/℠/©/® as spaces, no zero-width or soft-hyphen characters, every Unicode dash as `-`, Cyrillic/Greek look-alikes as Latin, single spaces), `iter_strings(obj)`, `find_urls(obj)`, `load_ai_disclosure(shop_name)`, `has_ai_disclosure(text, shop_name)`.
+- `core.compliance`: `Blocklist.load().check(*texts, allow_systems=())` / `.check_obj(obj, allow_systems=())` → `ComplianceResult(blocked, flagged, allowed)` (each string is checked on its own, so a term never spans two fields; `!` game-system terms count as blocked unless they belong to a system id in `allow_systems`, and then appear in `allowed`), `Blocklist(hard, review, systems=, catalog=)`, `.system_terms` (`{! term: system id or None}`), `.system_names(id)`, `system_mentions(texts)` (ids of the systems whose registry names, owners or owner names appear, also in spellings no `!` line covers such as "DnD5e" or "PF2e"; never run it over a `system` id field), `term_pattern(term)`, `normalize(text)` (the text form the blocklist matches on: lowercase, no accents, ™/℠/©/® as spaces, no zero-width or soft-hyphen characters, every Unicode dash as `-`, Cyrillic/Greek look-alikes as Latin, single spaces), `iter_strings(obj)`, `find_urls(obj)`, `load_ai_disclosure(shop_name)`, `has_ai_disclosure(text, shop_name)`.
+- `core.systems` (docs/PACKS.md section 1): the game-system registry `config/ttrpg_systems.yaml` (settings `ttrpg.systems_file`): `load_systems()`, `get_system(id)`, `names_for(id)`, `label_for(id)`, `owner_for(id)`, `disclaimer_for(id)`, `sheet_fields_for(id)`, `detect_systems(text)` (cached).
 - `core.briefs`: the brief-document check research runs before writing and the generators and pipeline rerun on every brief file they read: `HARD_FLOOR` (10), `Guard(shop_names, titles, blocklist)`, `doc_problems(doc, guard)`, `validate_brief_doc(...)` (raises `BriefComplianceError` with `.problems`). `research.guard` re-exports it.
 - `core.etsy`: Etsy's limits, shared by every stage: `MAX_FILES` 5, `MAX_FILE_BYTES` 20,000,000, `MAX_FILE_NAME_CHARS` 70, `FILE_NAME_RE`, `TITLE_MAX_CHARS` 140, `TAGS_MAX` 13, `TAG_MAX_CHARS` 20, `ALT_TEXT_MAX_CHARS` 500, `title_char_problems()`, `tag_char_problems()`. The settings keys that repeat them (`qa.etsy_*`, `publisher.max_file*`, `listing.*_max_chars`) default to these.
 - `core.spend` (docs/SERVER.md section 10): `check_budget(kind, settings)` before every paid call (raises `BudgetExceeded`, or `LedgerUnavailable` when a cap is set and the ledger cannot be written), `record(...)` after it, `budget_state()`, `month_to_date()`, `entries()`, `summarize()`, `table()`. Dry runs and fake clients never record.
@@ -50,7 +51,7 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
   "min_listings_per_pattern": 10,
   "min_shops_per_pattern": 3,
   "patterns": {
-    "themes":           [{"name": "farm animals", "listing_count": 23, "listing_rows": 23, "keyword_rows": 0, "shop_count": 7, "share": 0.092, "median_price_usd": 3.99, "demand": 0.81}],
+    "themes":           [{"name": "farm animals", "listing_count": 23, "listing_rows": 23, "keyword_rows": 0, "shop_count": 7, "share": 0.092, "median_price_usd": 3.99, "demand": 0.81, "competition": 0.3, "opportunity": 0.77}],
     "formats":          [{"name": "pdf", "listing_count": 180}],
     "page_counts":      [{"bucket": "11-20", "listing_count": 40}],
     "price_bands":      [{"band": "3-5", "min_usd": 3.0, "max_usd": 5.0, "listing_count": 60}],
@@ -63,12 +64,14 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
       "theme": "farm animals",
       "audience": "kids 4-8",
       "keywords": ["farm animal coloring pages", "barn animals"],
+      "pack_sizes": [5, 12, 20],
       "page_count": 20,
       "price_usd": 4.0,
       "page_sizes": ["us_letter", "a4"],
       "style_notes": "bold thick outlines, large simple shapes, no shading",
       "activity_types": [],
-      "evidence": {"listing_count": 23, "listing_rows": 23, "keyword_rows": 0, "shop_count": 7, "score": 0.81},
+      "evidence": {"listing_count": 23, "listing_rows": 23, "keyword_rows": 0, "shop_count": 7, "score": 0.81,
+                   "opportunity": 0.77, "competition": 0.3, "top_seller_sizes": [12]},
       "compliance": {"blocked": [], "flagged": []},
       "needs_review": false
     }
@@ -81,11 +84,13 @@ Written by `research.run(...)`. Built only from aggregated patterns. Contains no
 - `sources[].received` is the day the export arrived (docs/SERVER.md section 12); only exports received within `research.window_days` (35) of `created` count.
 - A brief with any blocked term is dropped. A brief with a flagged term is kept with `needs_review: true`.
 - `activity_types` is used only for `activity_sheets` and holds a subset of `[maze, word_search, tracing, dot_to_dot]`.
+- Packs (docs/PACKS.md section 2): `pack_sizes` is sorted and unique, `research.base_pack_sizes` (5, 20) plus the top sellers' sizes (`evidence.top_seller_sizes`), each within `packs.min_size` / `packs.max_size.<niche>`; `page_count` is `max(pack_sizes)`. Briefs are ordered by `evidence.opportunity`, best first.
+- A `ttrpg` brief has `system`: a `config/ttrpg_systems.yaml` id (`dnd5e`, `pf2e`, `coc7e`) or `"generic"`, never a name. No other brief text names a game system in any spelling (`core.briefs` runs `core.compliance.system_mentions` over every string except `system`); system names, owners, editions, planner and VTT brands, rulebook titles and medical-claim words are cut from themes and keywords in every niche.
 - A keyword-level export without a competition (matching listings) column counts no listings, so such a file alone produces no briefs (research logs a warning).
 
 ## 2. Item manifest: `output/<item_id>/manifest.json`
 
-Written by the generators: `generators.generate(brief, brief_file=..., shop_id=..., out_root=..., date=..., dry_run=..., client=...) -> list[Path]` returns item dirs. `generators.ImageCapExceeded` (the run's image budget is spent), `generators.ImageGenerationError`, and from the Gemini client `core.spend.BudgetExceeded` (the monthly spending cap) and `core.spend.LedgerUnavailable` are the errors a caller may handle. `core.render` has `page_size_points()`, `pdf_info()` and `render_pdf_pages()` for PDF work.
+Written by the generators: `generators.generate(brief, brief_file=..., shop_id=..., out_root=..., date=..., dry_run=..., client=..., sizes=None) -> list[Path]` returns one item dir per pack made (docs/PACKS.md section 3: master first; `sizes` limits the run to some of the brief's pack sizes). A pack that fails stops the brief; the exception carries the folders made before it as `pack_dirs`. `generators.ImageCapExceeded` (the run's image budget is spent), `generators.ImageGenerationError`, and from the Gemini client `core.spend.BudgetExceeded` (the monthly spending cap) and `core.spend.LedgerUnavailable` are the errors a caller may handle. `core.render` has `page_size_points()`, `pdf_info()` and `render_pdf_pages()` for PDF work.
 
 ```json
 {
@@ -108,7 +113,11 @@ Written by the generators: `generators.generate(brief, brief_file=..., shop_id=.
   "files":    [{"path": "files/farm-animals-coloring-pages-us_letter.pdf", "kind": "pdf", "page_size": "us_letter", "pages": 21, "dpi": 300}],
   "previews": [{"path": "previews/page-01.png", "page": 1}],
   "assets":   [{"path": "assets/page-01.png", "kind": "png", "page": 1}, {"path": "assets/page-01.svg", "kind": "svg", "page": 1}],
-  "pack": {"requested_pages": 20, "pages": 20, "contents": [{"page": 1, "subject": "a friendly cow", "...": "..."}]},
+  "pack": {"size": 20, "source": "master", "n": 0, "set_id": "2026-10-15-coloring_pages-farm-animals-9c1e",
+           "theme": "farm animals", "page_ids": ["2026-10-15-coloring_pages-farm-animals-9c1e-p01", "..."],
+           "page_types": ["coloring_page", "..."], "type_counts": {"coloring_page": 20},
+           "related": [{"size": 5, "source": "derived", "item_id": "2026-10-15-coloring_pages-farm-animals-4d2a", "same_set": true}],
+           "requested_pages": 20, "pages": 20, "contents": [{"page": 1, "subject": "a friendly cow", "...": "..."}]},
   "status": "generated"
 }
 ```
@@ -118,14 +127,18 @@ Written by the generators: `generators.generate(brief, brief_file=..., shop_id=.
 - `status` moves `generated → qa_passed | qa_failed → listed → drafted`.
 - `files[]` entries may also carry: `count` (ZIP: number of PNGs inside, read by QA and the listing stage), `part` / `parts` (a ZIP split below Etsy's 20 MB limit), and optionally `print_size_in: [w, h]` or `width_in` / `height_in` (intended print size; QA's DPI check uses it before `page_size`). No generator writes the print-size fields; they are for hand-made manifests.
 - `review_reasons` (every niche): reasons the generator wants a person to look (brief review terms, a brief marked `needs_review`, a bad brief price, review terms in printed page text, brief style notes outside the prompt allowlist, too much ink, refused images, a sticker in several pieces, oversize files). `needs_review` is true when there is any. QA reports them as the `generator_needs_review` warning, so they reach the review entry.
-- `pack` describes the contents; QA and the listing stage read it. Common key: `contents` (one entry per page or sticker). Per niche:
+- `pack` describes the contents; QA and the listing stage read it. Pack keys (every niche, docs/PACKS.md section 3): `size`, `source` (`master` | `derived` | `fresh`), `n` (the pack's number among the shop's packs of this size and niche; 0 for a master), `set_id` (its design set, `<out>/sets/<set_id>/set.json`), `theme`, `page_ids` (unique; prefixed with the set id), `page_types`, `type_counts`, `related` (`[{size, source, item_id, same_set}]`: the theme's other packs when the item was made; the set's `items[]` is the current list). File names carry the pack size (`farm-animals-coloring-pages-20-pages-us_letter.pdf`). Common key: `contents` (one entry per page or sticker). Per niche:
   - `activity_sheets`: `activity_pages`, `title_pages`, `answer_key_pages`, `difficulty`, `activity_types`, `contents[] {page, type, title}`.
-  - `coloring_pages`: `requested_pages`, `pages`, `dry_run_capped`, `aspect_ratio`, `image_size`, `tracers`, `min_line_weight_pt`, `contents[] {page, subject, size_px, min_line_px, ink_fraction}`, `skipped`.
-  - `stickers`: `requested_stickers`, `stickers`, `dry_run_capped`, `aspect_ratio`, `image_size`, `background_removal`, `rembg_model`, `sheet_grid`, `zip_parts`, `contents[] {sticker, subject, size_px, pieces}`, `skipped`.
+  - `coloring_pages`: `requested_pages`, `pages`, `dry_run_capped` (always false: dry runs make the whole pack with small fake images), `aspect_ratio`, `image_size`, `tracers`, `min_line_weight_pt`, `contents[] {page, subject, size_px, min_line_px, ink_fraction}`, `skipped`.
+  - `stickers`: `requested_stickers`, `stickers`, `dry_run_capped` (always false), `aspect_ratio`, `image_size`, `background_removal`, `rembg_model`, `sheet_grid`, `zip_parts`, `contents[] {sticker, subject, size_px, pieces}`, `skipped`.
+  - `stationery`: `pages`, `title_pages` (0), `style`, `seasons`, `undated`, `ai_accents`, `hero_page`, `layout_reused_pages`, `min_font_pt`, `min_line_gap_mm`, `print_checks {page_size: {...}}`, `contents[] {page, type, variant, title}`.
+  - `ttrpg`: `pages`, `title_pages` (0), `genre`, `focus`, `kit`, `system_fields`, `undated`, `ai_accents`, `type_labels`, `type_counts`, `min_font_pt`, `min_line_gap_mm`, `print_checks`, `contents[] {page, type, variant, title, subtitle}`. The manifest's own `system` holds the game-system id (or `generic`); nothing in the files, file names or previews names the system.
 
 Generator rules:
 - Before anything is planned or paid for, each brief goes through the brief-document check (`core.briefs`, with the header of the file it came from): evidence and every pattern from at least 10 listings, a file floor of at least 10, no forbidden identifying fields, ids, image names, URLs or blocked terms. Brief free text (`style_notes`, `audience`) never reaches an image prompt as written: only `style_notes` clauses in `generators/imaging/prompts.py` `STYLE_CLAUSES` are used, and any other clause marks the item for review.
 - An item with a real Etsy draft is left untouched. A dry run refuses to replace a real item. A rebuilt item goes through `core.items.clear_downstream` (see above).
+- Every printed string (the plugin's `printed_text()`, else the page specs) is checked before a pack is kept: hard-blocked and `!` terms, and any game-system spelling `core.compliance.system_mentions` finds, refuse the pack; review terms mark it for review.
+- Design sets and pack counters: `<out>/sets/<set_id>/` (docs/PACKS.md section 3); counters in `packs.state_file` (`data/packs_state.json`) for the configured output folder, else `<out>/sets/packs_state.json`. Reruns reuse a set instead of paying for it again.
 
 ## 3. QA report: `output/<item_id>/qa_report.json` and review queue
 
@@ -145,9 +158,10 @@ Written by `qa.run(item_dir) -> dict` and `qa.run_all(out_root)` (every item not
 }
 ```
 - `severity` is `error` (fails the item) or `warning` (passes, and the item is marked `needs_review`). `reasons` has one line per failed warning check (`<check>: <detail>`); the generator's `review_reasons` arrive through the `generator_needs_review` warning.
-- Checks include the manifest schema, safe and existing paths, Etsy's file limits (`etsy_file_count`, `etsy_file_size`, `etsy_file_name`: basename at most 70 characters of `[A-Za-z0-9._-]`), PDF page size, count, blank pages and image DPI, PNG resolution and transparency, line weight and regions (coloring), ZIP contents, the blocklist and URLs over the manifest, the text printed in the files and the mockup text.
+- Checks include the manifest schema (the niche must be in `settings.niches`), safe and existing paths, Etsy's file limits (`etsy_file_count`, `etsy_file_size`, `etsy_file_name`: basename at most 70 characters of `[A-Za-z0-9._-]`), PDF page size, count, blank pages and image DPI, PNG resolution and transparency, line weight and regions (coloring), ZIP contents, the blocklist and URLs over the manifest (the manifest's `system` id is not text), the text printed in the files and the mockup text.
+- Pack checks (docs/PACKS.md section 6): `pack_page_count` (PDF pages = `pack.size` plus declared `title_pages`, `answer_key_pages`, `extra_pages`), `pack_page_ids`, `pack_duplicates` / `pack_near_duplicates` (image niches, perceptual hash), `pack_fresh_pages` (a fresh pack shares no page id with another item), and for stationery and ttrpg `print_font_size` (7 pt) and `print_line_spacing` (6 mm). A game-system name in any spelling fails the item when it is printed, in a file name or in the mockup text.
 - `content_digest`: sha256 over the paths and bytes of `files`, `previews`, `assets` and the mockups; `null` for a failed item.
-- QA creates the listing photos in `output/<item_id>/mockups/` (JPEG, at least 2000 px on the long side, five for a full set). A failed item keeps none.
+- QA creates the listing photos in `output/<item_id>/mockups/` (JPEG, at least 2000 px on the long side, five for a full set, six for stationery and ttrpg: a desk scene). The cover photo carries the pack's size badge ("20 PAGES", stickers "SET OF 5") and leads with `pack.hero_page` when the pack has one. A failed item keeps none.
 - Each passing item gets a review-queue entry at `output/review/<item_id>.json` (`<out>/review/` for another output root):
   `{"item_id", "niche", "status": "pending" | "approved" | "rejected", "needs_review", "reasons": [...], "qa_reasons": [...], "mockups": [...], "content_digest", "queued"}`.
   - `qa_reasons` are the reasons QA owns and replaces on a rerun; other stages' reasons (the listing stage's review terms) stay.
@@ -188,7 +202,8 @@ Written by `listing.write_listing(item_dir, client=None, dry_run=False) -> dict`
   "created": "2026-10-15"
 }
 ```
-- Title is at most 140 chars, exactly 13 unique tags, each at most 20 chars (`core.etsy`, settings `listing:`). A listing with a blocked term or a URL is not written (the stage raises `ListingComplianceError`; an earlier `listing.json` is moved to `listing.withdrawn.json` and the item goes back to `qa_passed`). A flagged term sets `needs_review` and is added to the review entry.
+- Title is at most 140 chars, exactly 13 unique tags, each at most 20 chars (`core.etsy`, settings `listing:`). Pack listings name the size in the title ("..., 20 Pages", "Set of 5 ...") and state the overlap with the theme's other packs (docs/PACKS.md section 6).
+- A ttrpg item made for a game system (manifest `system` other than `generic`) may name that system in the title, tags and description only, always with "Made for use with <label>. This is an unofficial product of our own design." and the registry's disclaimer; `compliance.allowed` lists the `!` terms it used. Any other system, or any system in alt text, other niches or file names, is refused. Medical-claim words are refused in every listing ("ADHD-friendly" describes a layout and is allowed). A listing with a blocked term or a URL is not written (the stage raises `ListingComplianceError`; an earlier `listing.json` is moved to `listing.withdrawn.json` and the item goes back to `qa_passed`). A flagged term sets `needs_review` and is added to the review entry.
 - The AI disclosure (`config/ai_disclosure.txt` with the shop name) ends every description when the item is AI-assisted and, by default, on every listing (`listing.always_disclose_ai: true`), because the copy is AI-written.
 - `review_reasons`: listing review terms plus the reasons the item already had (manifest, QA). `warnings`: placeholder shop name, missing taxonomy id. `model`: the text model, or `null` for template copy.
 - `dry_run` and `writer.dry_run`: the copy was written in dry-run mode (template text). `writer.kind` is `model` or `template` (`template` also when the model gave no usable draft), `attempts` counts model calls, `repaired` lists rule problems fixed in code. The publisher refuses a real draft when `dry_run` or `writer.dry_run` is true.
@@ -229,8 +244,9 @@ Written by `pipeline.run(...)` (`python -m pipeline run`) after every run; earli
  "budget_reached": false,
  "path": "output/runs/run-2026-10-15-131702.json"}
 ```
+- Packs (docs/PACKS.md section 3): `max_items` counts packs, reused ones included, tier by tier (the first brief of every niche gets one pack, its master when that is new, then those briefs' other packs, then the next briefs). `packs` lists every pack the run made or reused (`{item_id, size, source, generate: "generated" | "reused"}`), each generate record carries `size` and `source`, and `format_summary` labels items `[pack of N, source]`. Notes say how many briefs and packs `max_items` left for a later run.
 - `items.<id>.<stage>` has `ok`, `detail` and, for an item the stage left alone (reused, rejected, waiting for review, a listing preview on a real item in a dry run), `skipped: true`. A broken item folder gets a `manifest` record.
-- Theme cooldown (docs/SERVER.md section 13): a brief skipped because the shop already has an item of the same theme gets a `generate` record under the id it would have made, with `skipped: true`, `cooldown: <blocking item id>` and the detail `theme cooldown: <item id>` (`format_summary` shows `generate: skip (theme cooldown: <item id>)`). It uses no `max_items` slot.
+- Theme cooldown (docs/SERVER.md section 13, keyed per pack size): a pack skipped because the shop already has an item of the same theme and size gets a `generate` record under the id it would have made, with `skipped: true`, `cooldown: <blocking item id>` and the detail `theme cooldown: <item id>` (`format_summary` shows `generate: skip (theme cooldown: <item id>)`). It uses no `max_items` slot.
 - Spending cap (docs/SERVER.md section 10): `budget_reached` is always present. When a stage raises `core.spend.BudgetExceeded`, that item's record has `ok: false` and `budget: true` (`format_summary` shows `wait`), `budget_reached` becomes true and no new paid work (images, model listing copy) starts for the rest of the run; QA and drafts of finished items go on. `core.spend.LedgerUnavailable` is a setup error (that stage stops).
 - `errors` are brief or stage failures, `setup_errors` are missing secrets, Etsy auth or safety-layer refusals (the stage stopped), and `notes` are informational.
 - The listing step lists what `listing.needs_listing()` selects; the publish step asks `publisher.review_wait()` first and records waiting items under `awaiting_review`.
