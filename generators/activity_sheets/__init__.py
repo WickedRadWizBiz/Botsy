@@ -1,15 +1,18 @@
-"""Procedural children's activity sheets (mazes, word searches, tracing, dot-to-dot).
+"""Procedural children's activity sheets (mazes, word searches, tracing, dot-to-dot), as packs.
 
-No image model is involved, so items are `ai_assisted: false`. One brief becomes one
-pack: output/<item_id>/ with one vector PDF per page size, PNG previews of the first
-pages and manifest.json (docs/CONTRACTS.md section 2).
+A pack-engine plugin (generators/packs, docs/PACKS.md section 3). No image model is involved,
+so items are `ai_assisted: false`. One brief becomes one item per size in brief["pack_sizes"]
+(else [page_count]): output/<item_id>/ with one vector PDF per page size, PNG previews of the
+first pages and manifest.json (docs/CONTRACTS.md section 2). A design set's page is a
+procedural spec (type, grid sizes, seed, words, lesson rows or picture), rendered at any page
+size, so a derived pack is its master's puzzles laid out again for its own pages.
 
-Page count: brief["page_count"] is the number of activity pages. Each PDF also has a
-title page in front and answer-key pages at the back, which are not counted; the
-manifest's files[].pages is the real PDF page count including them.
+Page count: the pack size is the number of activity pages. Each PDF also has a title page in
+front and answer-key pages at the back, which are not counted; the manifest's files[].pages
+is the real PDF page count including them.
 
-Everything is seeded from the item id, which is deterministic for (date, theme,
-brief_id), so rerunning the same brief on the same date gives byte-identical PDFs.
+Everything is seeded from the design set id, which is deterministic for (date, theme,
+brief_id, pack), so rerunning the same brief on the same date gives byte-identical PDFs.
 The brief is checked first (generators/shared.py: 10-listing evidence, no URLs, ids or
 blocked terms). A rerun builds into a scratch folder and swaps it in only when every file
 is written, dropping the old QA report, mockups and listing; it never touches an item
@@ -18,21 +21,19 @@ that already has a real Etsy draft (publish.json), and a dry run never replaces 
 from __future__ import annotations
 
 import logging
-import shutil
+import sys
 import tempfile
 from pathlib import Path
 
-from core.config import load_settings, section, today
-from core.items import new_item_id, output_root, slugify
+from core.compliance import Blocklist
+from core.config import load_settings, section
 from core.render import POINTS_PER_INCH, page_size_points, pdf_info, render_pdf_pages
 from generators.activity_sheets.layout import PageGeometry, Style
-from generators.activity_sheets.pack import KINDS, plan_pack, render_pdf
-from generators.shared import (
-    as_list, brief_price, check_brief, file_name, find_shop, item_date, keep_existing, page_sizes_for,
-    recorded_brief_file, swap_in,
-)
+from generators.activity_sheets.pack import KINDS, build_pack, plan_specs, render_pdf
+from generators.shared import page_sizes_for
 
-__all__ = ["DEFAULTS", "KINDS", "NICHE", "generate", "page_sizes_for"]
+__all__ = ["DEFAULTS", "KINDS", "NICHE", "PAGE_TYPES", "generate", "page_sizes_for", "plan_pages", "preview",
+           "render_pages"]
 
 log = logging.getLogger(__name__)
 
@@ -70,94 +71,107 @@ DEFAULTS: dict = {
 }
 
 
+PAGE_TYPES = KINDS
+AI_ASSISTED = False
+FILE_LABEL = "activity-pack"
+
+
+def _cfg(settings: dict) -> dict:
+    return section(settings, NICHE, DEFAULTS)
+
+
 def generate(brief: dict, *, brief_file: str | Path | None = None, shop_id: str = "main",
              out_root: str | Path | None = None, date: str | None = None, dry_run: bool = False,
-             client=None, settings: dict | None = None) -> list[Path]:
-    """Build one activity pack from one brief. Returns [item_dir].
+             client=None, settings: dict | None = None, **kw) -> list[Path]:
+    """Build every activity pack of one brief. Returns one item dir per pack (master first).
 
-    `dry_run` and `client` are accepted for the shared generator signature and ignored:
-    nothing here calls a network service, so a dry run produces the same files.
+    `dry_run` and `client` are accepted for the shared generator signature: nothing here
+    calls a network service, so a dry run produces the same files.
     """
-    settings = settings or load_settings()
-    cfg = section(settings, NICHE, DEFAULTS)
-    checked = check_brief(brief, NICHE, settings, brief_file)
-    theme, blocklist = checked.theme, checked.blocklist
-    shop = find_shop(settings, shop_id)
+    from generators.packs import generate_packs
 
-    date = item_date(date or today())
-    item_id = new_item_id(date, NICHE, theme, salt=brief.get("brief_id") or "")
-    d = (Path(out_root) if out_root else output_root(settings)) / item_id
-    if keep_existing(d, item_id, dry_run):
-        return [d]
+    return generate_packs(brief, plugin=sys.modules[__name__], brief_file=brief_file, shop_id=shop_id,
+                          out_root=out_root, date=date, dry_run=dry_run, client=client,
+                          settings=settings or load_settings(), **kw)
 
-    pack = plan_pack(brief, item_id, cfg, blocklist, settings)
-    printed = blocklist.check(*pack.printed_text())
-    if printed.blocked:
-        raise ValueError(f"generated pages contain blocked terms {printed.blocked}")
-    reasons = list(checked.review_reasons)
-    if printed.flagged:
-        reasons.append(f"printed pages mention review terms {printed.flagged}")
-    price = brief_price(brief, shop, NICHE, reasons)
 
+# --- plugin hooks ----------------------------------------------------------------------------
+
+def default_pack_size(settings: dict) -> int:
+    return int((settings.get("niches", {}).get(NICHE, {}).get("pages_per_pack") or [10])[0])
+
+
+def max_pack_size(settings: dict) -> int:
+    return int(_cfg(settings)["max_pages"])
+
+
+def files_per_pack(page_sizes: list[str]) -> int:
+    return len(page_sizes)
+
+
+def plan_pages(ctx: dict, n: int, *, seed: str, settings: dict) -> list[dict]:
+    """n activity page specs, types round-robin (generators/activity_sheets/pack.py plan_specs).
+    Puzzle words are blocklist-checked as they are picked."""
+    blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
+    return plan_specs(ctx, n, seed=seed, cfg=_cfg(settings), blocklist=blocklist, settings=settings)
+
+
+def _style(settings: dict, cfg: dict) -> Style:
     pr = settings["print"]
-    style = Style(min_line_pt=float(pr["min_line_weight_pt"]), footer_text=cfg["footer_text"],
-                  trace_style=cfg["tracing"]["style"])
-    d.parent.mkdir(parents=True, exist_ok=True)
-    build = Path(tempfile.mkdtemp(prefix=f".build-{item_id}-", dir=d.parent))
-    try:
-        files = []
-        for name in page_sizes_for(brief, settings):
-            w, h = page_size_points(name, settings)
-            geo = PageGeometry(name, w, h, float(pr["margin_in"]) * POINTS_PER_INCH)
-            rel = "files/" + file_name(slugify(pack.theme), f"-activity-pack-{name}.pdf")
-            render_pdf(pack, geo, build / rel, style, cfg)
-            files.append({"path": rel, "kind": "pdf", "page_size": name,
-                          "pages": pdf_info(build / rel)["pages"], "dpi": int(pr.get("dpi", 300))})
-        (build / "previews").mkdir()
-        previews = _write_previews(build, files[0], cfg)
-        manifest = {
-            "schema": "manifest/v1",
-            "item_id": item_id,
-            "niche": NICHE,
-            "shop_id": shop_id,
-            "brief_id": brief.get("brief_id"),
-            "brief_file": recorded_brief_file(brief_file),
-            "theme": theme,
-            "keywords": as_list(brief.get("keywords")),
-            "audience": brief.get("audience"),
-            "price_usd": price,
-            "created": date,
-            "ai_assisted": False,
-            "needs_review": bool(reasons),
-            "generator": {"name": NICHE, "dry_run": bool(dry_run)},
-            "prompts": [],
-            "files": files,
-            "previews": previews,
-            "assets": [],
-            "status": "generated",
-            "pack": {
-                "activity_pages": len(pack.pages),
-                "title_pages": 1,
-                "answer_key_pages": files[0]["pages"] - 1 - len(pack.pages),
-                "difficulty": pack.difficulty,
-                "activity_types": pack.kinds,
-                "contents": [{"page": p.number, "type": p.kind, "title": p.title} for p in pack.pages],
-            },
-            "review_reasons": reasons,
-        }
-        swap_in(build, d, ("files", "previews"), manifest)   # reruns leave no stale pages or QA outputs
-    finally:
-        shutil.rmtree(build, ignore_errors=True)
-    log.info("generated %s (%d activity pages, %s)", item_id, len(pack.pages), [f["page_size"] for f in files])
-    return [d]
+    return Style(min_line_pt=float(pr["min_line_weight_pt"]), footer_text=cfg["footer_text"],
+                 trace_style=cfg["tracing"]["style"])
 
 
-def _write_previews(d: Path, pdf: dict, cfg: dict) -> list[dict]:
-    n = min(int(cfg["preview_pages"]), pdf["pages"])
-    images = render_pdf_pages(d / pdf["path"], dpi=int(cfg["preview_dpi"]), pages=list(range(n)))
-    out = []
-    for i, img in enumerate(images, start=1):
-        rel = f"previews/page-{i:02d}.png"
-        img.save(d / rel, "PNG")
-        out.append({"path": rel, "page": i})
+def render_pages(pages: list[dict], out_pdf: Path, *, page_size: str, settings: dict, ctx: dict) -> int:
+    """Title page, the pack's activity pages (numbered from 2) and answer keys for one page
+    size. Returns the PDF's page count."""
+    cfg = _cfg(settings)
+    pack = build_pack(pages, ctx)
+    w, h = page_size_points(page_size, settings)
+    geo = PageGeometry(page_size, w, h, float(settings["print"]["margin_in"]) * POINTS_PER_INCH)
+    render_pdf(pack, geo, Path(out_pdf), _style(settings, cfg), cfg)
+    return pdf_info(out_pdf)["pages"]
+
+
+def preview(pages: list[dict], out_dir: Path, *, settings: dict, ctx: dict, limit: int = 6) -> list[Path]:
+    """PNG renders of the first `limit` PDF pages (title page first), first page size."""
+    cfg = _cfg(settings)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    size = (list(ctx.get("page_sizes") or []) or list(settings["print"]["page_sizes"]))[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = Path(tmp) / "preview.pdf"
+        n = min(limit, render_pages(pages, pdf, page_size=size, settings=settings, ctx=ctx))
+        out = []
+        for i, img in enumerate(render_pdf_pages(pdf, dpi=int(cfg["preview_dpi"]), pages=list(range(n))), 1):
+            p = out_dir / f"page-{i:02d}.png"
+            img.convert("RGB").save(p, "PNG")
+            out.append(p)
     return out
+
+
+def manifest_previews(build: Path, files: list[dict], pages: list[dict], *, settings: dict, ctx: dict) -> list[dict]:
+    """The first activity_sheets.preview_pages pages of the first PDF (title page first)."""
+    from generators.packs.engine import pdf_previews
+
+    cfg = _cfg(settings)
+    return pdf_previews(build, files, int(cfg["preview_pages"]), dpi=int(cfg["preview_dpi"]))
+
+
+def printed_text(pages: list[dict], ctx: dict) -> list[str]:
+    """Every theme-derived string that ends up on a page, for the final blocklist check."""
+    return build_pack(pages, ctx).printed_text()
+
+
+def pack_fields(pages: list[dict], files: list[dict], *, settings: dict, ctx: dict, set_doc: dict) -> dict:
+    pack = build_pack(pages, ctx)
+    first = next((f for f in files if f.get("kind") == "pdf"), None)
+    total = int(first["pages"]) if first else 1 + len(pages)
+    return {
+        "activity_pages": len(pack.pages),
+        "title_pages": 1,
+        "answer_key_pages": total - 1 - len(pack.pages),
+        "difficulty": pack.difficulty,
+        "activity_types": pack.kinds,
+        "contents": [{"page": p.number, "type": p.kind, "title": p.title} for p in pack.pages],
+    }

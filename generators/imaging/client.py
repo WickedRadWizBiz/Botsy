@@ -32,6 +32,7 @@ import time
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 from core import spend
@@ -333,6 +334,8 @@ def reset_run_clients() -> None:
 
 # --- fake client ---------------------------------------------------------------------------
 
+PATCH_DARK = [(40, 40, 90), (90, 30, 30), (30, 80, 40), (70, 40, 90)]
+PATCH_LIGHT = [(250, 240, 180), (200, 240, 255), (255, 215, 230), (220, 255, 200)]
 STICKER_COLORS = [(239, 83, 80), (255, 167, 38), (255, 213, 79), (102, 187, 106), (66, 165, 245),
                   (171, 71, 188), (236, 64, 122), (38, 198, 218), (141, 110, 99)]
 
@@ -342,7 +345,8 @@ class FakeImageClient(_Budget):
 
     style "coloring": black outlines on white, with a little anti-aliasing gray, a thin
     detail line and a few specks so the cleanup step has real work to do.
-    style "sticker": a colorful outlined shape with white "eyes" on a plain white background.
+    style "sticker": an outlined patchwork shape with white "eyes" on a plain white background
+    (the patchwork keeps the stickers of a big pack apart for QA's duplicate check).
     style "auto" picks "sticker" when the prompt mentions a sticker.
     """
 
@@ -377,14 +381,19 @@ def size_for_aspect(aspect_ratio: str, long_side: int) -> tuple[int, int]:
 
 
 def _fake_coloring(size: tuple[int, int], rng: random.Random) -> Image.Image:
+    """Outlined body, head and props placed from the prompt's hash, plus a few outlined
+    shapes, so the pages of a pack look different to a perceptual hash (QA's near-duplicate
+    check) while staying open line art."""
     w, h = size
     img = Image.new("L", size, 255)
     d = ImageDraw.Draw(img)
     lw = max(3, w // 90)
-    cx, cy = w / 2, h * 0.55
-    bw, bh = w * rng.uniform(0.25, 0.32), h * rng.uniform(0.16, 0.22)
-    d.ellipse([cx - bw, cy - bh, cx + bw, cy + bh], outline=0, width=lw)              # body
-    r = w * rng.uniform(0.10, 0.14)
+    for _ in range(rng.randint(2, 5)):                                                # background props
+        _outlined_shape(d, rng, w, h, lw)
+    cx, cy = w * rng.uniform(0.32, 0.68), h * rng.uniform(0.45, 0.65)
+    bw, bh = w * rng.uniform(0.18, 0.32), h * rng.uniform(0.12, 0.22)
+    d.ellipse([cx - bw, cy - bh, cx + bw, cy + bh], fill=255, outline=0, width=lw)    # body
+    r = w * rng.uniform(0.08, 0.14)
     hx, hy = cx + rng.choice([-1, 1]) * bw * 0.7, cy - bh - r * 0.6
     d.ellipse([hx - r, hy - r, hx + r, hy + r], fill=255, outline=0, width=lw)        # head
     for ex in (-0.35, 0.35):
@@ -392,39 +401,92 @@ def _fake_coloring(size: tuple[int, int], rng: random.Random) -> Image.Image:
     for i in range(rng.randint(2, 4)):                                                # legs / props
         x = cx - bw * 0.6 + i * bw * 0.4
         d.rectangle([x, cy + bh * 0.8, x + w * 0.04, cy + bh + h * 0.08], fill=255, outline=0, width=lw)
-    sun_r = w * 0.07
-    sx, sy = rng.uniform(0.15, 0.3) * w, h * 0.14
+    sun_r = w * rng.uniform(0.05, 0.08)
+    sx, sy = rng.uniform(0.12, 0.88) * w, h * rng.uniform(0.1, 0.18)
     d.ellipse([sx - sun_r, sy - sun_r, sx + sun_r, sy + sun_r], outline=0, width=lw)
-    d.line([(w * 0.08, h * 0.86), (w * 0.92, h * 0.86)], fill=0, width=lw)            # ground
-    d.line([(w * 0.2, h * 0.9), (w * 0.8, h * 0.9)], fill=60, width=1)                # thin detail
+    ground = h * rng.uniform(0.84, 0.9)
+    d.line([(w * 0.08, ground), (w * 0.92, ground)], fill=0, width=lw)                 # ground
+    d.line([(w * 0.2, ground + h * 0.04), (w * 0.8, ground + h * 0.04)], fill=60, width=1)   # thin detail
     for _ in range(12):                                                               # specks
         x, y = rng.uniform(0.05, 0.95) * w, rng.uniform(0.05, 0.95) * h
         d.ellipse([x, y, x + 2, y + 2], fill=0)
     return img.filter(ImageFilter.GaussianBlur(0.8)).convert("RGB")                   # soft edges
 
 
+def _outlined_shape(d: ImageDraw.ImageDraw, rng: random.Random, w: int, h: int, lw: int) -> None:
+    x, y = rng.uniform(0.1, 0.9) * w, rng.uniform(0.1, 0.8) * h
+    s = min(w, h) * rng.uniform(0.06, 0.14)
+    kind = rng.choice(("ellipse", "box", "triangle", "diamond"))
+    if kind == "ellipse":
+        d.ellipse([x - s, y - s * 0.7, x + s, y + s * 0.7], fill=255, outline=0, width=lw)
+    elif kind == "box":
+        d.rectangle([x - s, y - s, x + s, y + s], fill=255, outline=0, width=lw)
+    elif kind == "triangle":
+        d.polygon([(x, y - s), (x + s, y + s), (x - s, y + s)], fill=255, outline=0, width=lw)
+    else:
+        d.polygon([(x, y - s), (x + s, y), (x, y + s), (x - s, y)], fill=255, outline=0, width=lw)
+
+
+def _patch(img: Image.Image, rng: random.Random, center: tuple[float, float], r: float, lw: int) -> None:
+    """Paint the colored body (inside the outline only) as a patchwork of 6x6 or 7x7 dark and
+    light cells drawn from the prompt's hash. The random cells decide a perceptual hash, so
+    the stickers of even a 60-sticker dry-run pack never look alike to QA's duplicate check
+    (one shape split in two tones did: same-shape stickers hashed 2-6 bits apart)."""
+    cx, cy = center
+    arr = np.asarray(img)
+    body = np.all(arr == arr[int(cy), int(cx)], axis=2)
+    g = rng.randint(6, 7)
+    cells = np.array([[rng.random() < 0.5 for _ in range(g)] for _ in range(g)])
+    ys, xs = np.mgrid[0:img.height, 0:img.width]
+    gx = np.clip(((xs - (cx - r)) / (2 * r) * g).astype(int), 0, g - 1)
+    gy = np.clip(((ys - (cy - r)) / (2 * r) * g).astype(int), 0, g - 1)
+    dark = cells[gy, gx]
+    for region, tone in ((body & dark, rng.choice(PATCH_DARK)), (body & ~dark, rng.choice(PATCH_LIGHT))):
+        mask = Image.fromarray((region * 255).astype(np.uint8), "L")
+        if lw > 2:
+            mask = mask.filter(ImageFilter.MinFilter(3))
+        img.paste(Image.new("RGB", img.size, tone), (0, 0), mask)
+
+
 def _fake_sticker(size: tuple[int, int], rng: random.Random) -> Image.Image:
+    """One colorful outlined shape on plain white, its kind, size, place and markings drawn
+    from the prompt's hash; everything sits inside the outline, so it cuts as one piece."""
     w, h = size
     img = Image.new("RGB", size, (255, 255, 255))
     d = ImageDraw.Draw(img)
     lw = max(3, w // 70)
     color = rng.choice(STICKER_COLORS)
-    cx, cy, r = w / 2, h / 2, min(w, h) * rng.uniform(0.24, 0.3)
-    shape = rng.choice(["circle", "star", "blob"])
+    cx, cy = w * rng.uniform(0.4, 0.6), h * rng.uniform(0.4, 0.6)
+    r = min(w, h) * rng.uniform(0.2, 0.32)
+    shape = rng.choice(["circle", "star", "blob", "oval", "square", "gem"])
+    turn = rng.uniform(0, math.pi)
     if shape == "circle":
         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color, outline=(30, 30, 30), width=lw)
+    elif shape == "oval":
+        d.ellipse([cx - r, cy - r * 0.7, cx + r, cy + r * 0.7], fill=color, outline=(30, 30, 30), width=lw)
+    elif shape == "square":
+        d.rounded_rectangle([cx - r, cy - r * 0.85, cx + r, cy + r * 0.85], radius=int(r * 0.3), fill=color,
+                            outline=(30, 30, 30), width=lw)
     else:
-        n = 5 if shape == "star" else 9
-        inner = 0.5 if shape == "star" else 0.85
+        n, inner = {"star": (5, 0.5), "blob": (9, 0.85), "gem": (3, 0.9)}[shape]
         pts = []
         for i in range(n * 2):
             rad = r if i % 2 == 0 else r * inner
-            a = math.pi * i / n - math.pi / 2
+            a = math.pi * i / n - math.pi / 2 + turn
             pts.append((cx + rad * math.cos(a), cy + rad * math.sin(a)))
         d.polygon(pts, fill=color, outline=(30, 30, 30), width=lw)
+    spot = rng.choice([c for c in STICKER_COLORS if c != color])
+    _patch(img, rng, (cx, cy), r, lw)                                 # a patchwork body
+    d = ImageDraw.Draw(img)
+    for _ in range(rng.randint(1, 4)):                                # markings inside the shape
+        a, dist = rng.uniform(0, 2 * math.pi), r * rng.uniform(0.0, 0.3)
+        sr = r * rng.uniform(0.06, 0.12)
+        x, y = cx + dist * math.cos(a), cy + r * 0.25 + dist * 0.5 * math.sin(a)
+        d.ellipse([x - sr, y - sr, x + sr, y + sr], fill=spot)
     er = r * 0.16
+    ey = cy - r * rng.uniform(0.05, 0.2)
     for ex in (-0.3, 0.3):                    # white eyes: enclosed white must survive bg removal
-        x, y = cx + ex * r, cy - r * 0.1
-        d.ellipse([x - er, y - er, x + er, y + er], fill=(255, 255, 255), outline=(30, 30, 30), width=lw // 2)
-        d.ellipse([x - er / 3, y - er / 3, x + er / 3, y + er / 3], fill=(30, 30, 30))
+        x = cx + ex * r
+        d.ellipse([x - er, ey - er, x + er, ey + er], fill=(255, 255, 255), outline=(30, 30, 30), width=lw // 2)
+        d.ellipse([x - er / 3, ey - er / 3, x + er / 3, ey + er / 3], fill=(30, 30, 30))
     return img

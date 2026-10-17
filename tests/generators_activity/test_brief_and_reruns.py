@@ -94,7 +94,7 @@ def test_file_names_fit_etsy_limits(tmp_path, brief, both_sizes):
     [d] = generate(b, out_root=tmp_path, date=DATE, settings=s)
     for f in read_manifest(d)["files"]:
         name = f["path"].split("/", 1)[1]
-        assert len(name) <= 70 and name.endswith("-activity-pack-" + f["page_size"] + ".pdf"), name
+        assert len(name) <= 70 and name.endswith("-activity-pack-1-pages-" + f["page_size"] + ".pdf"), name
         assert (d / f["path"]).is_file()
 
 

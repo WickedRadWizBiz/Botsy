@@ -79,7 +79,7 @@ def test_unknown_theme_still_fills_a_big_sticker_pack():
 
 def test_too_many_pages_for_theme_raises(coloring_brief, blocklist):
     with pytest.raises(ValueError, match="distinct subjects"):
-        plan_images({**coloring_brief, "theme": "abstract shapes"}, "coloring", 500, blocklist)
+        plan_images({**coloring_brief, "theme": "abstract shapes"}, "coloring", 5000, blocklist)
 
 
 @pytest.mark.parametrize("field,value", [

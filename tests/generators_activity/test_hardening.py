@@ -13,7 +13,7 @@ import pypdfium2.raw as pdfium_c
 import pytest
 
 from core.config import ROOT
-from core.items import read_manifest
+from core.items import iter_item_dirs, read_manifest
 from core.render import page_size_points
 from generators.activity_sheets import generate, pack as pack_mod
 from generators.activity_sheets.layout import fit_lines, printable, wrap_text
@@ -154,7 +154,9 @@ def test_failed_rerun_keeps_the_previous_item_intact(tmp_path, brief, both_sizes
         generate(brief, out_root=tmp_path, date="2026-10-15", settings=both_sizes)
     after = {p.relative_to(d): p.read_bytes() for p in d.rglob("*") if p.is_file()}
     assert after == before                                         # manifest still matches its files
-    assert [p.name for p in tmp_path.iterdir()] == [d.name]        # no scratch folder left behind
+    # no scratch folder left behind: only the item and its design set (sets/<set_id>/set.json)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([d.name, "sets"])
+    assert [p.name for p in (tmp_path / "sets").iterdir() if p.name.startswith(".")] == []
 
 
 def test_tracing_instruction_fits_both_trace_styles():
@@ -180,9 +182,9 @@ def test_identical_files_across_processes_and_hash_seeds(tmp_path, brief):
         subprocess.run([sys.executable, "-m", "generators.activity_sheets", "--brief", str(path), "--out",
                         str(out), "--date", "2026-10-15", "--dry-run"], cwd=ROOT, env=env, check=True,
                        capture_output=True)
-        [d] = list(out.iterdir())
-        digests.append({p.relative_to(d).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                        for p in sorted(d.rglob("*")) if p.is_file()})
+        [d] = list(iter_item_dirs(out))
+        digests.append({p.relative_to(out).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in sorted(out.rglob("*")) if p.is_file()})     # the design set too
     assert digests[0] == digests[1] and any(k.endswith(".pdf") for k in digests[0])
 
 

@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import io
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
+from reportlab import rl_config
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 from reportlab.lib.utils import ImageReader
@@ -126,6 +129,29 @@ def flat_jpeg(img: Image.Image, quality: int = 92) -> ImageReader:
     return ImageReader(io.BytesIO(buf.getvalue()))
 
 
+@contextmanager
+def binary_jpeg_streams() -> Iterator[None]:
+    """Embed JPEG data as is (DCTDecode only) instead of ASCII85 text: a fifth smaller, and
+    without reportlab's C accelerator the pure-Python ASCII85 encoder is the slowest step."""
+    old = rl_config.useA85
+    rl_config.useA85 = 0
+    try:
+        yield
+    finally:
+        rl_config.useA85 = old
+
+
+def sheet_cell_px(page_size: str, settings: dict, *, cols: int = 3, rows: int = 4, gap_in: float = 0.25,
+                  footer_text: str = "") -> int:
+    """Pixels a sticker needs on its long side to print at print.dpi in a sheet cell."""
+    footer_pt = 12.0 if footer_text else 0.0
+    _, _, box = printable_box(page_size, settings, bottom_reserve_pt=footer_pt)
+    gap = gap_in * POINTS_PER_INCH
+    cell_w = (box.w - (cols - 1) * gap) / cols
+    cell_h = (box.h - (rows - 1) * gap) / rows
+    return math.ceil(max(cell_w, cell_h) / POINTS_PER_INCH * int(settings["print"].get("dpi", 300)))
+
+
 def sticker_sheet_pdf(stickers: list[Image.Image], out_path: str | Path, page_size: str, settings: dict, *,
                       cols: int = 3, rows: int = 4, gap_in: float = 0.25, title: str = "",
                       footer_text: str = "", jpeg_quality: int | None = 92) -> Path:
@@ -146,20 +172,21 @@ def sticker_sheet_pdf(stickers: list[Image.Image], out_path: str | Path, page_si
     c = canvas.Canvas(str(out_path), pagesize=(page_w, page_h), invariant=1)
     c.setTitle(title)
     c.setCreator("etsy-agents")
-    for page in sheet_grid(len(stickers), cols, rows):
-        for slot, idx in enumerate(page):
-            r, col = divmod(slot, cols)
-            cell = Box(box.x + col * (cell_w + gap), box.y + box.h - (r + 1) * cell_h - r * gap, cell_w, cell_h)
-            img = stickers[idx]
-            if max(img.size) > max_px:
-                img = img.copy()
-                img.thumbnail((max_px, max_px), Image.LANCZOS)
-            if jpeg_quality:
-                placed = fit(img.width, img.height, cell)
-                c.drawImage(flat_jpeg(img, jpeg_quality), placed.x, placed.y, placed.w, placed.h)
-            else:
-                draw_art(c, img.convert("RGBA"), cell)
-        _footer(c, footer_text, page_w, margin)
-        c.showPage()
-    c.save()
+    with binary_jpeg_streams():
+        for page in sheet_grid(len(stickers), cols, rows):
+            for slot, idx in enumerate(page):
+                r, col = divmod(slot, cols)
+                cell = Box(box.x + col * (cell_w + gap), box.y + box.h - (r + 1) * cell_h - r * gap, cell_w, cell_h)
+                img = stickers[idx]
+                if max(img.size) > max_px:
+                    img = img.copy()
+                    img.thumbnail((max_px, max_px), Image.LANCZOS)
+                if jpeg_quality:
+                    placed = fit(img.width, img.height, cell)
+                    c.drawImage(flat_jpeg(img, jpeg_quality), placed.x, placed.y, placed.w, placed.h)
+                else:
+                    draw_art(c, img.convert("RGBA"), cell)
+            _footer(c, footer_text, page_w, margin)
+            c.showPage()
+        c.save()
     return out_path

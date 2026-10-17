@@ -6,8 +6,10 @@
     prompts.py  prompts from our own brief fields, blocklist-checked before any API call
     cleanup.py  line-art cleanup + potrace/vtracer, sticker background removal + die-cut border
     pdf.py      page placement (SVG or raster) and sticker-sheet grids
-    common.py   item setup, batch generation with spare subjects, manifest basics
+    common.py   the image client for a run, the image cap, batch generation with spare
+                subjects (the pages of one design set), the style-note review rule
     cli.py      the image generators' entry to the shared CLI (generators/cli.py)
-Brief checks, item-folder rules and Etsy file-name limits shared with the activity
-sheets live in generators/shared.py.
+Items, design sets and manifests belong to the pack engine (generators/packs); brief
+checks, item-folder rules and Etsy file-name limits shared with the activity sheets live in
+generators/shared.py.
 """

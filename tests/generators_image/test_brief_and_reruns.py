@@ -4,6 +4,7 @@ single-species themes stay on theme."""
 import copy
 import hashlib
 import json
+import shutil
 
 import pytest
 import yaml
@@ -163,6 +164,8 @@ def test_failed_regeneration_keeps_downstream_outputs(tmp_path, settings, colori
         def generate(self, *a, **k):
             raise ConnectionError("network down")
 
+    # A complete design set is reused (nothing is paid for twice), so the rerun needs new pages to fail.
+    shutil.rmtree(tmp_path / "sets")
     with pytest.raises(ConnectionError):
         coloring_pages.generate(brief, out_root=tmp_path, date=DATE, dry_run=True, client=Refuses("coloring"),
                                 settings=settings)

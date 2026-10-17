@@ -219,3 +219,24 @@ def test_fake_client_is_deterministic_and_capped():
     assert [x["image_size"] for x in f.calls] == ["4K", "4K", "2K"]
     with pytest.raises(ImageCapExceeded):
         f.generate("x", aspect_ratio="1:1", image_size="1K")
+
+
+def test_fake_stickers_of_a_big_pack_never_look_alike_to_qa():
+    """Dry-run sticker packs go through QA's perceptual-hash duplicate check (distance <= 3
+    fails, <= 6 asks for review): 63 fake stickers stay well apart."""
+    import itertools
+
+    from core.config import load_settings
+    from generators.imaging.prompts import sticker_prompt
+    from generators.imaging.subjects import subject_pool
+    from generators.stickers import DEFAULTS, make_sticker, scaled_for_fake_art
+    from qa.packs import hamming, phash
+
+    near = int(load_settings().get("qa", {}).get("packs", {}).get("near_distance", 6))
+    client = FakeImageClient("sticker", long_side_px=320)
+    cfg = scaled_for_fake_art(dict(DEFAULTS), 320)
+    brief = {"theme": "frogs", "audience": "kids 4-8", "style_notes": ""}
+    hashes = [phash(make_sticker(client.generate(sticker_prompt(brief, s), aspect_ratio="1:1", image_size="1K"),
+                                 cfg, "floodfill"))
+              for s in subject_pool("frogs")[:63]]
+    assert min(hamming(a, b) for a, b in itertools.combinations(hashes, 2)) > near

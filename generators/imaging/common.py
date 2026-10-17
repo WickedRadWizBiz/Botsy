@@ -1,99 +1,30 @@
-"""Plumbing shared by the image generators (coloring_pages, stickers).
+"""Plumbing shared by the image niches (coloring_pages, stickers) under the pack engine.
 
-Each generator: check the brief (generators.shared.check_brief), plan prompts (all
-blocklist-checked up front), check the image budget, generate one image per subject (a spare
-subject replaces one the model refuses), post-process into a scratch build folder, then swap
-the finished files in and write manifest.json (docs/CONTRACTS.md 2). Building aside means a
-rerun that fails half way (network, image cap, refusals) leaves the previous item exactly as
-it was; a rerun that succeeds drops the old QA report, mockups and listing.
+The engine (generators/packs/engine.py) owns items, design sets and manifests. An image
+plugin plans one prompt per page (all blocklist-checked before anything is paid for), checks
+the run's image cap, then generates one image per subject (a spare subject replaces one the
+model refuses or returns blank) and post-processes each into its design set's pages/ folder.
+A set is built in a scratch folder and moved into place only when complete, so a build that
+fails half way (network, image cap, refusals) leaves nothing behind and pays for nothing twice.
 """
 from __future__ import annotations
 
 import logging
 import shutil
-import tempfile
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
-from core.compliance import Blocklist, ComplianceResult
-from core.config import today
-from core.items import new_item_id, output_root
+from core.compliance import Blocklist
+from core.config import section
 from generators.imaging.client import (
     FakeImageClient, GeminiImageClient, ImageCapExceeded, ImageClient, ImageGenerationError, run_client,
 )
 from generators.imaging.prompts import PlannedImage, guard, unlisted_style_clauses
-from generators.shared import (
-    ETSY_MAX_FILE_BYTES, ETSY_MAX_FILE_MB, ETSY_MAX_FILES, as_list, brief_price, check_brief, find_shop, item_date,
-    keep_existing, recorded_brief_file, swap_in,
-)
 
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-ITEM_SUBDIRS = ("files", "previews", "assets")
-
-
-@dataclass
-class ItemContext:
-    niche: str
-    theme: str
-    item_id: str
-    dir: Path
-    date: str
-    blocklist: Blocklist
-    brief_check: ComplianceResult
-    shop: dict = field(default_factory=dict)
-    skip: bool = False                    # already drafted on Etsy: leave untouched
-    review_reasons: list[str] = field(default_factory=list)
-
-
-def start_item(brief: dict, niche: str, settings: dict, *, shop_id: str = "main", out_root=None,
-               date: str | None = None, brief_file=None, dry_run: bool = False) -> ItemContext:
-    """Check the brief (generators.shared.check_brief) and compute the item's id and directory.
-
-    Raises ValueError for a brief that breaks a compliance rule and for a dry run that
-    would replace a real item; sets ctx.skip for an item that already has a real Etsy draft.
-    """
-    checked = check_brief(brief, niche, settings, brief_file)
-    shop = find_shop(settings, shop_id)
-    date = item_date(date or today())
-    item_id = new_item_id(date, niche, checked.theme, salt=brief.get("brief_id") or "")
-    d = (Path(out_root) if out_root else output_root(settings)) / item_id
-    ctx = ItemContext(niche, checked.theme, item_id, d, date, checked.blocklist, checked.check, shop,
-                      review_reasons=list(checked.review_reasons))
-    ctx.skip = keep_existing(d, item_id, dry_run)
-    unlisted = unlisted_style_clauses(brief.get("style_notes"))
-    if unlisted:
-        log.warning("%s: %d brief style_notes clause(s) are not on the prompt allowlist; left out of the "
-                    "prompts", item_id, len(unlisted))
-        ctx.review_reasons.append(f"{len(unlisted)} brief style_notes clause(s) are not on the prompt "
-                                  "allowlist (generators/imaging/prompts.py STYLE_CLAUSES) and were left out "
-                                  "of the prompts")
-    return ctx
-
-
-@contextmanager
-def build_dir(ctx: ItemContext) -> Iterator[Path]:
-    """A scratch folder next to the item (no manifest.json, so other stages ignore it),
-    removed afterwards whether or not the build succeeded."""
-    ctx.dir.parent.mkdir(parents=True, exist_ok=True)
-    build = Path(tempfile.mkdtemp(prefix=f".build-{ctx.item_id}-", dir=ctx.dir.parent))
-    try:
-        for sub in ITEM_SUBDIRS:
-            (build / sub).mkdir()
-        yield build
-    finally:
-        shutil.rmtree(build, ignore_errors=True)
-
-
-def commit(build: Path, d: Path, manifest: dict) -> None:
-    """Swap the finished subfolders in (reruns leave no stale pages, QA report, mockups or
-    listing; generators.shared.swap_in), then write the manifest."""
-    swap_in(build, d, ITEM_SUBDIRS, manifest)
 
 
 def image_params(settings: dict, kind: str) -> tuple[str, str]:
@@ -101,6 +32,16 @@ def image_params(settings: dict, kind: str) -> tuple[str, str]:
     image = settings.get("models", {}).get("image", {})
     aspect, size = {"coloring": ("3:4", "4K"), "sticker": ("1:1", "2K")}[kind]
     return str(image.get(f"aspect_ratio_{kind}", aspect)), str(image.get(f"image_size_{kind}", size))
+
+
+def fake_long_side(settings: dict) -> int:
+    """FakeImageClient size for dry runs: the smaller of imaging.fake_long_side_px and
+    packs.dry_run_fake_long_side_px, so a 50-page dry-run pack stays fast."""
+    img = section(settings, "imaging", {"fake_long_side_px": 1200})
+    packs = section(settings, "packs", {"dry_run_fake_long_side_px": 640})
+    sizes = [int(v) for v in (img.get("fake_long_side_px"), packs.get("dry_run_fake_long_side_px"))
+             if isinstance(v, int) and not isinstance(v, bool) and v > 0]
+    return min(sizes) if sizes else 640
 
 
 def resolve_client(client: ImageClient | None, dry_run: bool, settings: dict, style: str,
@@ -120,10 +61,32 @@ def resolve_client(client: ImageClient | None, dry_run: bool, settings: dict, st
 
 
 def check_budget(client: ImageClient, needed: int) -> None:
-    """Fail before spending anything if the run cap cannot cover a whole pack."""
+    """Fail before spending anything if the run cap cannot cover a whole design set."""
     remaining = getattr(client, "remaining", None)
     if remaining is not None and remaining < needed:
         raise ImageCapExceeded(f"pack needs {needed} images but only {remaining} remain under the run cap")
+
+
+def model_name(client: ImageClient) -> str:
+    return str(getattr(client, "model", None) or type(client).__name__)
+
+
+def style_review_reasons(brief: dict) -> list[str]:
+    """Brief style_notes clauses that are not on the prompt allowlist: left out of every
+    prompt, and the item is marked for review (brief free text never reaches a prompt)."""
+    unlisted = unlisted_style_clauses(brief.get("style_notes"))
+    if not unlisted:
+        return []
+    log.warning("%s: %d brief style_notes clause(s) are not on the prompt allowlist; left out of the prompts",
+                brief.get("brief_id"), len(unlisted))
+    return [f"{len(unlisted)} brief style_notes clause(s) are not on the prompt allowlist "
+            "(generators/imaging/prompts.py STYLE_CLAUSES) and were left out of the prompts"]
+
+
+def planned_images(candidates: list[dict]) -> list[PlannedImage]:
+    """The engine's page candidates as prompts for generate_batch (same order)."""
+    return [PlannedImage(str(p.get("subject") or ""), str((p.get("spec") or {}).get("prompt") or ""))
+            for p in candidates]
 
 
 def generate_batch(client: ImageClient, planned: list[PlannedImage], n: int, *, aspect_ratio: str,
@@ -159,52 +122,11 @@ def generate_batch(client: ImageClient, planned: list[PlannedImage], n: int, *, 
     return done, skipped
 
 
-def check_file_count(n: int) -> None:
-    """Refuse up front (before any image is paid for) a pack Etsy could not accept."""
-    if n > ETSY_MAX_FILES:
-        raise ValueError(f"{n} digital files exceed Etsy's limit of {ETSY_MAX_FILES} per listing")
+def by_plan(candidates: list[dict], planned: list[PlannedImage]) -> dict[int, dict]:
+    """id(PlannedImage) -> its page candidate (generate_batch returns the same objects)."""
+    return {id(p): c for p, c in zip(planned, candidates)}
 
 
-def oversize_reasons(d: Path, files: list[dict]) -> list[str]:
-    """Review reasons for files above Etsy's per-file limit."""
-    reasons = []
-    for f in files:
-        size = (d / f["path"]).stat().st_size
-        mb = size / 1e6
-        if size > ETSY_MAX_FILE_BYTES:
-            reasons.append(f"{f['path']} is {mb:.1f} MB; Etsy allows {ETSY_MAX_FILE_MB} MB per file")
-    if len(files) > ETSY_MAX_FILES:
-        reasons.append(f"{len(files)} digital files; Etsy allows {ETSY_MAX_FILES} per listing")
-    return reasons
-
-
-def base_manifest(ctx: ItemContext, brief: dict, *, brief_file, shop_id: str, settings: dict,
-                  client: ImageClient, dry_run: bool, prompts: list[str], prompt_check: ComplianceResult) -> dict:
-    """Manifest fields common to every image item; the caller adds files/previews/assets."""
-    reasons = list(ctx.review_reasons)
-    if prompt_check.flagged:
-        reasons.append(f"prompts mention review terms {prompt_check.flagged}")
-    price = brief_price(brief, ctx.shop, ctx.niche, reasons)
-    return {
-        "schema": "manifest/v1",
-        "item_id": ctx.item_id,
-        "niche": ctx.niche,
-        "shop_id": shop_id,
-        "brief_id": brief.get("brief_id"),
-        "brief_file": recorded_brief_file(brief_file),
-        "theme": ctx.theme,
-        "keywords": as_list(brief.get("keywords")),
-        "audience": brief.get("audience"),
-        "price_usd": price,
-        "created": ctx.date,
-        "ai_assisted": True,
-        "needs_review": bool(reasons),
-        "generator": {"name": ctx.niche, "model": getattr(client, "model", type(client).__name__),
-                      "dry_run": bool(dry_run)},
-        "prompts": prompts,
-        "files": [],
-        "previews": [],
-        "assets": [],
-        "status": "generated",
-        "review_reasons": reasons,
-    }
+def copy_asset(src: str | Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)

@@ -171,6 +171,15 @@ TABLE: dict[str, tuple[str, ...]] = {
         "a birthday cake", "balloons", "a wrapped present", "a party hat", "a cupcake with a candle",
         "a party horn", "confetti and streamers", "a pinata",
     ),
+    "summer": (
+        "a sun with sunglasses", "a beach ball", "a sandcastle", "an ice cream cone", "a sunflower",
+        "a sailboat", "a popsicle", "flip flops", "a watermelon slice", "a glass of lemonade", "a sun hat",
+        "a swim ring", "a seashell", "a palm tree", "a beach umbrella", "a crab on the sand", "a surfboard",
+        "a picnic basket", "a pair of sunglasses", "a sand bucket and spade",
+    ),
+    # "seasons" / "four seasons": one subject of each season. A theme that names one season
+    # uses that season's table (summer, polar for winter, flowers for spring, thanksgiving
+    # for autumn) and never this mix, so a summer pack gets no snowmen.
     "seasons": (
         "a sun with sunglasses", "a beach ball", "a sandcastle", "a snowflake", "a snowman", "an umbrella",
         "autumn leaves", "a pumpkin", "spring flowers", "a kite", "a rainbow", "a mitten",
@@ -231,7 +240,8 @@ ALIASES: dict[str, str] = {
     "halloween": "halloween", "spooky": "halloween", "easter": "easter",
     "valentine": "valentines", "love": "valentines", "thanksgiving": "thanksgiving", "fall": "thanksgiving",
     "autumn": "thanksgiving", "harvest": "thanksgiving", "birthday": "birthday", "party": "birthday",
-    "summer": "seasons", "season": "seasons", "sport": "sports", "soccer": "sports",
+    "summer": "summer", "summertime": "summer", "sunshine": "summer",
+    "season": "seasons", "sport": "sports", "soccer": "sports",
     "music": "music", "musical": "music", "instrument": "music", "weather": "weather",
     "camping": "camping", "camp": "camping", "outdoor": "camping",
     "animal": "animals", "critter": "animals",
@@ -246,6 +256,14 @@ FOCUS: dict[str, tuple[str, ...]] = {
     "car": ("car",), "truck": ("truck",), "train": ("train",), "airplane": ("airplane",),
     "plane": ("airplane", "plane"), "excavator": ("excavator",), "digger": ("excavator", "digger"),
     "cupcake": ("cupcake",), "santa": ("santa",), "soccer": ("soccer",),
+}
+
+# Words a subject may not contain when the theme matched the key: the generic templates and
+# poses ("a snowy winter {t} scene", "playing in the snow") must not put snow in a summer pack.
+CONFLICTS: dict[str, tuple[str, ...]] = {
+    "summer": ("snow", "snowy", "snowflake", "snowman", "winter", "mitten", "scarf", "cocoa", "autumn",
+               "christmas", "pumpkin"),
+    "polar": ("beach", "sandcastle", "sunglasses", "sunny", "ice cream", "picnic"),
 }
 
 TEMPLATES: tuple[str, ...] = (
@@ -267,6 +285,12 @@ POSES: tuple[str, ...] = (
     "under an umbrella in the rain", "with a big heart", "reading a book", "with a balloon",
     "wearing a scarf", "having a picnic", "with a butterfly friend", "dancing",
     "wearing sunglasses", "with a present", "eating a snack", "looking at the stars",
+    # More poses, so a 60-sticker or 50-page pack of a theme without a table of its own
+    # still gets distinct subjects (dry runs, or when the text model is unavailable).
+    "riding a bicycle", "flying a kite", "playing in the snow", "splashing in a puddle",
+    "building a sandcastle", "planting a seed", "baking cookies", "playing a guitar",
+    "jumping in autumn leaves", "sailing a little boat", "blowing bubbles", "painting a picture",
+    "hugging a teddy bear", "with a cup of cocoa", "wearing a crown", "picking apples",
 )
 
 _SKIP_SINGULAR = ("ss", "us", "is", "mas", "ics")
@@ -347,4 +371,8 @@ def subject_pool(theme: str, keywords: list[str] | tuple[str, ...] = ()) -> list
     bases = on_theme or [f"a cute {adj} character"]
     pool += [f"{b}, {pose}" for pose in POSES for b in bases]
     pool += [s for s in curated if s not in on_theme]
+    banned = [w for k in matched_keys(theme, keywords) for w in CONFLICTS.get(k, ())]
+    if banned:
+        rx = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in banned) + r")\b")
+        pool = [s for s in pool if not rx.search(s.lower())]
     return list(dict.fromkeys(pool))

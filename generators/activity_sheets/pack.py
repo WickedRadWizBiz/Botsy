@@ -111,81 +111,193 @@ def resolve_difficulty(brief: dict, cfg: dict) -> str:
 
 
 def plan_pack(brief: dict, item_id: str, cfg: dict, blocklist: Blocklist, settings: dict) -> Pack:
-    theme = printable(brief["theme"])
-    if not any(ch.isalnum() for ch in theme):
-        raise ValueError(f"theme {brief['theme']!r} has no printable letters")
-    keywords = [printable(k) for k in as_list(brief.get("keywords"))]
-    kinds = resolve_kinds(brief, settings)
+    """The whole pack for one brief (brief["page_count"] pages), seeded from item_id: the
+    page specs of plan_specs() turned into puzzles."""
     n_pages = int(brief.get("page_count") or (settings.get("niches", {}).get("activity_sheets", {})
                                                .get("pages_per_pack") or [10])[0])
-    if not 1 <= n_pages <= int(cfg["max_pages"]):
-        raise ValueError(f"page_count {n_pages} outside 1..{cfg['max_pages']}")
-    difficulty = resolve_difficulty(brief, cfg)
+    ctx = brief_ctx(brief, item_id)
+    specs = plan_specs(ctx, n_pages, seed=item_id, cfg=cfg, blocklist=blocklist, settings=settings)
+    return build_pack(specs, ctx)
+
+
+def brief_ctx(brief: dict, item_seed: str = "") -> dict:
+    """The plugin ctx (docs/PACKS.md section 3) for a brief, outside the pack engine."""
+    return {"theme": brief.get("theme"), "audience": str(brief.get("audience") or ""),
+            "keywords": as_list(brief.get("keywords")), "activity_types": as_list(brief.get("activity_types")),
+            "difficulty": brief.get("difficulty"), "item_seed": item_seed, "used_subjects": []}
+
+
+def _subject(kind: str, content) -> str:
+    """Short description of what a page holds (curation variety, fresh sets avoid repeats)."""
+    if kind == "word_search":
+        return "word search: " + ", ".join(w.lower() for w in content)
+    if kind == "tracing":
+        return "tracing: " + content.title.lower()
+    if kind == "dot_to_dot":
+        return f"dot-to-dot: {content.name}"
+    return "maze"
+
+
+def plan_specs(ctx: dict, n: int, *, seed: str, cfg: dict, blocklist: Blocklist, settings: dict) -> list[dict]:
+    """n distinct page specs (the pack engine's plan_pages): types round-robin over the
+    brief's activity types, puzzles seeded from `seed`. A spec holds everything needed to
+    rebuild its puzzle at any page size (grid sizes and a seed, word list, lesson rows,
+    picture name); nothing here is random outside rng_for(seed, ...), so the same
+    (ctx, n, seed) always gives the same pages. Subjects already used by the theme's other
+    design sets (ctx["used_subjects"]) come last, so a fresh pack brings new pictures,
+    lessons and word lists."""
+    theme = printable(ctx.get("theme") or "")
+    if not any(ch.isalnum() for ch in theme):
+        raise ValueError(f"theme {ctx.get('theme')!r} has no printable letters")
+    keywords = [printable(k) for k in as_list(ctx.get("keywords"))]
+    kinds = resolve_kinds({"activity_types": ctx.get("activity_types")}, settings)
+    if not 1 <= n <= int(cfg["max_pages"]):
+        raise ValueError(f"page_count {n} outside 1..{cfg['max_pages']}")
+    difficulty = resolve_difficulty({"difficulty": ctx.get("difficulty"), "audience": ctx.get("audience")}, cfg)
     level = cfg["levels"][difficulty]
-    order = [kinds[i % len(kinds)] for i in range(n_pages)]
+    order = [kinds[i % len(kinds)] for i in range(n)]
+    used = {str(u) for u in ctx.get("used_subjects") or []}
 
     # A pool big enough for one full word search even after clean_word_list drops overlaps.
     words = vocab.theme_words(theme, keywords, blocklist,
                               min_pool=max(12, int(level["word_search"]["words"]) + 4))
     tcfg = cfg["tracing"]
-    lessons = tracing.plan_lessons(order.count("tracing"), words, tcfg["letters_per_page"],
+    n_tracing = order.count("tracing")
+    lessons = tracing.plan_lessons(n_tracing + len(used), words, tcfg["letters_per_page"],
                                    tcfg["numbers_per_page"], tcfg["words_per_page"])
-    matched, others = rank_shapes(vocab.tokens(theme, *keywords), rng_for(item_id, "shapes"))
-    shapes = matched + others
+    lessons = _new_first(lessons, lambda le: _subject("tracing", le), used)
+    matched, others = rank_shapes(vocab.tokens(theme, *keywords), rng_for(seed, "shapes"))
+    on_theme = {sh.name for sh in matched}
+    shapes = _new_first(matched + others, lambda sh: _subject("dot_to_dot", sh), used)
     ws = level["word_search"]
     ws_words = clean_word_list(words, int(ws["max_size"]), word_search.reversible(ws["directions"]))
+    ws_lists = word_lists(ws_words, int(ws["words"]), order.count("word_search"), rng_for(seed, "word_lists"),
+                          used=[u for u in used if u.startswith("word search:")])
+    title = title_case(theme)
 
-    pages: list[ActivityPage] = []
+    pages: list[dict] = []
     seen = {k: 0 for k in KINDS}
-    for i, kind in enumerate(order):
+    for kind in order:
         k = seen[kind]
         seen[kind] += 1
-        rng = rng_for(item_id, kind, k)
-        number = i + 2
+        base = {"difficulty": difficulty, "seed": f"{seed}|{kind}|{k}"}
         if kind == "maze":
             m = level["maze"]
-            content = maze.make_maze(int(m["cols"]), int(m["rows"]), rng)
-            pages.append(ActivityPage(number, kind, f"{title_case(theme)} Maze",
-                                      "Help find the way from START to FINISH!", content))
+            spec = dict(base, cols=int(m["cols"]), rows=int(m["rows"]), title=f"{title} Maze",
+                        instruction="Help find the way from START to FINISH!")
+            subject = "maze"
         elif kind == "word_search":
-            w = level["word_search"]
-            chosen = _rotate(ws_words, int(w["words"]), k)
-            content = word_search.make_word_search(chosen, list(w["directions"]), int(w["max_size"]), rng)
-            pages.append(ActivityPage(number, kind, f"{title_case(theme)} Word Search",
-                                      _ws_instruction(w["directions"]), content))
+            chosen = ws_lists[k]
+            spec = dict(base, words=chosen, directions=list(ws["directions"]), max_size=int(ws["max_size"]),
+                        title=f"{title} Word Search", instruction=_ws_instruction(ws["directions"]))
+            subject = _subject(kind, chosen)
         elif kind == "tracing":
-            lesson = lessons[k]
-            pages.append(ActivityPage(number, kind, lesson.title, lesson.instruction, lesson))
+            lesson = lessons[k % len(lessons)]
+            spec = dict(base, lesson=lesson.kind, rows=list(lesson.rows), lesson_subject=list(lesson.subject),
+                        title=lesson.title, instruction=lesson.instruction)
+            subject = _subject(kind, lesson)
         else:
             shape = shapes[k % len(shapes)]
-            pic = dot_to_dot.make_picture(shape, int(level["dot_to_dot"]["dots"]))
+            dots = int(level["dot_to_dot"]["dots"])
+            pic = dot_to_dot.make_picture(shape, dots)
             tail = " and back to 1" if pic.closed else ""
-            pages.append(ActivityPage(number, kind, "Connect the Dots",
-                                      f"Join the dots from 1 to {len(pic.dots)}{tail}. Then color it in!", pic))
-    return Pack(item_id, theme, printable(brief.get("audience") or ""), difficulty, kinds, pages,
-                _cover_shape(matched, others, order.count("dot_to_dot")), words)
+            spec = dict(base, shape=shape.name, dots=dots, title="Connect the Dots",
+                        instruction=f"Join the dots from 1 to {len(pic.dots)}{tail}. Then color it in!")
+            subject = _subject(kind, shape)
+        page = {"page_id": f"{kind}-{k + 1:02d}", "type": kind, "subject": subject, "spec": spec}
+        if kind == "dot_to_dot":
+            page["fit"] = 1.0 if spec["shape"] in on_theme else 0.6     # curation: on-theme pictures first
+        pages.append(page)
+    return pages
 
 
-def _cover_shape(matched: list[Shape], others: list[Shape], used: int) -> Shape:
+def _new_first(items: list, key, used: set[str]) -> list:
+    """Items whose subject is not in `used` first (in order), then the used ones."""
+    return [x for x in items if key(x) not in used] + [x for x in items if key(x) in used]
+
+
+def build_pack(pages: list[dict], ctx: dict) -> Pack:
+    """The puzzles of a pack's pages (specs from plan_specs, in pack order), numbered from 2
+    (page 1 is the title page). Rebuilding from the spec gives the same puzzle every time."""
+    theme = printable(ctx.get("theme") or "")
+    keywords = [printable(k) for k in as_list(ctx.get("keywords"))]
+    out: list[ActivityPage] = []
+    words: list[str] = []
+    for i, p in enumerate(pages):
+        kind, spec = p["type"], p.get("spec") or {}
+        if kind not in KINDS:
+            raise ValueError(f"unknown activity page type {kind!r}")
+        rng = rng_for(spec["seed"])
+        if kind == "maze":
+            content = maze.make_maze(int(spec["cols"]), int(spec["rows"]), rng)
+        elif kind == "word_search":
+            content = word_search.make_word_search(list(spec["words"]), list(spec["directions"]),
+                                                   int(spec["max_size"]), rng)
+            words += [w for w in spec["words"] if w not in words]
+        elif kind == "tracing":
+            content = tracing.TracingLesson(spec["lesson"], tuple(spec["rows"]), tuple(spec["lesson_subject"]))
+        else:
+            content = dot_to_dot.make_picture(SHAPES_BY_NAME[spec["shape"]], int(spec["dots"]))
+        out.append(ActivityPage(i + 2, kind, spec["title"], spec["instruction"], content))
+    kinds = [k for k in KINDS if any(p.kind == k for p in out)]
+    difficulty = next((str((p.get("spec") or {}).get("difficulty")) for p in pages
+                       if (p.get("spec") or {}).get("difficulty")), "easy")
+    taken = {p.content.shape for p in out if p.kind == "dot_to_dot"}
+    matched, others = rank_shapes(vocab.tokens(theme, *keywords), rng_for(ctx.get("item_seed") or theme, "shapes"))
+    return Pack(str(ctx.get("item_seed") or ""), theme, printable(ctx.get("audience") or ""), difficulty, kinds, out,
+                cover_shape(matched, others, taken), words)
+
+
+def cover_shape(matched: list[Shape], others: list[Shape], taken: set[str]) -> Shape:
     """Title-page art that fits the theme without giving away a dot-to-dot answer.
 
     Falls back to a neutral shape (star, sun, ...) before repeating a puzzle picture.
     """
-    shapes = matched + others
-    taken = {s.name for s in shapes[:used]}
     neutral = [SHAPES_BY_NAME[n] for n in ("star", "sun", "balloon", "heart")]
-    for s in matched + neutral:
+    for s in matched + neutral + others:
         if s.name not in taken:
             return s
-    return shapes[0]
+    return (matched + others)[0]
 
 
-def _rotate(pool: list[str], n: int, k: int) -> list[str]:
-    """n words starting at k*n, wrapping, so consecutive puzzles use different words."""
-    if not pool:
-        return []
-    start = (k * n) % len(pool)
-    return [pool[(start + j) % len(pool)] for j in range(min(n, len(pool)))]
+def word_lists(pool: list[str], n: int, count: int, rng: random.Random, used=()) -> list[list[str]]:
+    """`count` word lists of n words for a pack's word searches, so no two puzzles of a pack
+    (or of the theme's other design sets, `used` subjects "word search: a, b, ...") share a
+    word list. While the pool lasts the lists are disjoint slices in pool order (theme and
+    brief words first); after that each list takes the words used least so far, ties broken
+    by `rng`, and is redrawn when it repeats an earlier list. A pool of n words or fewer can
+    only give the same list again."""
+    if not pool or count < 1:
+        return [[] for _ in range(max(0, count))]
+    n = min(n, len(pool))
+    uses = {w: 0 for w in pool}
+    by_key = {w.lower(): w for w in pool}           # subjects hold the words in lowercase
+    seen: set[frozenset] = set()
+    for u in used:
+        earlier = [by_key.get(w.strip().lower(), w.strip().lower()) for w in str(u).split(":", 1)[-1].split(",")
+                   if w.strip()]
+        seen.add(frozenset(earlier))
+        for w in earlier:
+            if w in uses:
+                uses[w] += 1
+    out: list[list[str]] = []
+    for k in range(count):
+        chunk = pool[k * n:(k + 1) * n]
+        if not used and len(chunk) == n:
+            chosen = chunk
+        else:
+            chosen = []
+            for _ in range(20):
+                ties = {w: rng.random() for w in pool}
+                pick = set(sorted(pool, key=lambda w: (uses[w], ties[w]))[:n])
+                chosen = [w for w in pool if w in pick]
+                if frozenset(chosen) not in seen:
+                    break
+        seen.add(frozenset(chosen))
+        for w in chosen:
+            uses[w] += 1
+        out.append(chosen)
+    return out
 
 
 def _ws_instruction(directions) -> str:

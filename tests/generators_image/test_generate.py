@@ -2,6 +2,7 @@
 docs/CONTRACTS.md section 2. Offline: FakeImageClient, flood-fill background removal."""
 import io
 import json
+import shutil
 import zipfile
 
 import numpy as np
@@ -67,15 +68,19 @@ def test_coloring_pack_matches_contract(tmp_path, settings, coloring_brief):
             assert set(np.unique(np.asarray(Image.open(d / a["path"])))) <= {0, 255}
 
 
-def test_coloring_dry_run_caps_pages_and_uses_fake_client(tmp_path, settings, coloring_brief):
-    coloring_brief["page_count"] = 20
+def test_coloring_dry_run_makes_every_page_with_the_fake_client(tmp_path, settings, coloring_brief):
+    """Dry runs never cap a pack below its size (the old dry_run_max_pages is ignored); the
+    fake images are small instead, so they stay fast."""
+    coloring_brief["page_count"] = 8
     settings["coloring_pages"] = {"dry_run_max_pages": 2}
     (d,) = coloring_pages.generate(coloring_brief, out_root=tmp_path, date="2026-10-15", dry_run=True,
                                    settings=settings)
     m = json.loads((d / "manifest.json").read_text())
-    assert m["files"][0]["pages"] == 2
-    assert m["pack"]["requested_pages"] == 20 and m["pack"]["dry_run_capped"] is True
+    assert all(f["pages"] == 8 for f in m["files"])
+    assert m["pack"]["requested_pages"] == m["pack"]["pages"] == m["pack"]["size"] == 8
+    assert m["pack"]["dry_run_capped"] is False and m["pack"]["source"] == "master"
     assert m["generator"]["model"] == "fake-image"
+    assert max(m["pack"]["contents"][0]["size_px"]) <= settings["imaging"]["fake_long_side_px"]
 
 
 def test_coloring_lines_print_at_min_weight(tmp_path, settings, coloring_brief):
@@ -91,11 +96,14 @@ def test_coloring_lines_print_at_min_weight(tmp_path, settings, coloring_brief):
 def test_rerun_is_reproducible_and_replaces_files(tmp_path, settings, coloring_brief):
     args = dict(out_root=tmp_path, date="2026-10-15", dry_run=True, settings=settings)
     (d,) = coloring_pages.generate(coloring_brief, **args)
-    first = (d / "files/farm-animals-coloring-pages-us_letter.pdf").read_bytes()
+    pdf = d / "files/farm-animals-coloring-pages-3-pages-us_letter.pdf"
+    first = pdf.read_bytes()
     (d / "previews/stale.png").write_bytes(b"x")
-    coloring_pages.generate(coloring_brief, **args)
-    assert (d / "files/farm-animals-coloring-pages-us_letter.pdf").read_bytes() == first
+    fake = FakeImageClient("coloring")
+    coloring_pages.generate(coloring_brief, client=fake, **args)
+    assert pdf.read_bytes() == first
     assert not (d / "previews/stale.png").exists()
+    assert fake.calls == []                  # the design set is reused: no image is made (or paid for) twice
 
 
 def test_blocked_brief_never_reaches_the_model(tmp_path, settings, coloring_brief):
@@ -107,13 +115,29 @@ def test_blocked_brief_never_reaches_the_model(tmp_path, settings, coloring_brie
 
 
 def test_blocked_prompt_raises_before_the_model(tmp_path, settings, coloring_brief, monkeypatch):
-    """Even if a blocked term slipped past the brief check (e.g. via the subject table),
-    the prompt guard refuses before the client is called."""
-    from generators.imaging import prompts
-    monkeypatch.setattr(prompts, "subject_pool", lambda theme, keywords: ["a Pikachu", "a cow", "a pig"])
+    """Even if a blocked term slipped past the brief check (e.g. via a subject table or a
+    plugin's page plan), the pack engine refuses the planned pages before the client is
+    called, and generate_batch's prompt guard refuses again right before each call."""
+    from generators.imaging.common import generate_batch
+    from generators.imaging.prompts import PlannedImage
+    from generators.packs import PackPlanError
+
+    real = coloring_pages.plan_pages
+
+    def with_pikachu(ctx, n, *, seed, settings):
+        pages = real(ctx, n, seed=seed, settings=settings)
+        pages[0]["spec"]["prompt"] = "coloring page of a Pikachu"
+        return pages
+
+    monkeypatch.setattr(coloring_pages, "plan_pages", with_pikachu)
     fake = FakeImageClient("coloring")
-    with pytest.raises(BlockedPromptError):
+    with pytest.raises(PackPlanError, match="blocked"):
         coloring_pages.generate(coloring_brief, out_root=tmp_path, dry_run=True, client=fake, settings=settings)
+    assert fake.calls == [] and not any(tmp_path.iterdir())
+    from core.compliance import Blocklist
+    with pytest.raises(BlockedPromptError):
+        generate_batch(fake, [PlannedImage("a Pikachu", "a Pikachu sticker")], 1, aspect_ratio="1:1", image_size="1K",
+                       blocklist=Blocklist.load(), process=lambda img, i: i, max_failures=0)
     assert fake.calls == []
 
 
@@ -220,12 +244,13 @@ def test_sticker_sheets_paginate(tmp_path, settings, sticker_brief):
     assert [p["page"] for p in m["previews"] if "sticker" not in p] == [1, 2]
 
 
-def test_sticker_default_count_and_dry_run_cap(tmp_path, settings, sticker_brief):
+def test_sticker_default_count_and_no_dry_run_cap(tmp_path, settings, sticker_brief):
     del sticker_brief["page_count"]
     (d,) = stickers.generate(sticker_brief, out_root=tmp_path, date="2026-10-15", dry_run=True, settings=settings)
     m = json.loads((d / "manifest.json").read_text())
-    assert m["pack"]["requested_stickers"] == 12
-    assert m["pack"]["stickers"] == stickers.DEFAULTS["dry_run_max_stickers"]
+    assert m["pack"]["requested_stickers"] == m["pack"]["stickers"] == m["pack"]["size"] == 12
+    zips = [f for f in m["files"] if f["kind"] == "zip"]
+    assert sum(f["count"] for f in zips) == 12 and m["pack"]["dry_run_capped"] is False
 
 
 def test_wrong_niche_is_rejected(tmp_path, settings, coloring_brief):
@@ -333,6 +358,7 @@ def test_failed_rerun_leaves_the_previous_item_intact(tmp_path, settings, reques
     args = dict(out_root=tmp_path, date="2026-10-15", dry_run=True, settings=settings)
     (d,) = module.generate(brief, **args)
     before = (d / "manifest.json").read_text()
+    shutil.rmtree(tmp_path / "sets")         # no design set to reuse: the rerun must make new pages
     with pytest.raises(ConnectionError):
         module.generate(brief, client=DiesAfterFirst(style, long_side_px=300), **args)
     assert (d / "manifest.json").read_text() == before
@@ -408,8 +434,10 @@ def test_sticker_zip_is_split_below_the_per_file_limit(tmp_path, settings, stick
             names += archive.namelist()
             assert len(archive.namelist()) == z["count"]
     assert names == [f"kawaii-food-sticker-{i:02d}.png" for i in range(1, 6)]   # every sticker, in order, once
-    assert m["pack"]["zip_parts"] == len(zips) == 3
-    assert all((d / z["path"]).stat().st_size <= settings["stickers"]["zip_max_mb"] * 1e6 for z in zips)
+    limit = int(settings["stickers"]["zip_max_mb"] * 1e6)
+    expected = stickers.split_by_size([(d / a["path"], a["path"]) for a in m["assets"]], limit)
+    assert m["pack"]["zip_parts"] == len(zips) == len(expected)
+    assert all((d / z["path"]).stat().st_size <= limit for z in zips)
 
 
 def test_too_many_zip_parts_mark_the_item_for_review(tmp_path, settings, sticker_brief):
