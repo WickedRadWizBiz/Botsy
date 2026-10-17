@@ -52,3 +52,10 @@ config/settings.local.yaml
 
 # KDP briefs and patterns are built from BookBeam exports; never commit them (docs/KDP_RESEARCH.md)
 data/briefs/kdp/
+
+# Our own shop's numbers (docs/CONTRACTS.md section 7): per-listing snapshots, our sales and
+# reviews, the quota file, scale-up orders and Sunday plans. The repo was public once;
+# none of this ever reaches git.
+data/performance/
+data/orders/
+data/plans/

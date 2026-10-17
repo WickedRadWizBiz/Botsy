@@ -12,6 +12,13 @@ bug elsewhere cannot turn into a request Etsy's terms (or the user) did not allo
     the only way to activate) is never sent;
 plus: no raw bodies (the guard must be able to read every field) and multipart uploads
 only on the two upload endpoints.
+
+Own-shop performance (docs/OVERSEER.md "Scale-ups", user approval of transactions_r on
+2026-10-17): GET /shops/{own}/transactions (getShopReceiptTransactionsByShop) and
+GET /shops/{own}/reviews (getReviewsByShop) are allowed, pinned to ETSY_SHOP_ID like
+every shop route. Every `/receipts` path is refused by name: receipts carry the buyer's
+name, email and address, which Botsy never reads (publisher/sales.py keeps only
+listing_id, day, quantity and price).
 """
 from __future__ import annotations
 
@@ -56,7 +63,12 @@ ROUTES: tuple[Route, ...] = (
     Route("deleteListing", "DELETE", re.compile(r"/v3/application/listings/(?P<listing_id>[^/]+)")),
     Route("getSellerTaxonomyNodes", "GET", re.compile(r"/v3/application/seller-taxonomy/nodes"),
           auth=False),
+    # Our own sales (scope transactions_r) and our own listings' star ratings (app key only).
+    Route("getShopReceiptTransactionsByShop", "GET", re.compile(_SHOP + r"/transactions")),
+    Route("getReviewsByShop", "GET", re.compile(_SHOP + r"/reviews"), auth=False),
 )
+# Never fetched, whatever the method or shop: receipts hold buyer names, emails and addresses.
+BUYER_DATA_SEGMENTS = frozenset({"receipts", "receipt"})
 
 
 def _as_id(value: Any, what: str) -> int:
@@ -118,6 +130,9 @@ class Guard:
         if method in ("PUT", "PATCH"):
             raise SafetyViolation(f"{method} is never sent: updateListing could activate or "
                                   "change a listing (the user activates drafts in Etsy)")
+        if BUYER_DATA_SEGMENTS & set(parts.path.lower().split("/")):
+            raise SafetyViolation(f"{method} {parts.path} is refused: receipt endpoints carry buyer "
+                                  "names, emails and addresses, which Botsy never reads")
         route = next((r for r in ROUTES if r.method == method and r.pattern.fullmatch(parts.path)),
                      None)
         if route is None:

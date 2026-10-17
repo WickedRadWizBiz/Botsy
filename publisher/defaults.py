@@ -15,7 +15,10 @@ DEFAULTS = {
     # listings_w: createDraftListing + uploads. listings_r: read our drafts back (resume)
     # and own-stats. shops_r: getMe. listings_d: deleteListing, used only by
     # `python -m publisher discard` on drafts this tool created; drop it to forbid deletes.
-    "scopes": ["listings_r", "listings_w", "listings_d", "shops_r"],
+    # transactions_r (user, 2026-10-17): our own sales via getShopReceiptTransactionsByShop;
+    # publisher/sales.py keeps only listing_id, day, quantity and price. A token issued
+    # before it was added lacks it: run `python -m publisher auth` once more.
+    "scopes": ["listings_r", "listings_w", "listings_d", "shops_r", "transactions_r"],
     "currency": "USD",            # listing.json prices are USD; a shop in another currency is refused
     "max_files": etsy.MAX_FILES,            # Etsy: up to 5 digital files per listing, 20 MB each
     "max_file_bytes": etsy.MAX_FILE_BYTES,  # (Help Center; core/etsy.py, shared with qa)
@@ -34,6 +37,12 @@ DEFAULTS = {
     "token_skew_s": 120,          # refresh this long before the access token expires
     "auth_timeout_s": 300,        # how long `auth` waits for the browser redirect
     "own_stats_file": "data/research_inputs/own_shop_stats.csv",
+    # Own-shop performance files (docs/CONTRACTS.md section 7), gitignored: etsy/<day>.json
+    # snapshots, sales/<day>.json, reviews/<day>.json and etsy_quota.json. Dry runs write
+    # the same tree under pipeline.dry_run_output_dir/performance.
+    "performance_dir": "data/performance",
+    "sales_keep_days": 90,        # sales older than this are not stored (rolling window)
+    "sales_max_pages": 50,        # getShopReceiptTransactionsByShop has no date filter: page cap
     "dry_run_shop_id": 10000001,  # fake numeric shop id for dry runs without ETSY_SHOP_ID
 }
 

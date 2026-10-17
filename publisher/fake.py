@@ -18,6 +18,7 @@ from publisher.defaults import load_cfg
 from publisher.safety import ROUTES
 
 FAKE_USER_ID = 1
+FAKE_SCOPES = "listings_r listings_w listings_d shops_r transactions_r"
 DRY_RUN_TAXONOMY_ID = 90000002  # "Dry Run Paper Goods > Coloring Pages" below
 # Obviously fake ids, never real Etsy taxonomy: dry runs must not suggest real categories.
 FAKE_TAXONOMY = [
@@ -70,9 +71,13 @@ class FakeEtsySession:
         self.currency = currency
         self.requests: list[dict] = []
         self.listings: dict[int, dict] = {}
+        self.transactions: list[dict] = []  # newest first, like Etsy answers in practice
+        self.reviews: list[dict] = []
         self._ids = itertools.count(900000001)
+        self._tx_ids = itertools.count(800000001)  # transactions have their own ids
         self._scripted: dict[str, list] = {}
         if demo_listings:  # two active listings so own-stats has something in dry runs
+            now = int(time.time())
             for n in (1, 2):
                 lid = next(self._ids)
                 self.listings[lid] = {
@@ -80,7 +85,28 @@ class FakeEtsySession:
                     "title": f"Dry run sample listing {n}", "tags": ["dry run", "sample"],
                     "views": 10 * n, "num_favorers": n, "quantity": 999,
                     "price": {"amount": 400, "divisor": 100, "currency_code": currency},
-                    "original_creation_timestamp": int(time.time()) - 86400 * 30 * n}
+                    "original_creation_timestamp": now - 86400 * 30 * n}
+                # A sale and a review per listing, with the buyer fields Etsy really sends,
+                # so tests can prove sales.py and reviews.py drop them.
+                self.transactions.append(self.fake_transaction(lid, created=now - 86400 * (3 * n)))
+                self.reviews.append({"shop_id": self.shop_id, "listing_id": lid, "rating": 5,
+                                     "transaction_id": 800000100 + n, "buyer_user_id": 777000 + n,
+                                     "review": "Dry run review text, never stored", "language": "en",
+                                     "image_url_fullxfull": None, "create_timestamp": now - 86400 * n,
+                                     "created_timestamp": now - 86400 * n})
+
+    def fake_transaction(self, listing_id: int, *, created: int, quantity: int = 1,
+                         amount: int = 400) -> dict:
+        tid = next(self._tx_ids)
+        return {"transaction_id": tid, "title": self.listings.get(listing_id, {}).get("title"),
+                "seller_user_id": self.user_id, "buyer_user_id": 777000 + tid % 100,
+                "create_timestamp": created, "created_timestamp": created, "paid_timestamp": created,
+                "shipped_timestamp": None, "quantity": quantity, "listing_image_id": None,
+                "receipt_id": 555000 + tid % 1000, "is_digital": True, "file_data": "x.pdf",
+                "listing_id": listing_id, "sku": "", "product_id": tid, "transaction_type": "listing",
+                "price": {"amount": amount, "divisor": 100, "currency_code": self.currency},
+                "shipping_cost": {"amount": 0, "divisor": 100, "currency_code": self.currency},
+                "variations": [], "product_data": [], "buyer_coupon": 0, "shop_coupon": 0}
 
     def fail(self, operation: str, status: int, *, times: int = 1, after: int = 0,
              headers: dict | None = None, body: Any = None) -> None:
@@ -132,7 +158,7 @@ class FakeEtsySession:
             return FakeResponse(200, {"access_token": f"{self.user_id}.fake-access-{n}",
                                       "token_type": "Bearer", "expires_in": 3600,
                                       "refresh_token": f"{self.user_id}.fake-refresh-{n}",
-                                      "scope": "listings_r listings_w listings_d shops_r"})
+                                      "scope": FAKE_SCOPES})
         if op == "getMe":
             return FakeResponse(200, {"user_id": self.user_id, "shop_id": self.me_shop_id})
         if op == "getShop":
@@ -182,6 +208,10 @@ class FakeEtsySession:
                     for x in self.listings.values() if x["state"] == state]
             off, lim = int(params.get("offset", 0)), int(params.get("limit", 25))
             return FakeResponse(200, {"count": len(rows), "results": rows[off:off + lim]})
+        if op in ("getShopReceiptTransactionsByShop", "getReviewsByShop"):
+            rows = self.transactions if op == "getShopReceiptTransactionsByShop" else self.reviews
+            off, lim = int(params.get("offset", 0)), min(int(params.get("limit", 25)), 100)
+            return FakeResponse(200, {"count": len(rows), "results": rows[off:off + lim]})
         return FakeResponse(404, {"error": f"fake Etsy has no answer for {op}"})
 
 
@@ -194,8 +224,9 @@ class FakeEtsyClient(EtsyClient):
         session = session or FakeEtsySession(shop_id, adopt_unknown=True)
         token_store = token_store or MemoryTokenStore({
             "access_token": f"{FAKE_USER_ID}.dry-run-access", "refresh_token": f"{FAKE_USER_ID}.dry-run-refresh",
-            "expires_at": time.time() + 10 * 365 * 86400})
+            "scope": FAKE_SCOPES, "expires_at": time.time() + 10 * 365 * 86400})
         kwargs.setdefault("sleep", lambda s: None)
+        kwargs.setdefault("quota_path", None)  # memory only; a dry run names its own file
         super().__init__(session, keystring="dry-run-keystring", shared_secret="dry-run-secret",
                          shop_id=shop_id, token_store=token_store, settings=settings, **kwargs)
 

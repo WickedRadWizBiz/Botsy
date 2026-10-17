@@ -12,6 +12,11 @@ errors are retried except for createDraftListing and uploadListingFile, where a 
 after a server-side success would leave a second draft or a duplicate download. Image
 uploads are safe to resend because they use rank + overwrite.
 
+Quota (docs/CONTRACTS.md section 7): every answer's `x-limit-per-day` and
+`x-remaining-today` headers and every 429 are recorded in
+`<performance_dir>/etsy_quota.json` (`quota_path`, None keeps the record in memory only),
+so a later capacity check can see how much of the daily allowance a tick used.
+
 Multiple shops: each shop in settings `shops` names its env vars. `etsy_shop_id_env`
 (default ETSY_SHOP_ID), and optionally `etsy_token_file_env` (default ETSY_TOKEN_FILE)
 and `etsy_refresh_token_env` (default ETSY_REFRESH_TOKEN). Every Etsy shop belongs to a
@@ -20,15 +25,18 @@ different Etsy user, so a second shop needs its own token file.
 from __future__ import annotations
 
 import email.utils
+import json
 import logging
 import mimetypes
 import os
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from core.config import get_shop, load_env, load_settings, require_env, resolve
+from core.items import write_json
 from publisher.auth import (AuthRequired, TokenStore, carry_refresh_issued, refresh_age_warning,
                             tokens_from_response)
 from publisher.defaults import load_cfg
@@ -82,7 +90,9 @@ class EtsyClient:
                  shared_secret: str | None = None, shop_id: int | str | None = None,
                  token_store=None, settings: dict | None = None, shop_key: str | None = None,
                  owned_listing_ids=(), sleep: Callable[[float], None] = time.sleep,
-                 clock: Callable[[], float] = time.time, verify_shop: bool = True):
+                 clock: Callable[[], float] = time.time, verify_shop: bool = True,
+                 quota_path: str | Path | None | bool = True):
+        self._real_session = session is None
         if session is None:
             import requests
 
@@ -112,6 +122,14 @@ class EtsyClient:
         self._shop_verified = False
         self.shop_info: dict | None = None  # getShop result, cached by publish
         self._own_titles: dict[str, dict] | None = None  # own_listing_titles() cache
+        # True: the configured file, but only for a client that talks to the real network
+        # (no injected session), so tests and fakes never write fake numbers into
+        # data/performance; a path: that file; None/False: memory only.
+        if quota_path is True:
+            quota_path = (resolve(self.cfg["performance_dir"]) / "etsy_quota.json"
+                          if self._real_session else None)
+        self.quota_path: Path | None = Path(quota_path) if quota_path else None
+        self.quota: dict | None = None  # loaded on the first answer
 
     @property
     def shop_id(self) -> int | None:
@@ -150,6 +168,7 @@ class EtsyClient:
                 attempt += 1
                 continue
             status = resp.status_code
+            self._record_quota(resp, status)
             if status == 401 and route.auth and not refreshed:
                 refreshed = True  # expired or revoked early: refresh once, then give up
                 self._refresh()
@@ -171,6 +190,48 @@ class EtsyClient:
                 return resp.json()
             except ValueError as e:  # e.g. an HTML page from a proxy
                 raise EtsyAPIError(route.name, status, f"response is not JSON: {_detail(resp)}") from e
+
+    # --- quota -------------------------------------------------------------------
+
+    def _record_quota(self, resp, status: int) -> None:
+        """Keep Etsy's quota headers and 429 counts (quota/v1). Never raises."""
+        try:
+            headers = getattr(resp, "headers", None) or {}
+            # Re-read the file every time: Etsy's quota belongs to the app key, and several
+            # clients (one per shop, or the service and a manual run) share the one file.
+            q = self._load_quota() if self.quota_path is not None or self.quota is None else self.quota
+            day = datetime.fromtimestamp(self._clock(), timezone.utc).date().isoformat()
+            if q.get("day") != day:
+                q.update(day=day, requests_today=0, rate_limited_today=0)
+            q["requests_today"] = int(q.get("requests_today") or 0) + 1
+            if status == 429:
+                q["rate_limited_today"] = int(q.get("rate_limited_today") or 0) + 1
+                q["rate_limited_total"] = int(q.get("rate_limited_total") or 0) + 1
+                q["last_rate_limited"] = datetime.fromtimestamp(self._clock(), timezone.utc).isoformat(timespec="seconds")
+            for header, key in (("x-limit-per-day", "limit_per_day"), ("x-remaining-today", "remaining_today")):
+                value = headers.get(header)
+                if value is not None and str(value).strip().lstrip("-").isdigit():
+                    q[key] = int(str(value).strip())
+            q["updated"] = datetime.fromtimestamp(self._clock(), timezone.utc).isoformat(timespec="seconds")
+            self.quota = q
+            if self.quota_path is not None:
+                write_json(self.quota_path, q)
+        except Exception as e:  # a quota file must never break a request
+            log.debug("quota record skipped: %s", e)
+
+    def _load_quota(self) -> dict:
+        q: dict = {"schema": "quota/v1", "etsy_shop_id": self.shop_id, "day": None, "requests_today": 0,
+                   "rate_limited_today": 0, "rate_limited_total": 0, "limit_per_day": None,
+                   "remaining_today": None, "last_rate_limited": None, "updated": None}
+        if self.quota_path is not None and self.quota_path.exists():
+            try:
+                old = json.loads(self.quota_path.read_text(encoding="utf-8"))
+                if isinstance(old, dict) and old.get("schema") == "quota/v1":
+                    q.update({k: old[k] for k in q if k in old})
+            except (OSError, ValueError):
+                pass
+        q["etsy_shop_id"] = self.shop_id
+        return q
 
     def _wait(self, attempt: int, retry_after: float | None) -> None:
         backoff = float(self.cfg["backoff_s"]) * (2 ** attempt)
@@ -213,6 +274,16 @@ class EtsyClient:
         self.tokens.save(new)  # save before use: a rotated old token may already be dead
         self._token = new
         return new
+
+    def has_scope(self, scope: str) -> bool | None:
+        """Whether the stored token was granted `scope`: None when no token or the token
+        does not say (then only Etsy's answer tells; a 403 is the sign)."""
+        try:
+            tok = self._token or self.tokens.load()
+        except Exception:
+            return None
+        granted = str((tok or {}).get("scope") or "").split()
+        return (scope in granted) if granted else None
 
     def exchange_code(self, code: str, verifier: str, redirect_uri: str) -> dict:
         resp = self.request("POST", self.cfg["token_url"], data={
@@ -367,6 +438,19 @@ class EtsyClient:
         if state:
             params["state"] = state
         return self.request("GET", f"/shops/{self.shop_id}/listings", params=params)
+
+
+    def get_shop_receipt_transactions(self, *, limit: int = 100, offset: int = 0) -> dict:
+        """Our own shop's sales (scope transactions_r). The caller keeps only listing_id,
+        day, quantity and price (publisher/sales.py); receipts are never fetched."""
+        return self.request("GET", f"/shops/{self.shop_id}/transactions",
+                            params={"limit": limit, "offset": offset})
+
+    def get_reviews_by_shop(self, *, limit: int = 100, offset: int = 0) -> dict:
+        """Our own listings' reviews (app key only). The caller keeps listing_id, rating and
+        day (publisher/reviews.py), never the text."""
+        return self.request("GET", f"/shops/{self.shop_id}/reviews",
+                            params={"limit": limit, "offset": offset})
 
 
 def title_key(title) -> str:
