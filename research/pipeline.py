@@ -12,14 +12,27 @@ Own-shop and trend rows never count toward min_listings_per_pattern.
 Stages (research/stages.py, docs/SERVER.md section 8): the run uses the thresholds of the
 discovery or refined stage. Evidence window (research/window.py, section 12): only market
 exports (and trend files) received within research.window_days of the run date are used.
+
+Niches (docs/PACKS.md sections 1-2): each niche gets its own text rules (its stopwords,
+keep words and connectors on top of the shared ones). Game-system names (blocklist
+`!term`, plus every name config/ttrpg_systems.yaml lists through core.systems) are cut
+from every row's themes, tags and keyword phrases; such a row still counts. For ttrpg
+rows the systems a row names are recorded by id (core.systems.detect_systems, else the
+names' own mapping) so the brief can say which system a theme is made for, by a registry
+id only. Medical claim words (CLAUDE.md) are cut like platform brands: no theme or keyword
+ever holds one outside the ordinary phrases the listing stage allows ("trick or treat").
 """
 from __future__ import annotations
 
 import csv
 import datetime as _dt
+import functools
 import hashlib
+import importlib
+import inspect
 import logging
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,8 +43,8 @@ from core.config import get_shop, load_settings, resolve, today
 from core.items import check_date, write_json
 from research import columns, history, stages, window
 from research.aggregate import Row, Signal
-from research.briefs import build_doc
-from research.defaults import load_config
+from research.briefs import GENERIC_SYSTEM, build_doc
+from research.defaults import load_config, medical_terms
 from research.guard import Guard, extend_blocklist, validate_brief_doc
 from research.niches import assign_niche, compile_rules, niche_from_filename
 from research.text import TextRules, activity_types, formats, pack_count, phrase
@@ -158,9 +171,110 @@ def _num(rec: dict, col: str) -> float | None:
     return None if v is None or pd.isna(v) else float(v)
 
 
+def excluded_terms(cfg: dict) -> list[str]:
+    """Words cut out of every theme and keyword: research.excluded_terms (platform and
+    planner brands) plus the medical claim words (research/defaults.medical_terms)."""
+    return [*(cfg.get("excluded_terms") or []), *medical_terms(cfg)]
+
+
+def niche_text_rules(cfg: dict, niche: str, blocklist: Blocklist | None,
+                     system_names: dict[str, str] | None = None) -> TextRules:
+    """TextRules for one niche: the shared stopwords plus research.niche_stopwords.<niche>,
+    minus research.niche_keep_words.<niche>, with research.niche_connectors.<niche>.
+    system_names ({name: id}, from game_system_names) are cut like `!` terms."""
+    def per_niche(key: str) -> list[str]:
+        return list((cfg.get(key) or {}).get(niche) or [])
+
+    extra = [*(cfg.get("extra_stopwords") or []), *per_niche("niche_stopwords")]
+    return TextRules(extra, excluded_terms(cfg), blocklist, keep_words=per_niche("niche_keep_words"),
+                     connectors=per_niche("niche_connectors"), system_names=system_names,
+                     ok_phrases=cfg.get("medical_ok_phrases") or ())
+
+
+def _load_systems(settings: dict) -> dict | None:
+    """core.systems.load_systems(settings), or None when it cannot be used (logged)."""
+    try:
+        systems = importlib.import_module("core.systems").load_systems(settings)
+        return systems if isinstance(systems, dict) else None
+    except Exception as e:  # noqa: BLE001 - research falls back to the blocklist's own terms
+        log.info("game systems: core.systems.load_systems is not available (%s); only the "
+                 "blocklist's !term entries are cut", e)
+        return None
+
+
+def game_system_names(settings: dict) -> dict[str, str]:
+    """{name: system id} for every game system in config/ttrpg_systems.yaml
+    (core.systems.load_systems): its names, owner and owner spellings ("WotC"), so research
+    cuts them even when the blocklist does not list one as a `!` term. {} when
+    core.systems cannot be used (logged)."""
+    out: dict[str, str] = {}
+    for sid, entry in (_load_systems(settings) or {}).items():
+        if str(sid) == GENERIC_SYSTEM or not isinstance(entry, dict) or entry.get("default"):
+            continue
+        owner = entry.get("owner")
+        for name in [*(entry.get("names") or []), *([owner] if isinstance(owner, str) else []),
+                     *(entry.get("owner_names") or [])]:
+            if isinstance(name, str) and name.strip():
+                out[name.strip()] = str(entry.get("id") or sid)
+    return out
+
+
+def known_system_ids(settings: dict) -> set[str] | None:
+    """Ids config/ttrpg_systems.yaml lists for named systems (not the default), or None
+    when the registry cannot be read. A ttrpg brief names only one of these."""
+    systems = _load_systems(settings)
+    if systems is None:
+        return None
+    return {str((e or {}).get("id") or sid) for sid, e in systems.items()
+            if str(sid) != GENERIC_SYSTEM and isinstance(e, dict) and not e.get("default")}
+
+
+def _takes_settings(fn) -> bool:
+    try:
+        return "settings" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def system_detector(rules: TextRules, settings: dict | None = None) -> Callable[[str], set[str]]:
+    """text -> ids of the game systems it names.
+
+    core.systems.detect_systems (config/ttrpg_systems.yaml, read with the run's settings)
+    when it can be used, else rules.system_ids (the blocklist's `!term` -> id mapping plus
+    game_system_names). A failing detector is logged once and replaced by the fallback, so
+    one bad systems file never stops research.
+    """
+    try:
+        detect = importlib.import_module("core.systems").detect_systems
+    except (ImportError, AttributeError) as e:
+        log.info("ttrpg: core.systems is not available (%s); game systems come from the "
+                 "blocklist's !term entries", e)
+        return rules.system_ids
+    if settings is not None and _takes_settings(detect):
+        detect = functools.partial(detect, settings=settings)
+    state = {"failed": False}
+
+    def run_detect(text: str) -> set[str]:
+        if not state["failed"]:
+            try:
+                return {str(s) for s in (detect(text) or ()) if s}
+            except Exception as e:  # noqa: BLE001 - a broken systems file must not stop research
+                state["failed"] = True
+                log.warning("ttrpg: core.systems.detect_systems failed (%s); using the "
+                            "blocklist's !term entries instead", e)
+        return rules.system_ids(text)
+
+    return run_detect
+
+
 def rows_for_niche(files: list[MarketFile], niche: str, threshold: int,
-                   rules: TextRules, min_shops: int = 1) -> tuple[list[Row], list[dict]]:
-    """Counted rows for one niche (deduped across files, first file wins) and sources."""
+                   rules: TextRules, min_shops: int = 1,
+                   detect: Callable[[str], Iterable[str]] | None = None
+                   ) -> tuple[list[Row], list[dict]]:
+    """Counted rows for one niche (deduped across files, first file wins) and sources.
+
+    Game-system names are cut from tags and keyword phrases (rules.cut_systems). With
+    `detect`, each row records the ids of the systems its title or keyword names."""
     rows: dict[str, Row] = {}
     sources = []
     for f in files:
@@ -185,18 +299,22 @@ def rows_for_niche(files: list[MarketFile], niche: str, threshold: int,
             text = rec["title"] if listing else rec["keyword"]
             g = rules.grams(text)
             tag_texts = _TAG_SPLIT_RE.split(rec["tags"]) + ([rec["keyword"]] if listing else [])
-            tags = tuple(dict.fromkeys(t for t in map(phrase, tag_texts) if t))
+            # A game-system name is cut out of a tag ("dnd character sheet" -> "character
+            # sheet"), never kept in one.
+            tags = tuple(dict.fromkeys(t for t in map(rules.cut_systems, tag_texts) if t))
             rows[rec["_key"]] = Row(
                 key=rec["_key"], kind=f.shape, grams=g.keys, blocked=g.blocked, flagged=g.flagged,
                 formats=frozenset(formats(text)), count=pack_count(text),
                 activities=frozenset(activity_types(text)),
                 # Only keyword-level rows are keyword-tool phrases; a listing file's
                 # keyword column is per-listing data and goes through the tag threshold.
-                phrase=None if listing else (phrase(rec["keyword"]) or None), tags=tags,
+                phrase=None if listing else (rules.cut_systems(rec["keyword"]) or None), tags=tags,
                 price=_num(rec, "price"), sales=_num(rec, "sales"),
                 favorites=_num(rec, "favorites"), reviews=_num(rec, "reviews"),
                 search_volume=_num(rec, "search_volume"), shop=rec["_shop"],
                 received=f.received or None,
+                competition=None if listing else _num(rec, "competition"),
+                systems=frozenset(detect(text)) if detect is not None and text else frozenset(),
             )
         sources.append(_source_entry(f, len(sub), counted, threshold, min_shops))
     return list(rows.values()), sources
@@ -243,7 +361,7 @@ def load_own_shop(paths: list[Path], cfg: dict, rules: TextRules, niche_rules,
         strengths = _percentile_strengths(frame, ("views", "favorites", "sales"))
         for title, strength in zip(frame["title"].tolist(), strengths):
             niche = file_niche or assign_niche(title, niche_rules)
-            signals.append(Signal(rules.grams(title).keys, float(strength), niche))
+            signals.append(Signal(rules.grams(title).keys, float(strength), niche, str(title)))
     return signals
 
 
@@ -275,8 +393,15 @@ def load_trends(paths: list[Path], cfg: dict, rules: TextRules, known_niches) ->
             if value is None or not str(kw).strip():
                 continue
             strength = min(max(value, 0.0), 100.0) / 100.0
-            signals.append(Signal(rules.grams(str(kw)).keys, strength, file_niche))
+            signals.append(Signal(rules.grams(str(kw)).keys, strength, file_niche, str(kw)))
     return signals
+
+
+def signals_for(signals: list[Signal], niche: str, rules: TextRules) -> list[Signal]:
+    """The own-shop or trend signals that apply to `niche`, re-grammed with its rules
+    (a niche's keep words can make a theme the shared rules would not)."""
+    return [Signal(rules.grams(s.text).keys, s.strength, s.niche, s.text) if s.text else s
+            for s in signals if s.niche in (None, niche)]
 
 
 def _read_market(path: Path, cfg: dict, niche_rules, known) -> MarketFile | None:
@@ -392,7 +517,10 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
     if blocklist is None:
         blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"))
     blocklist = extend_blocklist(blocklist, cfg["extra_blocked_terms"], cfg["extra_review_terms"])
-    rules = TextRules(cfg["extra_stopwords"], cfg["excluded_terms"], blocklist)
+    systems = game_system_names(settings)
+    system_ids = known_system_ids(settings)
+    rules = TextRules(cfg["extra_stopwords"], excluded_terms(cfg), blocklist, system_names=systems,
+                      ok_phrases=cfg.get("medical_ok_phrases") or ())
     niche_rules = compile_rules({n: r for n, r in cfg["niche_rules"].items() if n in known})
     market = [m for m in (_read_market(p, cfg, niche_rules, known) for p in found.market) if m]
     if not market:
@@ -415,7 +543,10 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
     docs: dict[str, dict] = {}
     snapshots: dict[str, dict] = {}
     for n in targets:
-        rows, sources = rows_for_niche(market, n, threshold, rules, cfg["min_shops_per_pattern"])
+        nrules = niche_text_rules(cfg, n, blocklist, systems)
+        detect = system_detector(nrules, settings) if n == "ttrpg" else None
+        rows, sources = rows_for_niche(market, n, threshold, nrules, cfg["min_shops_per_pattern"],
+                                       detect=detect)
         if not rows:
             log.info("%s: no rows in the research exports; no brief file", n)
             continue
@@ -424,18 +555,19 @@ def run(niche: str | None = None, shop_id: str = "main", inputs_dir=None, briefs
                     for tool, paths in (("own_shop", found.own_shop), ("trends", trend_files))
                     for p in paths]
         _safe_source_names(sources, guard)
+        own_n, trends_n = signals_for(own, n, nrules), signals_for(trends, n, nrules)
         snap = gate = None
         if hist_dir is not None or refined:
             snap = history.build_snapshot(n, rows, sources, settings=settings, cfg=cfg, date=date,
-                                          guard=guard, rules=rules, own=own, trends=trends,
+                                          guard=guard, rules=nrules, own=own_n, trends=trends_n,
                                           shop_names=shop_names, stage=stage,
                                           min_weeks_seen=th["min_weeks_seen"] if refined else 0)
             history.validate_snapshot(snap, guard)  # raises before any write, like briefs
         if refined:
             gate = stages.gate_for(n, snap, read_dir, date, th, hist_cfg["min_rows"])
         doc = build_doc(n, rows, sources, settings=settings, cfg=cfg, shop=shop, shop_id=shop_id,
-                        date=date, guard=guard, rules=rules, own=own, trends=trends,
-                        stage=stage, thresholds=th, gate=gate)
+                        date=date, guard=guard, rules=nrules, own=own_n, trends=trends_n,
+                        stage=stage, thresholds=th, gate=gate, system_ids=system_ids)
         validate_brief_doc(doc, shop_names, titles, guard=guard)  # raises before any write
         docs[n] = doc
         if refined:

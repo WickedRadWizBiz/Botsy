@@ -75,10 +75,12 @@ def pinned_settings() -> dict:
     s["niches"]["activity_sheets"]["types"] = ["maze", "word_search", "tracing", "dot_to_dot"]
     s["research"].update({
         "price_clamp": {"min_factor": 0.75, "max_factor": 1.5, "step_usd": 0.25},
-        "pack_sizes": {"stickers": [6, 12, 20, 30, 50]},
-        "default_pack": {"stickers": 12, "coloring_pages": 20, "activity_sheets": 20},
+        "base_pack_sizes": [5, 20],
         "briefs_per_niche": 5,
     })
+    s["packs"] = {**(s.get("packs") or {}), "min_size": 5,
+                  "max_size": {"stickers": 60, "coloring_pages": 50, "activity_sheets": 50,
+                               "stationery": 60, "ttrpg": 40}}
     s["print"]["page_sizes"] = {"us_letter": {"width_in": 8.5, "height_in": 11.0},
                                 "a4": {"width_in": 8.2677, "height_in": 11.6929}}
     s["print"]["deliver_both_sizes"] = True
@@ -86,6 +88,51 @@ def pinned_settings() -> dict:
     # tests (test_stages.py) set it themselves.
     s["research"]["stage"] = "discovery"
     return s
+
+
+NEW_NICHES = ("stationery", "ttrpg")
+
+
+def five_niche_settings() -> dict:
+    """pinned_settings() with the stationery and ttrpg niches in settings and in shop main
+    (docs/PACKS.md section 1), whatever config/settings.yaml lists today."""
+    s = pinned_settings()
+    for niche in NEW_NICHES:
+        s["niches"].setdefault(niche, {})
+    s["shops"][0]["niches"] = [*s["shops"][0]["niches"], *NEW_NICHES]
+    return s
+
+
+# Game-system `!term` entries for tests (docs/PACKS.md section 4), with our own test ids.
+SYSTEM_TERMS = {"Dungeons & Dragons": "srd5", "D&D": "srd5", "DnD": "srd5", "5e": "srd5",
+                "Fifth Edition": "srd5", "Wizards of the Coast": "srd5",
+                "Pathfinder": "pf2", "Paizo": "pf2"}
+
+
+class SystemsBlocklist(Blocklist):
+    """A Blocklist with `!term` game-system entries, whatever the installed core.compliance
+    does with them: they are blocked in check() (the brief rule: never in a brief) and
+    listed in system_terms (research cuts them, and a row naming one still counts)."""
+
+    def __init__(self, hard=(), review=(), systems=None):
+        self._systems = dict(SYSTEM_TERMS if systems is None else systems)
+        super().__init__([*hard, *self._systems], review)
+
+    @property
+    def system_terms(self) -> dict:
+        return dict(self._systems)
+
+    @system_terms.setter
+    def system_terms(self, value) -> None:   # a newer Blocklist.__init__ may assign it
+        pass
+
+
+def systems_blocklist(**kw) -> SystemsBlocklist:
+    """The repo's blocklist (hard and review terms) plus the test game systems."""
+    base = Blocklist.load()
+    names = {n.lower() for n in SYSTEM_TERMS}
+    return SystemsBlocklist([t for t, _ in base.hard if t.lstrip("!").lower() not in names],
+                            [t for t, _ in base.review], **kw)
 
 
 def set_received(path: Path, day: str) -> Path:

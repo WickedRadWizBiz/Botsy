@@ -31,12 +31,29 @@ fraction of the remaining gap to 1.0:
     demand = 1 - (1 - base) * (1 - own_shop_boost * own) * (1 - trend_boost * trend)
 where `own` is the best percentile performance of our own listings that mention
 the theme and `trend` is the highest interest (0-1) of a matching trend term.
+
+Opportunity (docs/PACKS.md section 2), the order briefs are chosen in, favors themes
+with demand and little competition:
+    opportunity = w_d*demand + w_s*sales_per_listing + w_c*(1 - competition)
+renormalized over the metrics the theme has (research.opportunity_weights).
+- competition: a percentile among the niche's themes. From keyword-tool rows it is the
+  median number of competing listings of the theme's search terms; a theme without
+  them uses its share of the niche's listing rows, each row weighted by
+  1 + ln(1 + reviews), since many established reviews mean a crowded theme. The two
+  measures are ranked separately (one cannot be compared with the other).
+- sales_per_listing: a percentile of the median monthly sales of the theme's listings.
+Percentiles here are mid-ranks ((rank - 0.5) / n, ties averaged): one theme alone, or
+themes all alike, sit at 0.5 instead of looking maximally crowded.
+
+Top-seller pack sizes (`top_seller_sizes`) and the game system a TTRPG theme is made for
+(`theme_system`) are aggregated counts too; nothing identifies a listing or a shop.
 """
 from __future__ import annotations
 
 import math
 import statistics
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -67,6 +84,8 @@ class Row:
     search_volume: float | None = None
     shop: str = ""                            # opaque hash of the shop name ("" = unknown); never written out
     received: str | None = None               # newest received date (YYYY-MM-DD) of the exports holding it
+    competition: float | None = None          # keyword rows: listings competing for the term
+    systems: frozenset[str] = frozenset()     # ttrpg: ids of the game systems the text names
 
 
 @dataclass
@@ -75,6 +94,7 @@ class Signal:
     grams: dict[tuple[str, ...], str]
     strength: float
     niche: str | None = None
+    text: str = ""                            # our own title or a trend term, to re-gram per niche
 
 
 @dataclass
@@ -84,6 +104,8 @@ class Theme:
     rows: list[Row]
     flagged: list[str] = field(default_factory=list)
     demand: float = 0.0
+    competition: float | None = None          # percentile, set by score_opportunity
+    opportunity: float = 0.0                  # set by score_opportunity
 
     @property
     def listing_rows(self) -> int:
@@ -225,6 +247,109 @@ def score_demand(themes: list[Theme], cfg: dict, own=(), trends=()) -> None:
 def _sum(values) -> float | None:
     vals = [v for v in values if v is not None and not math.isnan(v)]
     return float(sum(vals)) if vals else None
+
+
+def _known(v) -> bool:
+    return v is not None and not math.isnan(v)
+
+
+def mid_percentiles(values: dict) -> dict:
+    """{key: (rank - 0.5) / n} with ties averaged: 0.5 for one value or all alike."""
+    if not values:
+        return {}
+    keys = list(values)
+    ranks = pd.Series([float(values[k]) for k in keys]).rank(method="average").tolist()
+    n = len(keys)
+    return {k: (r - 0.5) / n for k, r in zip(keys, ranks)}
+
+
+def _review_weight(row: Row) -> float:
+    reviews = row.reviews if _known(row.reviews) and row.reviews > 0 else 0.0
+    return 1.0 + math.log1p(reviews)
+
+
+def score_opportunity(themes: list[Theme], rows: list[Row], cfg: dict) -> None:
+    """Set theme.competition and theme.opportunity (see the module docstring).
+
+    Call after score_demand. `rows` are all the niche's counted rows (the listing-share
+    denominator).
+    """
+    if not themes:
+        return
+    total = sum(_review_weight(r) for r in rows if r.kind == "listing")
+    by_keyword: dict[int, float] = {}
+    by_listing: dict[int, float] = {}
+    sales: dict[int, float] = {}
+    for i, t in enumerate(themes):
+        comps = [r.competition for r in t.rows if r.kind == "keyword" and _known(r.competition)]
+        if comps:
+            by_keyword[i] = float(statistics.median(comps))
+        elif t.listing_rows and total > 0:
+            by_listing[i] = sum(_review_weight(r) for r in t.rows if r.kind == "listing") / total
+        per_listing = [r.sales for r in t.rows if r.kind == "listing" and _known(r.sales)]
+        if per_listing:
+            sales[i] = float(statistics.median(per_listing))
+    competition = {**mid_percentiles(by_listing), **mid_percentiles(by_keyword)}
+    sales_rank = mid_percentiles(sales)
+    weights = {k: max(0.0, float(v or 0)) for k, v in (cfg.get("opportunity_weights") or {}).items()}
+    for i, t in enumerate(themes):
+        comp = competition.get(i)
+        t.competition = None if comp is None else round(comp, 3)
+        parts = (("demand", t.demand), ("sales_per_listing", sales_rank.get(i)),
+                 ("low_competition", None if comp is None else 1.0 - comp))
+        used = [(weights.get(k, 0.0), v) for k, v in parts if v is not None and weights.get(k, 0.0) > 0]
+        total_w = sum(w for w, _ in used)
+        t.opportunity = round(sum(w * v for w, v in used) / total_w, 3) if total_w else t.demand
+
+
+def by_opportunity(themes: Iterable[Theme]) -> list[Theme]:
+    """Best opportunity first; demand, support and name break ties (deterministic)."""
+    return sorted(themes, key=lambda t: (-t.opportunity, -t.demand, -len(t.rows), t.name))
+
+
+def top_seller_sizes(theme: Theme, cfg: dict, min_shops: int) -> list[int]:
+    """Pack counts the theme's top sellers use most (docs/PACKS.md section 2).
+
+    Rows: the theme's listing rows with a stated pack count. Top sellers: the top quartile
+    (research.top_sellers.quantile) by sales, or by favorites when fewer than min_rows
+    rows have sales, at least min_rows rows, every row tied with the last one included.
+    Sizes: the most common count, plus the second most common when its share is at least
+    second_share. A size counts only when its top-seller rows span >= min_shops shops;
+    with fewer than min_rows ranked rows there are no top-seller sizes.
+    """
+    ts = cfg.get("top_sellers") or {}
+    min_rows = max(1, int(ts.get("min_rows") or 5))
+    quantile = min(max(float(0.75 if ts.get("quantile") is None else ts["quantile"]), 0.0), 1.0)
+    second_share = float(0.3 if ts.get("second_share") is None else ts["second_share"])
+    counted = [r for r in theme.rows if r.kind == "listing" and r.count]
+    for metric in ("sales", "favorites"):
+        ranked = [r for r in counted if _known(getattr(r, metric))]
+        if len(ranked) >= min_rows:
+            break
+    else:
+        return []
+    values = sorted((getattr(r, metric) for r in ranked), reverse=True)
+    k = min(len(values), max(min_rows, math.ceil(len(values) * (1.0 - quantile))))
+    cut = values[k - 1]
+    top = [r for r in ranked if getattr(r, metric) >= cut]
+    freq = Counter(r.count for r in top)
+    order = sorted(freq, key=lambda c: (-freq[c], c))
+    picked = order[:1] + [c for c in order[1:2] if freq[c] / len(top) >= second_share]
+    need = max(1, int(min_shops))
+    return sorted(c for c in picked
+                  if len({r.shop for r in top if r.count == c and r.shop}) >= need)
+
+
+def theme_system(theme: Theme, share: float = 0.5) -> str | None:
+    """The game system id named by at least `share` of the theme's clean supporting rows
+    (most rows first, then the id), else None."""
+    if not theme.rows:
+        return None
+    counts = Counter(s for r in theme.rows for s in r.systems)
+    if not counts:
+        return None
+    sid, n = min(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return sid if n / len(theme.rows) >= share else None
 
 
 def select_distinct(themes: list[Theme], limit: int) -> list[Theme]:

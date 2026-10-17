@@ -51,12 +51,17 @@ DEFAULTS: dict = {
             "coloring_pages": ["coloring pages for kids", "printable coloring pages"],
             "stickers": ["digital stickers", "digital planner stickers"],
             "activity_sheets": ["kids activity sheets", "printable mazes for kids"],
+            # docs/PACKS.md section 2. Generic words only: no planner brands, no game systems.
+            "stationery": ["adhd planner printable", "productivity planner pages"],
+            "ttrpg": ["ttrpg character sheet", "hex map paper printable"],
         },
         # Added after a theme name to make a search phrase ("axolotl" -> "axolotl coloring pages").
         "nouns": {
             "coloring_pages": "coloring pages",
             "stickers": "stickers",
             "activity_sheets": "activity sheets",
+            "stationery": "planner pages",
+            "ttrpg": "rpg sheets",
         },
     }
 }

@@ -1,5 +1,6 @@
 """Regression tests: messy files, brand/filler words, threshold edge cases, CLI safety."""
 import datetime
+from pathlib import Path
 import json
 import os
 import subprocess
@@ -255,7 +256,12 @@ def test_cli_demo_needs_out_or_dry_run(tmp_path, capsys):
     assert "--out" in capsys.readouterr().err
     assert cli_main(["--demo", "--inputs", str(tmp_path), "--out", str(tmp_path / "o")]) == 2
     assert cli_main(["--demo", "--out", str(tmp_path / "o"), "--date", DATE]) == 0
-    assert len(list((tmp_path / "o").glob(f"*-{DATE}.json"))) == 3
+    # The demo has rows for every niche; the run writes one file per niche of shop main.
+    from research.demo import DEMO_NICHES
+    settings = load_settings()
+    shop = [n for n in settings["shops"][0].get("niches") or settings["niches"]
+            if n in DEMO_NICHES and n in settings["niches"]]
+    assert sorted(p.name.split("-")[0] for p in (tmp_path / "o").glob(f"*-{DATE}.json")) == sorted(shop)
 
 
 def test_output_is_identical_across_hash_seeds(tmp_path):
@@ -266,7 +272,44 @@ def test_output_is_identical_across_hash_seeds(tmp_path):
         subprocess.run([sys.executable, "-m", "research", "--demo", "--out", str(out),
                         "--date", DATE], cwd=ROOT, env=env, check=True, capture_output=True)
         outs.append({p.name: p.read_bytes() for p in sorted(out.iterdir())})
-    assert outs[0] == outs[1] and len(outs[0]) == 3
+    from research.demo import DEMO_NICHES
+    settings = load_settings()
+    shop = [n for n in settings["shops"][0].get("niches") or settings["niches"]
+            if n in DEMO_NICHES and n in settings["niches"]]
+    assert outs[0] == outs[1] and len(outs[0]) == len(shop)
+
+
+_FIVE_NICHE_RUN = """
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("rconf", sys.argv[1])
+rconf = importlib.util.module_from_spec(spec); spec.loader.exec_module(rconf)
+from research import run
+from research.demo import DEMO_NICHES, write_demo_inputs
+inputs, out = Path(sys.argv[2]), Path(sys.argv[3])
+write_demo_inputs(inputs, niches=DEMO_NICHES)
+rows = [[f"Pirate RPG Character Sheet for D&D 5e, Set {i}", rconf.SHOPS[i % 3], "$4.50", 30 - i, 5,
+         "900", "3 months", "dnd character sheet,pirate rpg sheet", "", ""] for i in range(14)]
+rconf.write_csv(inputs / "everbee-extra.csv", rconf.EVERBEE, rows)
+settings = rconf.five_niche_settings()
+settings["research"]["briefs_per_niche"] = 6
+run(inputs_dir=inputs, briefs_dir=out, date=rconf.DATE, settings=settings)
+"""
+
+
+def test_five_niche_output_is_identical_across_hash_seeds(tmp_path):
+    """Stationery and ttrpg too, with the shipped systems registry (a ttrpg brief names one)."""
+    outs = []
+    conf = str(Path(__file__).with_name("conftest.py"))
+    for seed in ("1", "4242"):
+        base = tmp_path / f"seed{seed}"
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        subprocess.run([sys.executable, "-c", _FIVE_NICHE_RUN, conf, str(base / "in"), str(base / "out")],
+                       cwd=ROOT, env=env, check=True, capture_output=True)
+        outs.append({p.name: p.read_bytes() for p in sorted((base / "out").iterdir())})
+    assert outs[0] == outs[1] and len(outs[0]) == 5
+    ttrpg = json.loads(next(v for k, v in outs[0].items() if k.startswith("ttrpg")))
+    assert {b["theme"]: b["system"] for b in ttrpg["briefs"]}["pirate"] != "generic"
 
 
 def test_demo_docs_follow_contract_types(tmp_path):

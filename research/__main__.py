@@ -55,10 +55,11 @@ def main(argv: list[str] | None = None) -> int:
     stage = args.stage or ("discovery" if args.demo else None)
     try:
         if args.demo:
-            from research.demo import write_demo_inputs
+            from research.demo import DEMO_NICHES, write_demo_inputs
 
             with tempfile.TemporaryDirectory(prefix="research-demo-") as tmp:
-                write_demo_inputs(tmp)
+                # Every niche; rows of a niche the settings do not list are simply not used.
+                write_demo_inputs(tmp, niches=DEMO_NICHES)
                 paths = run(args.niche, args.shop, tmp, args.out, args.date, dry_run=args.dry_run,
                             history_dir=args.history, stage=stage)
         else:

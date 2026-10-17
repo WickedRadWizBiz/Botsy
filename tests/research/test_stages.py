@@ -208,7 +208,8 @@ def test_discovery_docs_record_the_stage_without_history_fields(dirs):
     assert doc["stage"] == "discovery" and "min_weeks_seen" not in doc
     assert (doc["min_listings_per_pattern"], doc["min_shops_per_pattern"]) == (10, 3)
     assert set(doc["briefs"][0]["evidence"]) == {"listing_count", "listing_rows", "keyword_rows",
-                                                 "shop_count", "score"}
+                                                 "shop_count", "score", "opportunity",
+                                                 "competition", "top_seller_sizes"}
 
 
 # ---------------------------------------------------------------- refined brief selection

@@ -33,6 +33,38 @@ DEFAULT_RULES: dict[str, list[str]] = {
         r"\bactivit(y|ies)\b",
         r"\bbusy book\b",
     ],
+    # Printable planner and productivity pages. "planner stickers" is a sticker product,
+    # so the planner rules skip it and the sticker rule wins.
+    "stationery": [
+        r"\bplanners?\b(?! stickers?\b)",
+        r"\b(daily|weekly|monthly|undated|dated|hourly) (planners?|schedules?|agendas?|organizers?)\b(?! stickers?\b)",
+        r"\b(planner|journal|notebook) (pages?|inserts?|printables?|refills?|templates?|sheets?)\b",
+        r"\b(habit|mood|energy|routine|budget|expense|savings|reading|water|sleep|fitness|"
+        r"cleaning|goal|focus) (trackers?|logs?|charts?)\b",
+        r"\bto ?do (lists?|pages?|sheets?)\b",
+        r"\b(brain dump|time block(ing|ed)?|pomodoro|priority matrix|task breakdown|"
+        r"top 3 priorities)\b",
+        r"\b(meal|gratitude|study|goal|lesson|teacher|student) (planners?|journals?|logs?|pages?)\b",
+        r"\b(morning|evening|bedtime|chore|cleaning|daily) (routine|routines|checklists?|charts?)\b",
+        r"\b(lined|dot|dotted|grid|graph) (paper|notes?|pages?)\b",
+        # Generic words: they never claim a sticker listing ("ADHD planner stickers").
+        r"^(?!.*\bstickers?\b).*\bproductivity\b",
+        r"^(?!.*\bstickers?\b).*\badhd\b",
+    ],
+    # Tabletop RPG papers. Generic words only; game-system names are not needed to sort rows.
+    "ttrpg": [
+        r"\b(tt)?rpgs?\b",
+        r"\btabletop\b",
+        r"\bcharacter (sheets?|journals?|trackers?|portfolios?)\b",
+        r"\bcampaign (journals?|trackers?|planners?|notebooks?|logs?|binders?|sheets?|notes)\b",
+        r"\b(hex|hexagon) (maps?|paper|grids?|sheets?|crawl)\b|\bhexcrawl\b",
+        r"\b(battle|dungeon|grid) maps?\b",
+        r"\b(initiative|spell|spellbook|inventory|loot|quest|npc|encounter|session|dice|"
+        r"monster|combat) (trackers?|logs?|sheets?|cards?|planners?|notes|journals?)\b",
+        r"\b(game master|gm|dm) (screens?|notes|tools?|binders?|journals?|planners?)\b",
+        r"\b(world ?building|worldbuilding) (worksheets?|templates?|pages?|workbooks?|journals?|sheets?)\b",
+        r"\bone shot\b|\bworld ?building\b|\bworldbuilding\b",
+    ],
 }
 
 

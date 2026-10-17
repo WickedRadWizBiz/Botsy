@@ -397,3 +397,62 @@ def test_stalled_is_counted_week_to_week(tmp_path):
     assert searchlist.stalled("hedgehog", snaps)                       # day to day: flat
     assert [s["date"] for s in searchlist.weekly(snaps)] == ["2026-10-08", "2026-10-14"]
     assert not searchlist.stalled("hedgehog", searchlist.weekly(snaps))
+
+
+# ---------------------------------------------------------------- stationery and ttrpg (docs/PACKS.md)
+
+def test_new_niches_get_their_seeds_and_nouns(tmp_path):
+    from tests.research.conftest import five_niche_settings
+
+    hist = tmp_path / "history"
+    _snap(hist, "2026-10-17", "stationery", [_theme("cottagecore", 6, 2, 0.6)])
+    _snap(hist, "2026-10-17", "ttrpg", [_theme("cosmic horror", 7, 2, 0.5)])
+    text = searchlist.build(five_niche_settings(), hist, date=DAY)
+    assert _section(text, "STATIONERY") == [
+        "  adhd planner printable  (every week)",
+        "  productivity planner pages  (every week)",
+        "  cottagecore planner pages  (6 of 10 listings, 2 of 3 shops so far)",
+    ]
+    assert _section(text, "TTRPG") == [
+        "  ttrpg character sheet  (every week)",
+        "  hex map paper printable  (every week)",
+        "  cosmic horror rpg sheets  (7 of 10 listings, 2 of 3 shops so far)",
+    ]
+
+
+def test_new_niche_seeds_name_no_game_system_or_planner_brand():
+    from research.text import TextRules, phrase
+    from tests.research.conftest import systems_blocklist
+
+    bl = systems_blocklist()
+    rules = TextRules(blocklist=bl)
+    cfg = searchlist.DEFAULTS["search_list"]
+    for niche in ("stationery", "ttrpg"):
+        assert cfg["nouns"][niche] and cfg["seeds"][niche], niche
+        for text in [*cfg["seeds"][niche], cfg["nouns"][niche]]:
+            result = bl.check(text)
+            assert not result.blocked and not result.flagged, text
+            assert rules.cut_systems(text) == phrase(text), text
+
+
+def test_ttrpg_near_miss_from_research_names_no_game_system(tmp_path, monkeypatch):
+    """Rows naming a game system feed the history like any row; the system's name is cut,
+    so the search line is our own theme plus the niche noun."""
+    import sys
+    import types
+
+    from tests.research.conftest import SHOPS, five_niche_settings, systems_blocklist
+
+    systems = types.ModuleType("core.systems")
+    systems.detect_systems = lambda text: ["srd5"] if "d&d" in text.lower() else []
+    monkeypatch.setitem(sys.modules, "core.systems", systems)
+    inputs, briefs, hist = tmp_path / "inputs", tmp_path / "briefs", tmp_path / "history"
+    rows = [[f"Cosmic Horror Character Sheet for D&D 5e, Set {i}", SHOPS[i % 2], "$3.99", 20, 5,
+             "1,200", "3 months", "dnd character sheet,cosmic horror dnd",
+             f"https://www.etsy.com/listing/{7_200_000_000 + i}/x", ""] for i in range(1, 8)]
+    write_csv(inputs / "everbee.csv", EVERBEE, rows)
+    run(niche="ttrpg", inputs_dir=inputs, briefs_dir=briefs, date="2026-10-17",
+        settings=five_niche_settings(), blocklist=systems_blocklist(), history_dir=hist)
+    text = searchlist.build(five_niche_settings(), hist, date=DAY)
+    assert "  cosmic horror rpg sheets  (7 of 10 listings, 2 of 3 shops so far)" in _section(text, "TTRPG")
+    assert not re.search(r"\b(dnd|d ?& ?d|5e|dungeons)\b", text.lower())

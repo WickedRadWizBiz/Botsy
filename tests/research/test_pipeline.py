@@ -155,7 +155,9 @@ def test_filename_prefix_wins(dirs):
     paths = _run(inputs, out)
     assert [p.name for p in paths] == [f"stickers-{DATE}.json"]
     brief = load(paths[0])["briefs"][0]
-    assert brief["page_count"] == 12 and brief["activity_types"] == []   # sticker default pack
+    # No stated counts: the base packs (docs/PACKS.md section 2), page_count the largest.
+    assert brief["pack_sizes"] == [5, 20] and brief["page_count"] == 20
+    assert brief["activity_types"] == [] and "system" not in brief
 
 
 def test_brief_fields_follow_contract(dirs):
@@ -167,15 +169,18 @@ def test_brief_fields_follow_contract(dirs):
     assert doc["created"] == DATE and doc["shop_id"] == "main"
     b = doc["briefs"][0]
     assert b["brief_id"] == f"activity_sheets-{DATE}-01"
-    assert b["page_count"] == 20               # 25 is equidistant from 20 and 30 -> smaller
+    assert b["pack_sizes"] == [5, 20, 25]      # the top sellers' 25 joins the base packs
+    assert b["page_count"] == 25               # the largest pack (older readers)
     assert b["price_usd"] == 6.0               # median 9.99 clamped to 1.5 x pinned default 4.00
     assert b["page_sizes"] == ["us_letter", "a4"]
     assert b["activity_types"] == ["maze"]
     assert b["audience"] and b["style_notes"] and b["keywords"]
     assert set(b) >= {"brief_id", "niche", "theme", "audience", "keywords", "page_count",
-                      "price_usd", "page_sizes", "style_notes", "activity_types", "evidence",
-                      "compliance", "needs_review"}
+                      "pack_sizes", "price_usd", "page_sizes", "style_notes", "activity_types",
+                      "evidence", "compliance", "needs_review"}
     assert b["evidence"]["listing_count"] == 12
+    assert b["evidence"]["top_seller_sizes"] == [25]
+    assert 0 <= b["evidence"]["opportunity"] <= 1 and 0 <= b["evidence"]["competition"] <= 1
     assert doc["patterns"]["page_counts"] == [{"bucket": "21-30", "listing_count": 12}]
     assert doc["patterns"]["price_bands"][0]["band"] == "8-12"
 

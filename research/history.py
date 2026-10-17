@@ -197,6 +197,12 @@ def build_snapshot(niche: str, rows: list[Row], sources: list[dict], *, settings
     trends = [s for s in trends if s.niche in (None, niche)]
     pairs = snapshot_themes(rows, cfg, guard, rules, own=own, trends=trends,
                             min_rows=hist["min_rows"], shop_names=shop_names)
+    # Near misses reach the weekly search list: a theme still naming a game system is left
+    # out here too (research/briefs.names_a_system; names are cut long before).
+    from research.briefs import names_a_system  # lazy: research.briefs is the brief builder
+
+    named = names_a_system([t.name for t, _ in pairs], rules)
+    pairs = [(t, q) for t, q in pairs if t.name not in named]
     week = iso_week(check_date(date))
     themes = _cap([e for e in (_entry(t, q, guard, week) for t, q in pairs) if e], hist["max_themes"])
     thresholds = {"listings": cfg["min_listings_per_pattern"], "shops": cfg["min_shops_per_pattern"]}

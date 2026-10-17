@@ -16,10 +16,24 @@ built, so a blocked name can never become a theme; the row remembers it had one
 (see aggregate.py for how that marks themes that co-occur with licensed names).
 Platform and app names (excluded_terms, e.g. "goodnotes") are cut the same way:
 they describe compatibility, not a design, and are brands we keep out of briefs.
+
+Game-system names (blocklist `!term` entries, Blocklist.system_terms, docs/PACKS.md
+section 4) are cut too, but a row naming one is NOT a licensed-property row: "Cyberpunk
+Character Sheet for <system>" is an ordinary listing that states compatibility, so it
+keeps counting toward a theme and never marks the theme as co-occurring with a blocked
+name. The name itself never reaches a theme, tag or keyword.
+
+Each niche can add its own stopwords, keep words and connectors (research.niche_stopwords /
+niche_keep_words / niche_connectors): planner page types ("habit tracker") are not
+stationery themes, "teacher" is (a planner audience) while it stays a stopword elsewhere,
+and "from" holds "work from home" together. Medical claim words (research.medical_terms)
+are passed in as excluded terms, so no theme or keyword ever carries one, except inside the
+ordinary phrases the listing stage allows too ("trick or treat", "sweet treats").
 """
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from core.compliance import URL_RE, Blocklist, normalize
@@ -85,8 +99,10 @@ MAX_CONNECTORS = 2  # in a row: "day of the dead"
 # Generic heads that only mean something next to another word ("valentines day",
 # "christmas eve", "back to school"). Alone they would pool every holiday into one
 # broad theme ("day") that outranks, and overlaps, all the real ones.
+# "trick" is half of "trick or treat" ("or" splits n-grams), never a theme of its own.
 WEAK_WORDS = frozenset("""
 day night eve time season week month world life land back first last happy dead st under
+trick
 """.split())
 
 # Format vocabulary (our own fixed labels; counted, never copied).
@@ -109,15 +125,26 @@ FORMAT_RULES: tuple[tuple[str, re.Pattern], ...] = tuple(
 
 # "20 pages", "100+ stickers", "set of 12", "30 pack".
 _UNIT = (r"pages?|pgs?|sheets?|worksheets?|designs?|stickers?|pngs?|images?|illustrations?|"
-         r"mazes?|puzzles?|cliparts?|elements?|pieces?|pcs|activities|cards?")
-_COUNT_RES = (  # "(?!st|nd|rd|th)": "2nd grade worksheets" is not a count of 2
-    re.compile(rf"\b(\d{{1,4}})(?!(?:st|nd|rd|th)\b)\s*(?:x\s*)?(?:[a-z]+\s){{0,2}}(?:{_UNIT})\b"),
+         r"mazes?|puzzles?|cliparts?|elements?|pieces?|pcs|activities|cards?|"
+         r"inserts?|templates?|trackers?|layouts?|maps?")
+# "(?!st|nd|rd|th|e|ed|d)": "2nd grade worksheets" is not a count of 2, and neither is
+# "5e character sheets" or "2e npc tracker" (a game edition) or "3d stickers". Group 2
+# holds the words between the number and the unit.
+_COUNT_RES = (
+    re.compile(rf"\b(\d{{1,4}})(?!(?:st|nd|rd|th|e|ed|d)\b)\s*(?:x\s*)?((?:[a-z]+\s){{0,2}})(?:{_UNIT})\b"),
     re.compile(r"\b(?:set|pack|bundle|collection) of (\d{1,4})\b"),
     re.compile(r"\b(\d{1,4}) ?(?:pack|pk)\b"),
 )
 MAX_COUNT = 1000
-# "ages 4-8 coloring pages", "grade 2 worksheets": an age or grade, not a count.
-_NOT_A_COUNT = re.compile(r"(\b(ages?|years?|yrs?|grades?|level|vol|volume|part|book)|\d) $")
+# "ages 4-8 coloring pages", "grade 2 worksheets": an age or grade, not a count; "8.5 x 11
+# planner pages": a page size.
+_NOT_A_COUNT = re.compile(r"(\b(ages?|years?|yrs?|grades?|level|vol|volume|part|book|x)|\d) $")
+# Between the number and the unit they make it a size or a time span, not a count:
+# "1 inch hex map", "30 day habit tracker", "3 month budget tracker".
+_MEASURE_WORDS = frozenset("""
+in inch inches cm mm ft foot feet day days week weeks month months year years hour hours
+minute minutes min mins
+""".split())
 
 ACTIVITY_RULES: tuple[tuple[str, re.Pattern], ...] = tuple(
     (name, re.compile(rx)) for name, rx in (
@@ -182,34 +209,160 @@ class Grams:
     keys: dict[tuple[str, ...], str]   # stemmed n-gram key -> surface form in this row
     blocked: bool                      # the text named a hard-blocked term (cut out of keys)
     flagged: bool                      # the text named a review-flagged term
+    system: bool = False               # the text named a game-system term (cut, not blocked)
+
+
+def system_terms(blocklist: Blocklist | None) -> dict[str, str | None]:
+    """The blocklist's `!term` game-system names: {term: system id or None}.
+
+    Blocklist.system_terms (core.compliance) holds them; an older Blocklist without the
+    attribute has none. A leading "!" is dropped from the term.
+    """
+    terms = getattr(blocklist, "system_terms", None) if blocklist is not None else None
+    if not isinstance(terms, Mapping):
+        return {}
+    out: dict[str, str | None] = {}
+    for term, sid in terms.items():
+        t = str(term).strip().lstrip("!").strip()
+        if t:
+            out[t] = str(sid) if sid else None
+    return out
+
+
+def _system_regex(term: str) -> re.Pattern | None:
+    """A system name on clean() text: "D&D" also as "d and d", the words also joined
+    ("dungeonsanddragons", "coc7e", "callofcthulhu"), plus a plural or an edition written
+    onto the name ("pathfinder2e", "dnd5e")."""
+    words = phrase(term).split()
+    if not words:
+        return None
+    body = r"\s*".join(map(re.escape, words))
+    return re.compile(rf"(?<![a-z0-9]){body}(?:s|es|\d{{1,2}}e)?(?![a-z0-9])")
+
+
+# Edition markers left next to a cut system name ("d&d 5th edition", "2e"): they only point
+# at a game system, so a tag or keyword phrase never keeps one.
+_EDITION_RE = re.compile(
+    r"(?<![a-z0-9])(?:(?:\d{1,2}(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|"
+    r"eighth|ninth|tenth)\s+(?:edition|ed)s?|\d{1,2}e)(?![a-z0-9])")
+# Words a cut can leave dangling at either end of a phrase ("character sheet for <system>",
+# "<system> compatible character sheet"); trimmed only when something was cut.
+_EDGE_WORDS = frozenset("""
+a an and or the for with of to in on by from at as compatible compatibility edition editions
+ed version versions rules system systems ready official unofficial
+""".split())
+
+
+def _trim_edges(text: str) -> str:
+    words = text.split()
+    while words and words[0] in _EDGE_WORDS:
+        words.pop(0)
+    while words and words[-1] in _EDGE_WORDS:
+        words.pop()
+    return " ".join(words)
 
 
 class TextRules:
-    """Stopwords, excluded platform terms and the blocklist, applied to row text."""
+    """Stopwords, excluded platform terms and the blocklist, applied to row text.
 
-    def __init__(self, extra_stopwords=(), excluded_terms=(), blocklist: Blocklist | None = None):
+    keep_words are content words even when they are stopwords (a niche's audiences, such
+    as "teacher" for stationery). connectors are extra words kept inside an n-gram, like
+    CONNECTORS ("from" for stationery's "work from home"). Game-system terms (blocklist
+    `!term`) are cut like blocked names, but they do not mark the row as blocked.
+    ok_phrases are ordinary phrases in which an excluded word is no claim ("trick or treat").
+    """
+
+    def __init__(self, extra_stopwords=(), excluded_terms=(), blocklist: Blocklist | None = None,
+                 keep_words=(), connectors=(), system_names: Mapping[str, str | None] | None = None,
+                 ok_phrases=()):
         extra = [phrase(w) for w in extra_stopwords if phrase(w)]
-        self.stop_words = STOP_WORDS | {w for w in extra if " " not in w}
+        keep = {k for w in keep_words for k in (phrase(w), stem(phrase(w))) if k and " " not in k}
+        self.stop_words = (STOP_WORDS | {w for w in extra if " " not in w}) - keep
+        self.connectors = CONNECTORS | {c for c in map(phrase, connectors) if c and " " not in c}
         self.stop_rx = _phrase_regex([*STOP_PHRASES, *(w for w in extra if " " in w)])
         self.excluded_rx = _phrase_regex([phrase(t) for t in excluded_terms if phrase(t)])
+        # Ordinary phrases holding an excluded word ("trick or treat", "sweet treats"): the
+        # word is not cut inside one, and a theme or keyword that keeps the whole phrase
+        # stays. The listing stage allows the same phrases (listing medical_ok_phrases).
+        self.ok_rx = _phrase_regex([phrase(p) for p in ok_phrases if phrase(p)])
         self.blocklist = blocklist
+        # The blocklist's `!` terms, plus any other name config/ttrpg_systems.yaml lists for
+        # a system (system_names, {name: id}), so a system name never becomes a theme even
+        # when the blocklist does not list it yet.
+        systems = {str(k).strip(): (str(v) if v else None)
+                   for k, v in (system_names or {}).items() if str(k).strip()}
+        for term, sid in system_terms(blocklist).items():
+            systems[term] = sid or systems.get(term)
+        self.systems: list[tuple[str, str | None, re.Pattern]] = [
+            (t, sid, rx) for t, sid in sorted(systems.items()) if (rx := _system_regex(t))]
+        # A Blocklist may also keep its `!` terms among the hard terms; here they are
+        # system names (cut, row not blocked), never licensed-property names. Only the
+        # blocklist's own `!` terms count: a system_names entry never softens a hard term.
+        names = {normalize(t) for t in system_terms(blocklist)}
+        self.hard = [(t, rx) for t, rx in (blocklist.hard if blocklist else [])
+                     if normalize(str(t).lstrip("!").strip()) not in names]
 
     def is_stop(self, token: str) -> bool:
         return (len(token) < 2 or any(c.isdigit() for c in token)
                 or token in self.stop_words or stem(token) in self.stop_words)
 
     def has_excluded(self, text: str) -> bool:
-        return bool(self.excluded_rx and self.excluded_rx.search(clean(text)))
+        """True when `text` holds an excluded term (a platform brand or a medical claim
+        word) outside the ok phrases ("trick or treat" holds no claim)."""
+        return bool(self._excluded_spans(clean(text)))
+
+    def _ok_spans(self, cleaned: str) -> list[tuple[int, int]]:
+        return [m.span() for m in self.ok_rx.finditer(cleaned)] if self.ok_rx else []
+
+    def _excluded_spans(self, cleaned: str, ok: list[tuple[int, int]] | None = None
+                        ) -> list[tuple[int, int]]:
+        if not self.excluded_rx:
+            return []
+        spans = [m.span() for m in self.excluded_rx.finditer(cleaned)]
+        ok = self._ok_spans(cleaned) if ok is None else ok
+        if not ok or not spans:
+            return spans
+        return [(s, e) for s, e in spans if not any(a <= s and e <= b for a, b in ok)]
 
     def _spans(self, cleaned: str, terms) -> list[tuple[int, int]]:
         return [m.span() for _, rx in terms for m in rx.finditer(cleaned)]
 
-    def grams(self, text: str) -> Grams:
-        """Theme n-grams for one row's text, plus whether it named a blocked/flagged term."""
+    def _system_spans(self, cleaned: str) -> list[tuple[int, int]]:
+        return [m.span() for _, _, rx in self.systems for m in rx.finditer(cleaned)]
+
+    def cut_systems(self, text: str) -> str:
+        """`text` as a plain phrase with every game-system name cut out, and with the
+        edition markers and dangling words such a cut leaves ("dnd 5e character sheet" ->
+        "character sheet", "character sheet for d&d 5th edition" -> "character sheet")."""
         t = clean(text)
-        blocked = self._spans(t, self.blocklist.hard) if self.blocklist else []
+        spans = self._system_spans(t)
+        if not spans:
+            return phrase(t)
+        # An app named after the system ("d&d beyond") goes with it, not half of it.
+        spans += [(s, e) for s, e in self._excluded_spans(t)
+                  if any(s < b and a < e for a, b in spans)]
+        spans += [m.span() for m in _EDITION_RE.finditer(t)]
+        return _trim_edges(phrase(_cut(t, spans)))
+
+    def names_system(self, text: str) -> bool:
+        """True when `text` names a game system (also joined or with an edition: "dnd5e")."""
+        return bool(self._system_spans(clean(text)))
+
+    def system_ids(self, text: str) -> set[str]:
+        """Ids of the game systems whose names (blocklist `!` terms and system_names) appear
+        in `text`; research prefers core.systems.detect_systems and falls back to this."""
+        t = clean(text)
+        return {sid for _, sid, rx in self.systems if sid and rx.search(t)}
+
+    def grams(self, text: str) -> Grams:
+        """Theme n-grams for one row's text, plus whether it named a blocked/flagged term
+        or a game-system name."""
+        t = clean(text)
+        blocked = self._spans(t, self.hard)
         flagged = bool(self.blocklist and self._spans(t, self.blocklist.review))
-        spans = blocked + ([m.span() for m in self.excluded_rx.finditer(t)] if self.excluded_rx else [])
+        systems = self._system_spans(t)
+        ok = self._ok_spans(t)
+        spans = blocked + systems + self._excluded_spans(t, ok)
         if spans:
             t = _cut(t, spans)
         if self.stop_rx:
@@ -222,22 +375,27 @@ class TextRules:
                 if tok and not self.is_stop(tok):
                     run += pending + [tok]
                     pending = []
-                elif tok in CONNECTORS and run and len(pending) < MAX_CONNECTORS:
+                elif tok in self.connectors and run and len(pending) < MAX_CONNECTORS:
                     pending.append(tok)
                 else:
-                    _emit(run, out)
+                    _emit(run, out, self.connectors)
                     run, pending = [], []
-        return Grams(out, bool(blocked), flagged)
+        if ok:
+            # An excluded word kept for an ok phrase ("trick or treat") never stands in a
+            # theme without that phrase around it ("treat" alone).
+            out = {k: s for k, s in out.items() if not self.has_excluded(s)}
+        return Grams(out, bool(blocked), flagged, bool(systems))
 
 
-def _emit(run: list[str], out: dict[tuple[str, ...], str]) -> None:
+def _emit(run: list[str], out: dict[tuple[str, ...], str],
+          connectors: frozenset[str] = CONNECTORS) -> None:
     """Every n-gram of `run` that starts and ends on a content word, <= MAX_N content words."""
     for i, first in enumerate(run):
-        if first in CONNECTORS:
+        if first in connectors:
             continue
         content = 0
         for j in range(i, len(run)):
-            if run[j] in CONNECTORS:
+            if run[j] in connectors:
                 continue
             content += 1
             if content > MAX_N:
@@ -245,7 +403,7 @@ def _emit(run: list[str], out: dict[tuple[str, ...], str]) -> None:
             words = run[i:j + 1]
             if len(words) == 1 and stem(first) in WEAK_WORDS:
                 continue
-            out.setdefault(tuple(w if w in CONNECTORS else stem(w) for w in words), " ".join(words))
+            out.setdefault(tuple(w if w in connectors else stem(w) for w in words), " ".join(words))
 
 
 def formats(text: str) -> set[str]:
@@ -259,7 +417,9 @@ def pack_count(text: str) -> int | None:
     for rx in _COUNT_RES:
         for m in rx.finditer(t):
             n = int(m.group(1))
-            if 0 < n <= MAX_COUNT and not _NOT_A_COUNT.search(t[: m.start()]):
+            between = m.group(2).split() if rx.groups > 1 else []
+            if (0 < n <= MAX_COUNT and not _NOT_A_COUNT.search(t[: m.start()])
+                    and not _MEASURE_WORDS.intersection(between)):
                 return n
     return None
 
