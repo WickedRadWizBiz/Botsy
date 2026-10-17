@@ -33,7 +33,7 @@ platforms:
         note: "Creators API prerequisites: Associates enrollment and 'at least 10 qualifying sales within the past 30 days'."
       - url: https://affiliate-program.amazon.com/creatorsapi/docs/en-us/paapiv5-deprecation
         note: "PA-API 5 'has been deprecated and is being replaced by the Creators API'; calls 'receive an HTTP 403 Forbidden response'."
-    user_decision: "2026-10-16: the user accepts the Amazon-account risk of running the BookBeam extension on Amazon pages. 2026-10-17: also accepts that copying a few public fields by hand into Botsy's KDP template is their own risk. Third-party scraping services (Apify, TinyFish or similar) against Amazon are NOT allowed: Amazon forbids it and CLAUDE.md allows no automated access to a platform that forbids it; a change needs the user's explicit written decision here and in CLAUDE.md."
+    user_decision: "2026-10-16: the user accepts the Amazon-account risk of running the BookBeam extension on Amazon pages. 2026-10-17: also accepts hand-copying public fields into Botsy's KDP template, AND allows Botsy to read public Amazon book search/category/product pages through the TinyFish service ('I want to use TinyFish and see how that goes'); limits in CLAUDE.md (no login, no personal data, fixed weekly page budget, stop on blocks/CAPTCHAs, raw pages deleted after 90 days). robots.txt (read 2026-10-17): User-agent * does not disallow /s, /dp or most /b?node paths; it disallows many named AI crawlers by name. Apify and similar remain NOT allowed on Amazon."
     checked: "2026-10-16"
   bookbeam:
     scraping: forbidden
@@ -105,3 +105,12 @@ platforms:
       - url: https://help.fiverr.com/hc/en-us/articles/32242973123985-Our-Community-Standards
         note: "Bans unauthorized access methods, scraping, and bots for mass messaging."
     checked: "2026-10-16"
+  tinyfish:
+    scraping: forbidden   # TinyFish is the service Botsy calls, not a site Botsy scrapes; entry records its terms and cost
+    official_api: TinyFish Agent / Fetch / Search APIs (api.fetch.tinyfish.ai, agent.tinyfish.ai). Botsy may call them under the Amazon exception in CLAUDE.md (user, 2026-10-17).
+    sources:
+      - url: https://www.tinyfish.ai/pricing
+        note: "Read 2026-10-17: Search and Fetch free (Fetch 150 urls/min, 1,000 urls/day); Agent $0.016 per step (2 concurrent runs); Browser $0.002 per minute; Monitor $0.005 per check; prepaid Wallet, $10 minimum top-up, no plan. The page says runs use 'residential proxies' and 'anti-bot handling ... at the infrastructure layer', i.e. the service itself works around site blocks; Botsy's own rule is still to stop when a page comes back blocked."
+      - url: https://docs.tinyfish.ai/
+        note: "API surfaces and endpoints (read 2026-10-17). TinyFish's API terms of service were not found at tinyfish.ai/terms-of-service (404 on 2026-10-17); current.tinyfish.ai/terms covers a different product. UNVERIFIED: ask TinyFish or find the API terms before relying on retention or use limits."
+    checked: "2026-10-17"
