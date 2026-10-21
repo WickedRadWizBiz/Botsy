@@ -348,8 +348,11 @@ def budget_state(settings: dict | None = None, *, now: datetime | None = None) -
     """{"month", "mtd", "cap", "pct", "warn", "reached"} for the current UTC month.
     cap is None when there is no cap (then pct is None and warn/reached are False). pct is
     the share of the cap spent (0.8 = 80%). warn is true from warn_at of the cap on, also
-    once the cap is reached. Raises ValueError when spend.monthly_cap_usd is not a number."""
-    return _state(_cfg(settings), now)
+    once the cap is reached. Raises ValueError when spend.monthly_cap_usd is not a number.
+    The cap is the one in force (service.orders.effective_cap): a raise_cap / lower_cap order's
+    value when one is set, never above the admin's ceiling in the limits file."""
+    settings = settings if settings is not None else load_settings()
+    return _state(_cfg(settings), now, settings)
 
 
 def check_budget(kind: str, settings: dict | None = None, *, now: datetime | None = None) -> None:
@@ -360,11 +363,12 @@ def check_budget(kind: str, settings: dict | None = None, *, now: datetime | Non
     once per process, and after any failed record()), OSError when it cannot be read, and
     ValueError when the cap is not a number. Each stops the paid call, never the cap."""
     _check_kind(kind)
+    settings = settings if settings is not None else load_settings()
     cfg = _cfg(settings)
-    if monthly_cap(cfg) is None:
+    if _cap_in_force(cfg, settings) is None:
         return
     _check_writable(_ledger(cfg))
-    state = _state(cfg, now)
+    state = _state(cfg, now, settings)
     if state["reached"]:
         raise BudgetExceeded(
             f"Monthly spending cap reached: {_money(state['mtd'])} of {_money(state['cap'])} used in "
@@ -393,9 +397,17 @@ def monthly_cap(cfg: dict) -> float | None:
     return float(value) if value > 0 else None
 
 
-def _state(cfg: dict, now: datetime | None) -> dict:
+def _cap_in_force(cfg: dict, settings: dict) -> float | None:
+    """The cap in force (service.orders.effective_cap). Raises ValueError for a cap typo."""
+    monthly_cap(cfg)                       # a typo in spend.monthly_cap_usd stays a ValueError
+    from service import orders             # lazy: service.orders imports this module
+
+    return orders.effective_cap(settings)
+
+
+def _state(cfg: dict, now: datetime | None, settings: dict) -> dict:
     month = month_of(now)
-    cap = monthly_cap(cfg)
+    cap = _cap_in_force(cfg, settings)
     mtd = summarize(_read(_ledger(cfg), month=month))["total"]
     if cap is None:
         return {"month": month, "mtd": mtd, "cap": None, "pct": None, "warn": False, "reached": False}
@@ -416,12 +428,21 @@ def _warn_at(cfg: dict) -> float:
 
 def table(settings: dict | None = None, month: str | None = None) -> str:
     """A plain-text spending table for one month, for `python -m service spend`."""
+    settings = settings if settings is not None else load_settings()
     cfg = _cfg(settings)
     s = month_to_date(settings, month)
     try:
-        cap, cap_error = monthly_cap(cfg), None
+        cap, cap_error = _cap_in_force(cfg, settings), None
     except ValueError:          # still show the spending; the cap line says what to fix
         cap, cap_error = None, cfg.get("monthly_cap_usd")
+    override = None
+    if cap_error is None:
+        from service import orders
+
+        st = orders.control_state(settings)
+        if st.get("cap_override_usd") is not None:
+            changed = st.get("cap_changed") if isinstance(st.get("cap_changed"), dict) else {}
+            override = changed.get("order_id") or "unknown"
     lines = [f"Spending for {s['month']} (estimates; your provider bills are what count)"]
     if cap_error is not None:
         lines.append(f"Total: {_money(s['total'])}. The monthly cap setting is not a number "
@@ -430,6 +451,8 @@ def table(settings: dict | None = None, month: str | None = None) -> str:
         lines.append(f"Total: {_money(s['total'])} (no monthly cap set)")
     else:
         lines.append(f"Total: {_money(s['total'])} of {_money(cap)} cap ({s['total'] / cap:.0%})")
+    if override is not None:
+        lines.append(f"(cap set by order {override})")
     lines.append(f"Paid calls: {s['calls']} ({s['images']} image{'' if s['images'] == 1 else 's'})")
     for title, key, limit in (("By service", "by_provider", None), ("By stage", "by_stage", None),
                               ("By item (top 10)", "by_item", 10)):

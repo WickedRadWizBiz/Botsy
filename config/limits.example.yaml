@@ -1,0 +1,51 @@
+# Botsy's admin-only limits (docs/OVERSEER.md "Four permission levels" and Part A4).
+#
+# On the server this file lives at /etc/botsy/limits.yaml, owned by root, mode 0644
+# (settings control.limits_path). setup.sh copies this example there only when no file
+# exists, and never overwrites it. Change it with:
+#   sudo nano /etc/botsy/limits.yaml
+# Botsy and Hermes can read it but never write it. Botsy reads it again on every order.
+#
+# If the file is missing, cannot be read, has a wrong value, or could be changed by
+# someone other than root, Botsy fails closed: Level 2 changes (plans, holds released,
+# small settings), scale-ups and cap raises are refused until it is fixed. Pausing,
+# cancelling, holding and lowering the cap still work, and so do all reads.
+# Keys you leave out use the values shown here.
+schema: limits/v1
+
+# --- Hermes's small changes (Level 2) ---
+changes_per_hour: 20          # Level 2 changes Hermes may make in any 60 minutes
+page_redos_per_week: 10       # pages Hermes may send back for a redo per ISO week
+run_now_per_day: 3            # extra checks Hermes may start per day
+
+# --- Money ---
+cap_ceiling_usd: 100          # the monthly spending cap can never be raised above this (whoever asks)
+
+# --- Level 3 approvals (no codes, decided 2026-10-21) and batches ---
+level3_per_day: 10            # approvals that used to need a code (review approvals, raise_cap, resume after a
+                              # budget stop, approving a waiting weekly plan, switching plans to automatic), in 24 hours
+approve_batch_max: 20         # review items one batch approval may approve
+search_ideas_per_week: 5      # search ideas Hermes may add per ISO week (marked "exploratory")
+
+# --- Weekly plan (Part B4) ---
+plan:
+  max_cost_share_auto: 1.0    # user, 2026-10-21: no cost gate on automatic plans (money left still limits every plan)
+
+# --- Scale-ups, "more of this" (Part A). Off until there are winners (about 20 listings live 30 days). ---
+scale_up:
+  enabled: false
+  packs_per_week: 3
+  max_share: 0.30             # at most max(1, floor(0.30 x the week's packs))
+  min_new_share: 0.50         # at least half of each week's packs are themes new to the shop
+  monthly_usd: 6              # scale-ups spend at most this much a month, inside the cap
+  per_theme_open: 1           # one open scale-up per theme; the next waits for its verdict
+  per_theme_max_listings: 8   # listings of one theme, across all niches and sizes
+  auto_stop_failures: 2       # this many failed scale-ups ...
+  auto_stop_days: 60          # ... within this many days stop all scale-ups (resuming needs your approval)
+
+# --- "Botsy has room" (the capacity check, Part A3) ---
+capacity:
+  max_review_queue: 30        # items waiting in Botsy's review queue
+  max_waiting_drafts: 40      # Etsy drafts waiting for you to publish
+  min_etsy_quota_share: 0.30  # share of Etsy's daily request quota that must be left
+  min_disk_free_mb: 2000      # free disk space for Botsy's data and output

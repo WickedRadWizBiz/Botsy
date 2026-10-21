@@ -26,6 +26,13 @@ def read_status(item_id: str, review_dir: str | Path) -> str | None:
 
 def flag(item_id: str, niche: str | None, reasons: list[str], mockups: list[str], review_dir: str | Path) -> dict:
     """Add listing review reasons to the item's queue entry (creating it if needed)."""
+    from qa.review import queue_lock
+
+    with queue_lock(review_dir):
+        return _flag(item_id, niche, reasons, mockups, review_dir)
+
+
+def _flag(item_id: str, niche: str | None, reasons: list[str], mockups: list[str], review_dir: str | Path) -> dict:
     p = review_entry_path(item_id, review_dir)
     entry = read_json(p) if p.exists() else {
         "item_id": item_id, "niche": niche, "status": "pending", "needs_review": True,

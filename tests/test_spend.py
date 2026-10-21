@@ -30,8 +30,13 @@ def ledger(tmp_path):
 
 
 @pytest.fixture
-def settings(ledger) -> dict:
-    return {"spend": {"ledger_file": str(ledger), "monthly_cap_usd": None, "warn_at": 0.8}}
+def settings(ledger, tmp_path) -> dict:
+    # The cap in force comes from service.orders.effective_cap: the control state and the
+    # admin's limits file (missing here, so the shipped $100 ceiling applies) live in tmp_path.
+    return {"spend": {"ledger_file": str(ledger), "monthly_cap_usd": None, "warn_at": 0.8},
+            "control": {"state_file": str(tmp_path / "control" / "state.json"),
+                        "orders_dir": str(tmp_path / "orders"),
+                        "limits_path": str(tmp_path / "limits.yaml"), "limits_require_root": False}}
 
 
 def lines(path) -> list[dict]:
@@ -335,9 +340,29 @@ def test_cap_resets_next_month_or_when_raised(settings):
     spend.check_budget("text", settings, now=OCT)
 
 
-def test_cap_written_as_text(settings):
+def test_cap_written_as_text(settings, tmp_path):
     settings["spend"]["monthly_cap_usd"] = "$1,000"
+    # Without the admin's limits file the shipped $100 ceiling bounds any settings cap.
+    assert spend.budget_state(settings, now=OCT)["cap"] == 100.0
+    (tmp_path / "limits.yaml").write_text("schema: limits/v1\ncap_ceiling_usd: 2000\n", encoding="utf-8")
     assert spend.budget_state(settings, now=OCT)["cap"] == 1000.0
+
+
+def test_the_cap_in_force_comes_from_a_cap_order(settings, tmp_path):
+    import json
+
+    settings["spend"]["monthly_cap_usd"] = 25
+    spend_dollars(settings, 6.0, now=OCT)
+    state = tmp_path / "control" / "state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({"schema": "control/v1", "paused": None, "cap_override_usd": 5.0,
+                                 "cap_changed": {"by": "user", "order_id": "lc-20261021-0001"},
+                                 "budget_stop": None}), encoding="utf-8")
+    b = spend.budget_state(settings, now=OCT)
+    assert b["cap"] == 5.0 and b["reached"] and b["pct"] == 1.2
+    with pytest.raises(BudgetExceeded):
+        spend.check_budget("text", settings, now=OCT)
+    assert "cap set by order lc-20261021-0001" in spend.table(settings, month="2026-10")
 
 
 @pytest.mark.parametrize("cap", ["twenty", -5, True, float("nan"), [10]])
