@@ -1,0 +1,16 @@
+# Daily: is the Hermes lock still in place? Runs deploy/hermes/check_lock.py with the full
+# check, including asking the installed Hermes itself which tools each place gets (--probe).
+# On any problem, or if the check cannot finish, it stops hermes-gateway.service and the journal
+# lists why:
+#     journalctl -u botsy-hermes-lock.service -n 50
+[Unit]
+Description=Botsy: check the Hermes lock (and stop Hermes if it is broken)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/botsy-hermes/check_lock.py check --probe --stop hermes-gateway.service
+# Fail closed: if the check could not finish at all (crashed, killed, timed out, python missing),
+# Hermes is stopped too. A passing check leaves it as it is.
+ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || /usr/bin/systemctl stop --no-block hermes-gateway.service'
+TimeoutStartSec=15min
+Nice=10

@@ -1,0 +1,92 @@
+# Hermes Agent for Botsy: the Discord gateway, locked to Botsy's two tool servers
+# (deploy/hermes/README.md, docs/OVERSEER.md "Hermes setup"). Installed by install_hermes.sh as
+# /etc/systemd/system/hermes-gateway.service; check_lock.py refuses any other copy and any
+# drop-in it did not write.
+#
+# Why NoNewPrivileges=yes works here: Hermes never uses sudo. Its two MCP servers are
+# /usr/local/bin/botsy-control-connect read|act, which only connect to the sockets in
+# /run/botsy-control/ (botsy-control-read.socket, botsy-control-act.socket, root:hermes 0660);
+# systemd itself starts botsy-control as the botsy user in a separate sandbox. So this service can
+# drop every capability, block setuid, filter system calls and hide Botsy's folders entirely.
+# (install_hermes.sh --bridge sudo is the fallback: it adds hermes-gateway.service.d/sudo-bridge.conf,
+# which has to relax exactly the settings that would stop sudo.)
+[Unit]
+Description=Hermes Agent for Botsy (Discord, Botsy tools only)
+Documentation=file:/usr/local/lib/botsy-hermes/README.md
+After=network-online.target botsy-control-read.socket botsy-control-act.socket
+Wants=network-online.target botsy-control-read.socket botsy-control-act.socket
+# Stop restarting after 10 failed starts in 10 minutes (a broken lock, a bad token).
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+# An empty root-owned folder: Hermes loads no AGENTS.md, CLAUDE.md or .hermes.md from here.
+WorkingDirectory=/opt/hermes/work
+# Secrets (Anthropic key, bot token) and your two Discord IDs. Root-owned, 0640 root:hermes.
+EnvironmentFile=/etc/hermes/hermes.env
+Environment=HOME=/home/hermes
+Environment=HERMES_HOME=/home/hermes/.hermes
+# The managed scope: /etc/hermes/config.yaml and /etc/hermes/.env win over everything else.
+Environment=HERMES_MANAGED_DIR=/etc/hermes
+# Gateway lock records live on /run, which is empty after every boot: works around the
+# stale-PID "gateway refuses to start after a reboot" bug fixed only in v0.22.2.
+Environment=HERMES_GATEWAY_LOCK_DIR=/run/hermes/gateway-locks
+Environment=HERMES_SUPERVISED_CHILD=1
+Environment=PATH=/opt/hermes/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Refuse to start if the lock is not in place ("+": runs as root, outside the sandbox).
+ExecStartPre=+/usr/bin/python3 -I /usr/local/lib/botsy-hermes/check_lock.py check --quick
+ExecStart=/opt/hermes/venv/bin/hermes gateway run
+Restart=on-failure
+RestartSec=10
+# Hermes's own exit codes: 75 = restart me, 78 = fatal config error (do not loop).
+RestartForceExitStatus=75
+SuccessExitStatus=75
+RestartPreventExitStatus=78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=90
+RuntimeDirectory=hermes
+RuntimeDirectoryMode=0700
+UMask=0077
+# Memory: measure first (README "Memory"). Hermes sizes its own caches from this limit.
+MemoryHigh=1200M
+MemoryMax=1536M
+TasksMax=256
+
+# Hardening. The file system is read-only except the hermes home; Botsy's folders do not exist
+# for this service; no capabilities, no setuid, no new namespaces, a system-call allowlist.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/hermes
+ReadWritePaths=/home/hermes
+InaccessiblePaths=-/opt/botsy -/etc/botsy -/srv/botsy-inbox -/home/botsy -/usr/local/lib/botsy -/usr/local/lib/botsy-hermes -/root
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+KeyringMode=private
+RemoveIPC=yes
+
+[Install]
+WantedBy=multi-user.target

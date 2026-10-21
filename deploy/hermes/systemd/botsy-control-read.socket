@@ -1,0 +1,20 @@
+# botsy-control read tools for Hermes: a Unix socket only root and the hermes group may open.
+# Each connection starts botsy-control-read@.service (Accept=yes), which runs
+# /usr/local/bin/botsy-control-read as the botsy user. Hermes reaches it through
+# /usr/local/bin/botsy-control-connect read (deploy/hermes/README.md "How Hermes reaches Botsy").
+[Unit]
+Description=Botsy: botsy-control read tools for Hermes (socket)
+
+[Socket]
+ListenStream=/run/botsy-control/read.sock
+SocketUser=root
+SocketGroup=hermes
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=4
+MaxConnectionsPerSource=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

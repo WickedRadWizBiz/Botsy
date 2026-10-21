@@ -1,0 +1,12 @@
+# Daily at 5:41 am New York time, and 10 minutes after boot.
+[Unit]
+Description=Botsy: daily Hermes lock check
+
+[Timer]
+OnCalendar=*-*-* 05:41:00 America/New_York
+OnBootSec=10min
+Persistent=true
+Unit=botsy-hermes-lock.service
+
+[Install]
+WantedBy=timers.target

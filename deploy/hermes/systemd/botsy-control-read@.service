@@ -1,0 +1,40 @@
+# One botsy-control read session for Hermes (started by botsy-control-read.socket). The program
+# is the same root-owned wrapper the sudo rule names; it checks it runs as botsy and takes no
+# argument. Reads only: no network at all.
+[Unit]
+Description=Botsy: botsy-control read tools for Hermes (one session)
+CollectMode=inactive-or-failed
+
+[Service]
+Type=simple
+User=botsy
+Group=botsy
+ExecStart=/usr/local/bin/botsy-control-read
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+UMask=0027
+NoNewPrivileges=yes
+# Read-only file system except Botsy's own records (events, orders, journal).
+ProtectSystem=strict
+ReadWritePaths=/opt/botsy
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+InaccessiblePaths=-/etc/hermes -/home/hermes
+MemoryMax=512M
+TasksMax=64

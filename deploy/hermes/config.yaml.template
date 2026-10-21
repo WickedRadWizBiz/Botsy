@@ -1,0 +1,219 @@
+# Botsy's locked Hermes Agent settings (docs/OVERSEER.md "Lock-down: three layers" and
+# "Hermes setup"). Written for the pinned Hermes Agent v0.21.7 (deploy/hermes/hermes-pin.env,
+# config schema 50). Every key name was read in that version's own code
+# (hermes_cli/config_defaults.py, hermes_cli/tools_config.py, hermes_cli/managed_scope.py,
+# tools/mcp_tool_server_run.py, plugins/platforms/discord/adapter.py, gateway/config_loader.py),
+# and check_lock.py --probe asks the installed Hermes itself what this file turns on.
+#
+# install_hermes.sh renders this file twice, root-owned, with the same content:
+#   /etc/hermes/config.yaml           Hermes's "managed scope": it wins, key by key, over the
+#                                     hermes user's own config, its .env and its environment.
+#   /home/hermes/.hermes/config.yaml  the hermes user's config, read-only to it.
+# check_lock.py refuses a copy that differs from this template, a forbidden toolset, an extra MCP
+# server, sampling or elicitation on, memory or skill approval off, an empty allowlist, a file the
+# hermes user can write, or a version other than the pin. Do not edit the rendered files by hand:
+# edit this template, then run  sudo bash install_hermes.sh  again.
+#
+# Placeholders (filled from /etc/hermes/hermes.env by check_lock.py render; a rendered file that
+# still has one is refused):
+#   __DISCORD_ALLOWED_USER_ID__   your Discord user ID (the only person Hermes answers)
+# With install_hermes.sh --bridge sudo, the two "command:" and "args:" lines of mcp_servers are
+# rendered as  /usr/bin/sudo -n -u botsy /usr/local/bin/botsy-control-read  (and -act) instead.
+
+_config_version: 50
+timezone: America/New_York
+
+# ------------------------------------------------------------------ model and money
+# Hermes's own Anthropic key (ANTHROPIC_API_KEY in /etc/hermes/hermes.env) belongs to a SEPARATE
+# Anthropic workspace with a $5 monthly spend limit, set in the Anthropic Console. That limit is the
+# real money guard: nothing in this file can stop a model switch inside a chat (/model) from
+# costing more. No fallback providers, so a failed call never moves to another paid provider.
+model:
+  provider: anthropic
+  default: claude-haiku-5-5
+fallback_providers: []
+
+# Haiku 5.5 charges 5x for prompts over 100,000 tokens, and cache reads count toward that, so the
+# chat history is compressed at about 60,000 tokens.
+compression:
+  enabled: true
+  threshold_tokens: 60000
+
+# Background extras that each cost a model call: off.
+auxiliary:
+  background_review:
+    enabled: false          # the post-turn "self-improvement" fork that replays the whole chat
+  title_generation:
+    enabled: false
+    model_upgrade_enabled: false
+curator:
+  enabled: false            # background skill maintenance
+
+# ------------------------------------------------------------------ tools: Botsy's only
+# Every place Hermes runs the model (Discord chat, scheduled jobs, the command line, webhooks,
+# the API server) gets exactly the two Botsy tool servers plus the memory tool. Naming the MCP
+# servers in the list makes it an allowlist: any other MCP server would stay off.
+toolsets: [botsy-read, botsy-act, memory]
+platform_toolsets:
+  discord: [botsy-read, botsy-act, memory]
+  cron: [botsy-read, botsy-act, memory]
+  cli: [botsy-read, botsy-act, memory]
+  webhook: [botsy-read, botsy-act, memory]
+  api_server: [botsy-read, botsy-act, memory]
+
+agent:
+  # Applied LAST, after every list above, by Hermes's own resolver: these stay off whatever any
+  # other setting, adapter or update says. Everything that touches the machine, the web, other
+  # agents, schedules, Discord administration or paid media.
+  disabled_toolsets:
+    - terminal
+    - file
+    - web
+    - search
+    - browser
+    - delegation
+    - cronjob
+    - code_execution
+    - discord
+    - discord_admin
+    - computer_use
+    - vision
+    - video
+    - image_gen
+    - video_gen
+    - tts
+    - x_search
+    - kanban
+    - connections
+    - catalog
+    - project
+    - desktop_ui
+    - session_search
+    - skills
+    - todo
+    - yuanbao
+    - feishu_doc
+    - feishu_drive
+
+# The two Botsy tool servers. botsy-control-connect links Hermes's stdio to Botsy's socket in
+# /run/botsy-control/; systemd starts botsy-control there as the botsy user, so the hermes user
+# needs no sudo. No environment is passed, no resources or prompts are offered, and the servers
+# may never ask Hermes's model for anything (sampling) or ask you through Hermes (elicitation).
+mcp_servers:
+  botsy-read:
+    command: /usr/local/bin/botsy-control-connect
+    args: ["read"]
+    env: {}
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
+    supports_parallel_tool_calls: false
+    trust: full
+    tools:
+      resources: false
+      prompts: false
+    sampling:
+      enabled: false
+    elicitation:
+      enabled: false
+  botsy-act:
+    command: /usr/local/bin/botsy-control-connect
+    args: ["act"]
+    env: {}
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
+    supports_parallel_tool_calls: false
+    # Decided 2026-10-21: no codes. "untrusted" makes Hermes itself hold every Botsy action
+    # (orders, approvals, pause, cap changes) until you click Allow on its approval prompt in
+    # Discord; only your allowlisted user ID can click, and a scheduled job is always declined.
+    # This check does not depend on what the model decides. Read tools stay "full" (no click).
+    trust: untrusted
+    tools:
+      resources: false
+      prompts: false
+    sampling:
+      enabled: false
+    elicitation:
+      enabled: false
+
+# ------------------------------------------------------------------ memory and skills
+# Hermes's own memory (about 3,600 characters) saves only after you approve each write in chat.
+# Skills are off (see disabled_toolsets); if you ever turn them on, every change still waits for
+# your approval.
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: true
+  provider: ""
+skills:
+  write_approval: true
+  external_dirs: []
+  project_discovery: false
+  trusted_project_dirs: []
+  auto_load: []
+  inline_shell: false
+  guard_agent_created: true
+
+# ------------------------------------------------------------------ scheduled jobs
+# Only you create scheduled jobs, from the server (sudo -u hermes ...), never Hermes itself, and
+# each one runs on this model.
+cron:
+  allow_agent_scheduling: false
+  catch_up_missed: false
+  provider: anthropic
+  model: claude-haiku-5-5
+
+approvals:
+  mode: manual
+  cron_mode: deny
+  single_query_mode: deny
+  unattended_mode: deny
+  destructive_slash_confirm: true
+  mcp_reload_confirm: true
+
+# ------------------------------------------------------------------ Discord
+# Only your user ID, never a role. Hermes answers only when mentioned in a server channel (DMs
+# from you work). Decided 2026-10-21: no codes, so there is no #botsy-codes channel to ignore;
+# what you approve through Hermes is posted at once by Botsy to the main channel instead.
+discord:
+  allow_from: ["__DISCORD_ALLOWED_USER_ID__"]
+  allow_all_users: false
+  allowed_roles: ""
+  ignored_channels: []
+  require_mention: true
+  # Slash commands. Without an admin list Hermes lets every allowed user run every slash command,
+  # including /model (a pricier model for the session), /yolo, /cron, /loop, /heartbeat, /goal,
+  # /bg, /moa and /tools (checked in v0.21.7 gateway/slash_access.py). "0" is no Discord account,
+  # so nobody is an admin and you keep only the commands listed below, plus /help and /whoami.
+  # /memory is there so you can approve or reject Hermes's pending memory writes.
+  allow_admin_from: ["0"]
+  group_allow_admin_from: ["0"]
+  user_allowed_commands: [new, retry, status, stop, compress, memory]
+  group_user_allowed_commands: [new, retry, status, stop, compress, memory]
+  history_backfill: false
+  missed_message_backfill:
+    enabled: false
+  reactions: true
+gateway:
+  allow_all_users: false
+  unauthorized_dm_behavior: ignore
+
+# ------------------------------------------------------------------ no add-ons, no self-updates
+plugins:
+  enabled: []
+  auto_apply: false
+  auto_update_check_hours: 0
+hooks: {}
+hooks_auto_accept: false
+quick_commands: {}
+updates:
+  check: false
+telemetry:
+  shared_metrics:
+    enabled: false
+    send: false
+security:
+  allow_lazy_installs: false
+  allow_private_urls: false
+  redact_secrets: true

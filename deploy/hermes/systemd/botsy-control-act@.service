@@ -1,0 +1,39 @@
+# One botsy-control act session for Hermes (started by botsy-control-act.socket). Orders: it
+# needs the network only to post each approval at once to the main channel through Botsy's
+# Discord webhook (decided 2026-10-21: no codes).
+[Unit]
+Description=Botsy: botsy-control act tools for Hermes (one session)
+CollectMode=inactive-or-failed
+
+[Service]
+Type=simple
+User=botsy
+Group=botsy
+ExecStart=/usr/local/bin/botsy-control-act
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+UMask=0027
+NoNewPrivileges=yes
+# Read-only file system except Botsy's own records (events, orders, journal, the status outbox).
+ProtectSystem=strict
+ReadWritePaths=/opt/botsy -/srv/botsy-inbox/outbox
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+InaccessiblePaths=-/etc/hermes -/home/hermes
+MemoryMax=512M
+TasksMax=64

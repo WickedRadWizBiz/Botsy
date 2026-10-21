@@ -1,0 +1,19 @@
+# Optional (install_hermes.sh --firewall): the hermes user may reach only Anthropic's API and
+# Discord, so "no web" holds even if a Hermes setting fails. Loads its own nftables table
+# (inet botsy_hermes) and leaves every other rule on the server alone. The Discord addresses are
+# looked up by botsy-hermes-resolve every 10 minutes (botsy-hermes-resolve.timer).
+[Unit]
+Description=Botsy: egress limit for the hermes user (Anthropic and Discord only)
+Before=hermes-gateway.service
+After=network-pre.target nss-lookup.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/local/lib/botsy-hermes/nftables-hermes.conf
+ExecStartPost=-/usr/bin/python3 -I /usr/local/lib/botsy-hermes/botsy-hermes-resolve
+ExecStop=-/usr/sbin/nft delete table inet botsy_hermes
+
+[Install]
+WantedBy=multi-user.target

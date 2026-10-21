@@ -1,0 +1,9 @@
+# Refresh the Discord and Anthropic addresses the hermes user may reach (only with --firewall).
+[Unit]
+Description=Botsy: refresh the hermes egress address sets
+Requisite=botsy-hermes-firewall.service
+After=botsy-hermes-firewall.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/botsy-hermes/botsy-hermes-resolve

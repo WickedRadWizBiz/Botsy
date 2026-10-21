@@ -1,0 +1,10 @@
+[Unit]
+Description=Botsy: refresh the hermes egress address sets every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=botsy-hermes-resolve.service
+
+[Install]
+WantedBy=timers.target

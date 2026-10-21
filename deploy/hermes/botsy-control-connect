@@ -1,0 +1,80 @@
+#!/usr/bin/python3 -IS
+"""botsy-control-connect read|act: Hermes's stdio link to one botsy-control MCP server.
+
+Installed root-owned, mode 755, as /usr/local/bin/botsy-control-connect by
+deploy/hermes/install_hermes.sh (docs/OVERSEER.md "Hermes setup"). Hermes starts it as an MCP
+stdio server (config.yaml mcp_servers.botsy-read / botsy-act). It connects to Botsy's socket
+
+    read -> /run/botsy-control/read.sock    act -> /run/botsy-control/act.sock
+
+and copies bytes both ways, nothing else. systemd owns those sockets (botsy-control-read.socket,
+botsy-control-act.socket: root:hermes 0660) and starts, for each connection, a fresh
+/usr/local/bin/botsy-control-read or -act as the botsy user in its own sandbox. So the hermes
+user needs no sudo at all, and the Hermes service keeps NoNewPrivileges=yes and its seccomp
+filter. All checks stay inside botsy-control; this program reads no file, takes no other
+argument, ignores the environment and logs nothing but one line on stderr when the socket is
+missing (exit 69). Exit codes: 0 when either side closes, 64 on a wrong argument.
+"""
+import os
+import socket
+import sys
+import threading
+
+SOCKETS = {"read": "/run/botsy-control/read.sock", "act": "/run/botsy-control/act.sock"}
+USAGE = "usage: botsy-control-connect read|act"
+CHUNK = 65536
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view):]
+
+
+def _stdin_to_socket(sock: socket.socket, fd_in: int) -> None:
+    try:
+        while True:
+            data = os.read(fd_in, CHUNK)
+            if not data:
+                break
+            sock.sendall(data)
+    except OSError:
+        pass
+    try:
+        sock.shutdown(socket.SHUT_WR)       # Hermes closed our stdin: botsy-control sees EOF
+    except OSError:
+        pass
+
+
+def run(name: str, *, sockets: dict = SOCKETS, fd_in: int = 0, fd_out: int = 1) -> int:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(sockets[name])
+    except OSError as e:
+        sock.close()
+        print(f"botsy-control-connect: botsy-control {name} is not available "
+              f"({type(e).__name__}); is botsy-control-{name}.socket running?", file=sys.stderr)
+        return 69
+    threading.Thread(target=_stdin_to_socket, args=(sock, fd_in), daemon=True).start()
+    try:
+        while True:
+            data = sock.recv(CHUNK)
+            if not data:
+                return 0                    # botsy-control ended the session
+            _write_all(fd_out, data)
+    except (BrokenPipeError, ConnectionResetError):
+        return 0
+    finally:
+        sock.close()
+
+
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if len(argv) != 1 or argv[0] not in SOCKETS:
+        print(USAGE, file=sys.stderr)
+        return 64
+    return run(argv[0])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
