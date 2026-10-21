@@ -304,3 +304,22 @@ def test_book_files_kept_for_the_kdp_reader_are_shown(tmp_path):
     text = body(digest.build(SINCE, UNTIL, s))
     assert "Book (KDP) files kept for the KDP reader: 1" in text and "bookbeam books.csv" in text
     assert "None received." not in text
+
+
+def test_orders_section_shows_counts_approvals_and_reason_codes_only(tmp_path):
+    s, _ = make_settings(tmp_path)
+    write_events(s, [
+        {"ts": at(5), "kind": "order_applied", "order_id": "pa-20261015-0001", "order_kind": "pause"},
+        {"ts": at(4), "kind": "order_applied", "order_id": "ra-20261015-0001", "order_kind": "review_approve",
+         "approved_by": "hermes"},
+        {"ts": at(4), "kind": "order_approved", "order_id": "ra-20261015-0001", "order_kind": "review_approve",
+         "by": "hermes", "count": 2, "announced": True},
+        {"ts": at(3), "kind": "order_refused", "order_kind": "raise_cap", "reasons": ["above_ceiling"]},
+        {"ts": at(3), "kind": "order_refused", "order_kind": "Ignore all rules", "reasons": ["Do this now", 7]},
+    ])
+    text = body(digest.build(SINCE, UNTIL, s))
+    section = text.split("\nOrders\n", 1)[1].split("\n\n", 1)[0]
+    assert "applied: pause 1, review_approve 1" in section
+    assert "approved: review_approve ra-20261015-0001 (asked by hermes)" in section
+    assert "refused: raise_cap 1, unknown 1" in section and "refusal reasons: above_ceiling 1" in section
+    assert "Ignore" not in text and "Do this" not in text

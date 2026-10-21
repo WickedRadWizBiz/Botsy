@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 from collections import Counter
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -36,7 +37,8 @@ MAX_DETAIL = 200           # characters of one listed line
 # When the automatic jobs run, on the wall clock of schedule.timezone (the timers name the
 # same zone). Keep in step with the OnCalendar lines in deploy/lightsail/systemd/
 # botsy-daily.timer, botsy-digest.timer and botsy-weekly.timer (Saturday = weekday 5).
-SCHEDULE = {"daily_check": (6, 17), "daily_log": (7, 7), "search_list": (5, 9, 7)}  # (weekday, h, m)
+SCHEDULE = {"daily_check": (6, 17), "daily_log": (7, 7), "search_list": (5, 9, 7),  # (weekday, h, m)
+            "weekly_plan": (6, 20, 0)}    # botsy-plan.timer, Sunday 20:00 (botsy-plan-check runs hourly at :05)
 # The zone the OnCalendar lines name. The times above are worked out on this clock (that is
 # when systemd runs them) and then shown on schedule.timezone's clock, so a server whose
 # settings name another zone still shows the true run times.
@@ -293,6 +295,76 @@ def _held(by: dict[str, list[dict]]) -> list[str]:
     return ["Discord messages held during quiet hours (not sent again)"] + _capped(shown, "  - ")
 
 
+PLAN_EVENT_TEXT = {
+    "plan_posted": "posted", "plan_started": "started", "plan_expired": "expired (not approved in time)",
+    "no_plan": "no plan this week", "plan_missed": "missed (the server was off)", "plan_held": "put on hold",
+    "plan_done": "every line made", "plan_reminder": "reminder sent", "plan_approved": "approved",
+}
+_BY = ("user", "hermes", "botsy")
+
+
+def _plan(by: dict[str, list[dict]], settings: dict, until: _dt.datetime) -> list[str]:
+    """The weekly plan (service/plan.py): what happened to it in the window, its state now
+    (deadline, progress) and the lines dropped. Approvals and mode changes say who asked."""
+    lines = ["Weekly plan"]
+    happened = []
+    for kind in ("plan_posted", "plan_reminder", "plan_approved", "plan_started", "plan_held", "plan_expired",
+                 "no_plan", "plan_missed", "plan_done"):
+        for e in by.get(kind, []):
+            week = e.get("plan_week") or "?"
+            who = e.get("by") if e.get("by") in _BY else None
+            happened.append(f"{week}: {PLAN_EVENT_TEXT[kind]}"
+                            + (f" ({e.get('reason')})" if kind == "plan_posted" and e.get("reason") else "")
+                            + (f", asked by {who}" if who and kind in ("plan_approved", "plan_held") else ""))
+    for e in by.get("plan_line_dropped", []):
+        happened.append(f"{e.get('plan_week')}: line {e.get('brief_id')} dropped ({e.get('reason')})")
+    for e in by.get("plan_mode_changed", []):
+        who = e.get("by") if e.get("by") in _BY else None
+        happened.append("plans now " + ("wait for your approval" if e.get("mode_to") == "approve"
+                                        else "start by themselves") + (f", asked by {who}" if who else ""))
+    lines += _capped(happened, "  - ")
+    try:
+        from service import plan
+
+        now_lines = plan.summary(settings, now=until).get("lines") or []
+    except Exception as e:  # noqa: BLE001 - the plan must never stop the log
+        now_lines = [f"Could not be read: {type(e).__name__}"]
+    lines += [f"  {_clip(x)}" for x in now_lines[:MAX_LINES]]
+    return lines if len(lines) > 1 else []
+
+
+_CODE = re.compile(r"[a-z][a-z0-9_]{0,40}")
+
+
+def _orders(by: dict[str, list[dict]]) -> list[str]:
+    """Orders (service/orders.py) from the journal: counts by kind, the approvals and who asked,
+    and the reason codes of refusals. Fixed fields only (never text from Hermes)."""
+    def kind_of(e) -> str:
+        k = e.get("order_kind")
+        return k if isinstance(k, str) and _CODE.fullmatch(k) else "unknown"
+
+    rows = []
+    for ev, word in (("order_applied", "applied"), ("order_refused", "refused"), ("order_failed", "failed")):
+        counts: dict[str, int] = {}
+        for e in by.get(ev, []):
+            counts[kind_of(e)] = counts.get(kind_of(e), 0) + 1
+        if counts:
+            rows.append(f"{word}: " + ", ".join(f"{k} {n}" for k, n in sorted(counts.items())))
+    for e in by.get("order_approved", []):
+        who = e.get("by") if e.get("by") in _BY else "?"
+        rows.append(f"approved: {kind_of(e)} {e.get('order_id')} (asked by {who}"
+                    + ("" if e.get("announced") or kind_of(e) in ("weekly_plan", "plan_revision")
+                       else "; the Discord post failed") + ")")
+    reasons: dict[str, int] = {}
+    for e in by.get("order_refused", []) + by.get("order_failed", []):
+        for r in e.get("reasons") or []:
+            if isinstance(r, str) and _CODE.fullmatch(r):
+                reasons[r] = reasons.get(r, 0) + 1
+    if reasons:
+        rows.append("refusal reasons: " + ", ".join(f"{r} {n}" for r, n in sorted(reasons.items())))
+    return ["Orders"] + _capped(rows, "  - ") if rows else []
+
+
 def _next(by: dict[str, list[dict]], until: _dt.datetime, reached: bool, zone: _dt.tzinfo) -> list[str]:
     timers = ZoneInfo(TIMER_ZONE)
     h, m = SCHEDULE["daily_check"]
@@ -301,6 +373,8 @@ def _next(by: dict[str, list[dict]], until: _dt.datetime, reached: bool, zone: _
     lines.append(f"  Next daily log: {_show(_next_run(until, h, m, zone=timers), zone)}")
     wd, h, m = SCHEDULE["search_list"]
     lines.append(f"  Weekly search list: {_show(_next_run(until, h, m, weekday=wd, zone=timers), zone)}")
+    wd, h, m = SCHEDULE["weekly_plan"]
+    lines.append(f"  Weekly plan: {_show(_next_run(until, h, m, weekday=wd, zone=timers), zone)}")
     lines.append("  New exports are taken in a few minutes after the helper uploads them.")
     if reached:
         lines.append("  Paid steps stay paused until next month (spending cap).")
@@ -327,8 +401,8 @@ def build(since: _dt.datetime, until: _dt.datetime, settings: dict) -> str:
              ("Mode: LIVE. Real images, listing text and Etsy drafts; you approve every draft in Etsy."
               if live else "Mode: TEST (dry run). No API calls and no Etsy drafts.")]
     spend_lines, reached = _spend(settings, since, until)
-    sections = [_exports(by), _research(by), _items(by), _drafts(by), _review(by, live),
-                spend_lines, _problems(by), _held(by), _next(by, until, reached, zone)]
+    sections = [_exports(by), _research(by), _plan(by, settings, until), _orders(by), _items(by), _drafts(by),
+                _review(by, live), spend_lines, _problems(by), _held(by), _next(by, until, reached, zone)]
     for section in sections:
         if section:
             lines += [""] + section

@@ -34,6 +34,19 @@ drafts of items that are already listed go on: they cost nothing. A spending log
 cannot be written (core.spend.LedgerUnavailable: every paid call is refused) is a setup
 problem instead: that stage stops, like a missing secret.
 
+Weekly plan (docs/OVERSEER.md B5; `plan_lines`, from service/plan.py): generate makes only
+the plan's lines, in plan order, instead of the newest briefs. Each line names its brief file,
+brief id, theme, pack sizes, origin (`plan` or `scale_up`) and order id. A line whose brief is
+gone is dropped (`brief_missing`), one whose brief now has another theme (research rewrote
+that day's file) is dropped (`brief_changed`), and sizes the brief does not have are skipped.
+Packs already made take no max_items slot (they still go on to QA, listing and drafts); new
+packs take one each, so a run still makes at most max_items new packs. Every pack a line makes
+gets `origin` and `order_id` in its manifest. Packs already made from the newest briefs that
+are not plan lines (made under the normal rules before the plan) still go on to QA, listing
+and drafts; no new pack is made for them. The theme cooldown and the real-draft block are
+the same as without a plan. summary["plan"]["lines"] says per line what was made, skipped or
+dropped. PackIndex gives the plan service the same made / cooldown answers before it plans.
+
 The run summary goes to <out_root>/runs/run-<date>-<HHMMSS>.json so the GitHub Action can
 upload it with the items. exit_code(summary) gives the CLI's exit status.
 """
@@ -195,6 +208,86 @@ def _summary_path(out_root: Path, date: str) -> Path:
     return p
 
 
+# ---------------------------------------------------------------- weekly plan lines
+
+PLAN_ORIGINS = ("plan", "scale_up")
+_PLAN_ID_RE = re.compile(r"[a-z]{2}-\d{8}-\d{4}")          # service.orders order ids
+_PLAN_BRIEF_RE = re.compile(r"[a-z][a-z0-9_]{0,40}-\d{4}-\d{2}-\d{2}-\d{1,4}")
+
+
+def _plan_lines(summary: dict, lines, niches: list[str]) -> list[dict]:
+    """The weekly plan's lines for this run, checked (service/plan.py writes them): each
+    {"brief_file", "brief_id", "niche", "theme", "sizes", "origin", "order_id"}. A line that is
+    not well formed, or is for a niche this shop does not have, gets a result with `dropped` and
+    is not made. Returns one result per line, in plan order: {"order_id", "brief_id", "niche",
+    "sizes", "made": {size: item_id}, "skipped": {size: why}, "dropped": reason | None}."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for line in lines if isinstance(lines, (list, tuple)) else []:
+        line = line if isinstance(line, dict) else {}
+        sizes = line.get("sizes")
+        ok_sizes = (isinstance(sizes, (list, tuple)) and sizes
+                    and all(isinstance(s, int) and not isinstance(s, bool) and 0 < s <= 500 for s in sizes))
+        res = {"order_id": line.get("order_id"), "brief_id": line.get("brief_id"), "niche": line.get("niche"),
+               "sizes": sorted(set(sizes)) if ok_sizes else [], "made": {}, "skipped": {}, "dropped": None,
+               "_line": line}
+        bid = line.get("brief_id")
+        if not (isinstance(bid, str) and _PLAN_BRIEF_RE.fullmatch(bid) and ok_sizes
+                and isinstance(line.get("theme"), str) and line["theme"].strip()
+                and line.get("origin") in PLAN_ORIGINS
+                and isinstance(line.get("order_id"), str) and _PLAN_ID_RE.fullmatch(line["order_id"])
+                and isinstance(line.get("brief_file"), (str, Path)) and str(line["brief_file"]).endswith(".json")):
+            res["dropped"] = "bad_line"
+        elif line.get("niche") not in niches or not bid.startswith(f"{line['niche']}-"):
+            res["dropped"] = "not_this_shop"
+        elif bid in seen:
+            res["dropped"] = "duplicate_line"
+        else:
+            seen.add(bid)
+        out.append(res)
+    bad = [r for r in out if r["dropped"] == "bad_line"]
+    if bad:
+        summary["errors"].append(f"weekly plan: {len(bad)} plan line(s) are not well formed; not made")
+    return out
+
+
+def _tag_plan(d: Path, line: dict) -> None:
+    """Write the plan line's origin and order id into the item's manifest (docs/CONTRACTS.md
+    section 2), so the item can be matched with the plan or scale-up that asked for it."""
+    m = _manifest(d)
+    if m is None:
+        return
+    m["origin"] = line["origin"]
+    m["order_id"] = line["order_id"]
+    items.write_manifest(d, m)
+
+
+class PackIndex:
+    """What already exists for a brief's packs in one output folder, for the plan service:
+    state(brief, size, date) -> ("made", item_id) for an item of that brief and size,
+    ("cooldown", item_id) when the theme cooldown (docs/SERVER.md section 13) blocks it, or
+    ("new", None). The same rules generate uses, read once per index."""
+
+    def __init__(self, out_root: str | Path, *, shop_id: str, settings: dict):
+        out_root = Path(out_root)
+        found = [(d, m) for d in items.iter_item_dirs(out_root) if (m := _manifest(d)) is not None] \
+            if out_root.is_dir() else []
+        self.shop_id = shop_id
+        self.existing = _index_existing(found)
+        self.themes = _index_themes(found, shop_id)
+        self.days = _cooldown_days(section(settings, "pipeline", DEFAULTS))
+
+    def state(self, brief: dict, size: int, date: str, *, all_sizes=None) -> tuple[str, str | None]:
+        bid = brief.get("brief_id")
+        prior = self.existing.get((self.shop_id, bid, size))
+        if prior is None and (all_sizes is None or size == max(all_sizes)):
+            prior = self.existing.get((self.shop_id, bid, None))
+        if prior is not None:
+            return "made", prior[0].name
+        blocker = _cooldown_block(brief, self.themes, date=date, days=self.days, regenerate=False, size=size)
+        return ("cooldown", blocker.name) if blocker is not None else ("new", None)
+
+
 def run(
     *,
     stages=STAGES,
@@ -209,7 +302,10 @@ def run(
     date: str | None = None,
     settings: dict | None = None,
     regenerate: bool = False,
+    plan_lines: list[dict] | None = None,
 ) -> dict:
+    """Run the stages (see the module docstring). `plan_lines` (the weekly plan, service/plan.py):
+    when given, generate makes only these lines instead of the newest briefs (module docstring)."""
     settings = settings or load_settings()
     cfg = section(settings, "pipeline", DEFAULTS)
     shop = get_shop(settings, shop_id)
@@ -230,6 +326,10 @@ def run(
                "started": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
                "briefs": [], "items": {}, "errors": [], "setup_errors": [], "notes": [],
                "awaiting_review": {}, "budget_reached": False, "packs": []}
+    plan = None
+    if plan_lines is not None:
+        plan = _plan_lines(summary, plan_lines, niches)
+        summary["plan"] = {"lines": plan}
 
     # 1. research: CSV exports -> brief files. The exports are licensed and stay local,
     # so in CI this stage is usually not run and the committed briefs are used.
@@ -244,7 +344,7 @@ def run(
         targets = _generate(summary, brief_files=brief_files, briefs_dir=briefs_dir, niches=niches,
                             shop=shop, out_root=out_root, date=date, dry_run=dry_run, settings=settings,
                             cap=cap, max_age=cfg.get("max_brief_age_days"), regenerate=regenerate,
-                            cooldown_days=_cooldown_days(cfg, summary))
+                            cooldown_days=_cooldown_days(cfg, summary), plan=plan)
     elif {"qa", "listing", "publish"} & set(stages):
         targets = _existing(summary, out_root, niche=niche, shop_id=shop["id"] if shop_id else None,
                             qa_runs="qa" in stages)
@@ -259,6 +359,15 @@ def run(
         _listing(summary, targets, settings, dry_run=dry_run, budget=budget)
     if "publish" in stages:
         _publish(summary, targets, settings, dry_run=dry_run)
+
+    if plan is not None:
+        for res in plan:
+            res.pop("_line", None)
+            # JSON keys are text: sizes as strings, so the stored summary reads back the same.
+            res["made"] = {str(k): v for k, v in sorted(res["made"].items())}
+            res["skipped"] = {str(k): v for k, v in sorted(res["skipped"].items())}
+        if "generate" not in stages:
+            summary["notes"].append("weekly plan: generate did not run, so no plan line was made")
 
     path = _summary_path(out_root, date)
     summary["path"] = str(path)
@@ -476,6 +585,7 @@ class _Entry:
     tier: int = 0                   # the brief's position in its brief file (round-robin tier)
     slots: list[_Slot] = field(default_factory=list)
     taken: list[_Slot] = field(default_factory=list)
+    line: dict | None = None        # plan mode: the plan line's result (made / skipped sizes)
 
 
 def _pack_state(settings, *, out_root, shop_id, date, dry_run):
@@ -525,8 +635,47 @@ def _list_pack(summary: dict, item_id: str, rec: dict, how: str) -> None:
                              "generate": how})
 
 
+def _plan_queue(summary: dict, plan: list[dict], blocklist: Blocklist, settings: dict,
+                docs: dict | None = None) -> list[tuple[Path, dict, dict, list[int]]]:
+    """(brief file, brief, plan line result, sizes to make) for each line still to run, in plan
+    order. A line whose brief file or brief is gone is dropped (brief_missing); one whose brief
+    now has another theme or niche (research rewrote that day's file) is dropped
+    (brief_changed); sizes the brief does not have are skipped (size_not_in_brief)."""
+    from generators.packs.plan import brief_pack_sizes
+
+    docs = docs if docs is not None else {}
+    out = []
+    for res in plan:
+        if res["dropped"]:
+            continue
+        line = res["_line"]
+        bf = Path(line["brief_file"])
+        if bf not in docs:
+            docs[bf] = _load_brief_queue(summary, bf, blocklist) if bf.is_file() else []
+        brief = next((b for _, b in docs[bf] if b.get("brief_id") == line["brief_id"]), None)
+        if brief is None:
+            res["dropped"] = "brief_missing"
+            continue
+        if theme_key(brief.get("theme")) != theme_key(line["theme"]) or brief.get("niche") != line["niche"]:
+            res["dropped"] = "brief_changed"
+            continue
+        try:
+            have = set(brief_pack_sizes(brief, settings))
+        except (ValueError, TypeError, ImportError):
+            have = set()
+        sizes = [s for s in res["sizes"] if s in have]
+        for s in res["sizes"]:
+            if s not in have:
+                res["skipped"][s] = "size_not_in_brief"
+        if not sizes:
+            res["dropped"] = res["dropped"] or "size_not_in_brief"
+            continue
+        out.append((bf, brief, res, sizes))
+    return out
+
+
 def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path, date, dry_run, settings,
-              cap, max_age, regenerate, cooldown_days: int = 0) -> list[Path]:
+              cap, max_age, regenerate, cooldown_days: int = 0, plan: list[dict] | None = None) -> list[Path]:
     """Briefs -> packs -> items (docs/PACKS.md section 3).
 
     1. Every brief's packs (generators.packs.preview: master first) are matched with existing
@@ -548,17 +697,44 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
 
     budget_error, ledger_error = _budget_exceeded(), _ledger_unavailable()
 
-    files = _pick_brief_files(summary, brief_files=brief_files, briefs_dir=briefs_dir, niches=niches,
-                              date=date, dry_run=dry_run, max_age=max_age)
     blocklist = Blocklist.load((settings.get("compliance") or {}).get("trademark_blocklist"), health_path=(settings.get("compliance") or {}).get("health_terms"))
-    queues = [q for q in (_load_brief_queue(summary, bf, blocklist) for bf in files) if q]
-    # Round-robin across brief files (one per niche) so a small max_items still
-    # covers every niche instead of filling up from the first file. Tier i holds the
-    # i-th brief of every file.
-    tiered = [(i, q[i]) for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)]
-    order = [bb for _, bb in tiered]
-    if files and not order and not summary["errors"]:
-        summary["errors"].append("the brief files hold no briefs; nothing to generate")
+    lines: dict[int, tuple[dict, list[int]]] = {}       # plan mode: tier -> (line result, sizes to make)
+    finish_only: set[int] = set()                       # plan mode: tiers that only reuse packs already made
+    if plan is not None:
+        # Plan mode (docs/OVERSEER.md B5): only the plan's lines, in plan order, each its own
+        # tier; reused packs take no max_items slot, so items already made still go on to QA,
+        # listing and drafts while at most max_items new packs are made.
+        docs: dict[Path, list[tuple[Path, dict]]] = {}
+        queued = _plan_queue(summary, plan, blocklist, settings, docs)
+        tiered = [(i, (bf, brief)) for i, (bf, brief, _, _) in enumerate(queued)]
+        lines = {i: (res, sizes) for i, (_, _, res, sizes) in enumerate(queued)}
+        # Packs already made from the newest briefs (under the normal rules, before the plan)
+        # are not plan lines, but they still go on to QA, listing and drafts (docs/OVERSEER.md
+        # B5): finish-only tiers that reuse what exists and never make a new pack.
+        planned_ids = {b.get("brief_id") for _, b, _, _ in queued}
+        for bf in latest_briefs(briefs_dir, niches) if briefs_dir is not None and Path(briefs_dir).is_dir() else []:
+            age = _brief_age_days(bf, date)
+            if not dry_run and max_age is not None and (age is None or age > int(max_age)):
+                continue                                  # the normal rules skip that file too
+            if bf not in docs:
+                docs[bf] = _load_brief_queue(summary, bf, blocklist)
+            for bb in docs[bf]:
+                if bb[1].get("brief_id") in planned_ids:
+                    continue
+                finish_only.add(len(tiered))
+                tiered.append((len(tiered), bb))
+        order = [bb for _, bb in tiered]
+    else:
+        files = _pick_brief_files(summary, brief_files=brief_files, briefs_dir=briefs_dir, niches=niches,
+                                  date=date, dry_run=dry_run, max_age=max_age)
+        queues = [q for q in (_load_brief_queue(summary, bf, blocklist) for bf in files) if q]
+        # Round-robin across brief files (one per niche) so a small max_items still
+        # covers every niche instead of filling up from the first file. Tier i holds the
+        # i-th brief of every file.
+        tiered = [(i, q[i]) for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)]
+        order = [bb for _, bb in tiered]
+        if files and not order and not summary["errors"]:
+            summary["errors"].append("the brief files hold no briefs; nothing to generate")
 
     shop_id = shop["id"]
     found = [(d, m) for d in items.iter_item_dirs(out_root) if (m := _manifest(d)) is not None]
@@ -572,9 +748,10 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
     cooled = 0
     for tier, (bf, brief) in tiered:
         bid = brief.get("brief_id")
+        res, want = lines.get(tier, (None, None))
         packs, sizes = _brief_packs(brief, settings=settings, out_root=out_root, shop_id=shop_id, date=date,
-                                    dry_run=dry_run, state=state)
-        entry = _Entry(bf, brief, sizes, tier)
+                                    dry_run=dry_run, state=state, sizes=want)
+        entry = _Entry(bf, brief, sizes, tier, line=res)
         cooled_master = False
         for pk in packs:
             prior = None
@@ -589,6 +766,8 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
                 prior = existing.get((shop_id, bid, pk.size))
                 if prior is None and (pk.size is None or pk.size == max(sizes or [pk.size])):
                     prior = existing.get((shop_id, bid, None))      # an item whose size is unknown
+            if prior is None and tier in finish_only:
+                continue                                  # not a plan line: nothing new is made
             if prior is None:
                 blocker = _cooldown_block(brief, themes, date=date, days=cooldown_days, regenerate=regenerate,
                                           size=pk.size)
@@ -598,6 +777,8 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
                             **_pack_fields(pk))
                     cooled += 1
                     cooled_master = cooled_master or pk.source == "master"
+                    if res is not None and pk.size is not None:
+                        res["skipped"][pk.size] = f"cooldown: {blocker.name}"
                     continue
                 entry.slots.append(_Slot("new", pk, date))
                 continue
@@ -609,9 +790,11 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
                 summary["awaiting_review"][d.name] = "rejected in the review queue"
                 _record(summary, d.name, "generate", True, "rejected in the review queue; not rebuilt", skipped=True,
                         **_pack_fields(pk, m))
+                if res is not None and pk.size is not None:
+                    res["skipped"][pk.size] = "rejected in the review queue"
                 continue
             drafted = _has_real_draft(d)
-            if not regenerate or drafted:
+            if not regenerate or drafted or tier in finish_only:
                 why = "has an Etsy draft; not rebuilt" if regenerate else "reused; --regenerate rebuilds it"
                 entry.slots.append(_Slot("reuse", pk, None, d, m, why))
             else:
@@ -636,7 +819,17 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
     # second, ...): first each brief's first pack (its master when that is new), then the
     # tier's other packs (derived ones cost no images), in brief order.
     taken = 0
-    for tier in dict.fromkeys(e.tier for e in entries):
+    if plan is not None:
+        # Plan mode: packs already made are free (QA, listing and drafts go on); new packs take
+        # a slot each, line by line in plan order, master first.
+        for entry in entries:
+            for slot in entry.slots:
+                if slot.kind == "reuse":
+                    entry.taken.append(slot)
+                elif taken < cap:
+                    entry.taken.append(slot)
+                    taken += 1
+    for tier in dict.fromkeys(e.tier for e in entries) if plan is None else ():
         group = [e for e in entries if e.tier == tier]
         for entry in group:
             if entry.slots and taken < cap:
@@ -666,6 +859,8 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
                         skipped=True, **rec)
                 _list_pack(summary, slot.dir.name, rec, "reused")
                 targets.append(slot.dir)
+                if entry.line is not None and isinstance(rec.get("size"), int):
+                    entry.line["made"][rec["size"]] = slot.dir.name
         make = [s for s in entry.taken if s.kind != "reuse"]
         if not make:
             continue
@@ -677,8 +872,8 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
             group = [s for s in make if s.date == gen_date]
             kw = {}
             sizes = [s.pack.size for s in group]
-            if entry.sizes is not None and None not in sizes and sorted(sizes) != entry.sizes:
-                kw["sizes"] = sizes
+            if entry.sizes is not None and None not in sizes and (sorted(sizes) != entry.sizes or entry.line is not None):
+                kw["sizes"] = sizes        # a plan line always names its sizes: never every size of the brief
             made: list[Path] = []
             try:
                 made = generators.generate(brief, brief_file=items.repo_relative(bf), shop_id=shop_id,
@@ -709,6 +904,12 @@ def _generate(summary, *, brief_files, briefs_dir, niches, shop, out_root: Path,
                 targets.append(d)
                 m = _manifest(d)
                 pk = next((s.pack for s in group if s.pack.item_id == d.name), None)
+                if entry.line is not None:
+                    _tag_plan(d, entry.line["_line"])
+                    if isinstance((m or {}).get("pack"), dict) and isinstance(m["pack"].get("size"), int):
+                        entry.line["made"][m["pack"]["size"]] = d.name
+                    elif pk is not None and isinstance(pk.size, int):
+                        entry.line["made"][pk.size] = d.name
                 rec = _pack_fields(pk, m)
                 _record(summary, d.name, "generate", True, "generated", **rec)
                 _list_pack(summary, d.name, rec, "generated")

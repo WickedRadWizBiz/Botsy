@@ -274,23 +274,49 @@ service:
 
 # --- Botsy's clock and the Sunday plan schedule (user, 2026-10-17; docs/SERVER.md section 6,
 # docs/OVERSEER.md "Scale-ups ... and the Sunday plan"; defaults: core/config.py SCHEDULE_DEFAULTS).
-# Every time below is "Day HH:MM" on the wall clock of schedule.timezone. Only `timezone` is
-# used today (Discord quiet hours, the daily log's times and date); the systemd timers name
-# America/New_York in their unit files. The plan_* keys are the weekly plan's schedule as
-# planned, so settings, timers and docs agree before it is built.
+# Every time below is "Day HH:MM" on the wall clock of schedule.timezone. `timezone` sets the
+# Discord quiet hours and the daily log's times and date; the systemd timers name
+# America/New_York in their unit files. The plan_* keys are the weekly plan's schedule,
+# used by service/plan.py and service/orders.py.
 # Money months (the spending cap) and KDP weeks stay UTC. ---
 schedule:
   timezone: America/New_York       # "8 pm EST" means 8 pm New York time all year (EDT in summer)
-  plan_post: "Sun 20:00"           # the weekly plan is posted (botsy-plan.timer, not installed yet)
-  reminders: ["Mon 08:00", "Mon 19:00"]   # first 4 plans: reminders while a plan waits for your code
+  plan_post: "Sun 20:00"           # the weekly plan is posted (botsy-plan.timer)
+  reminders: ["Mon 08:00", "Mon 19:00"]   # first 4 plans: reminders while a plan waits for your approval
   deadline: "Tue 20:00"            # an unapproved plan expires; Botsy runs on its normal rules that week
   auto_start: "Mon 08:00"          # from plan 5: the plan starts by itself unless you press Hold
   revision_min_hours: 2            # a revised plan starts no sooner than this after the revision
   max_revisions: 3                 # Hermes may revise a plan this many times, then no plan that week
-  approvals_before_auto: 4         # plans approved by code before automatic start
-  auto_start_max_cost_share: 0.40  # a plan above this share of spend.monthly_cap_usd ($10 of $25) still needs a code
+  approvals_before_auto: 0         # user, 2026-10-21: plans start by themselves from week 1 (Mon 8 am NY) unless you Hold
+  auto_start_max_cost_share: 1.0   # user, 2026-10-21: plans of any cost start by themselves (the draft still paces money left over the weeks left)
   stale_skip_hours: 24             # a plan run that is later than this (server was off) is skipped
   upload_cutoff: "Sun 19:00"       # shown in messages only: export by then so the plan can use the research
+
+# --- Weekly plan (docs/OVERSEER.md Part B; defaults: service/plan.py SETTINGS_DEFAULTS) ---
+plan:
+  enabled: true                  # false: no weekly plans at all; every check runs on the normal rules
+  dir: data/plans                # state.json and data/plans/<week>/ (facts.json, plan.json, plan_due.json); gitignored
+  max_packs: 12                  # packs in Botsy's own draft plan
+  brief_max_age_days: 7          # a plan line whose brief is older than this is dropped (packs already made still go on)
+  stale_days: 8                  # a plan older than this no longer steers the checks (normal rules)
+  no_plan_after_minutes: 60      # "No plan this week" this long after schedule.plan_post (Sunday 21:00)
+  max_cost_usd: null             # an extra ceiling for Botsy's draft, in dollars (null: none)
+  first_check_lock_wait_s: 120   # a plan start waits this long for a running check; else the next hourly checks try again (3 tries in all)
+  hermes_events_url: null        # Hermes's local webhook route for the signed plan_due event: http://127.0.0.1:PORT/... only (no 'localhost', no redirects, no proxy)
+  notify: true                   # post the plan messages to Discord (service/notify.py)
+
+# --- Orders and the admin-only limits file (docs/OVERSEER.md "Four permission levels";
+# docs/CONTRACTS.md section 8; defaults: service/limits.py, service/orders.py). No codes
+# (decided 2026-10-21): Level 3 approvals come straight from you (server CLI) or Hermes (your
+# allowlisted Discord user), at most limits level3_per_day a day, each posted at once to the
+# main Discord channel (DISCORD_WEBHOOK_URL) with who asked and how to undo it. ---
+control:
+  limits_path: /etc/botsy/limits.yaml        # admin-only (root:root 0644, a real file, not a link); Botsy never writes it. Missing or broken = Level 2 changes and scale-ups off
+  limits_require_root: true                  # the file (checked again once opened) and its folder must be root's and not writable by others
+  orders_dir: data/orders                    # accepted orders (data/orders/<week>/<id>.json) and counters.json
+  state_file: data/control/state.json        # pause flag, cap in force (raise/lower orders), budget stop; written only by service/orders.py (a damaged one is kept as state.json.unreadable-<UTC>)
+  winners_file: data/performance/winners.json   # scale-ups stay refused (no_winners_yet) until this exists AND limits scale_up.enabled is true
+  log_file: data/logs/botsy-control.log      # botsy-control (Hermes's MCP tools) base name; each server writes botsy-control-read.log / -act.log next to it (tool name, ok, reason codes; never an argument)
 
 # --- Discord messages and the daily log (docs/SERVER.md section 11; defaults: service/notify.py) ---
 notify:
@@ -302,7 +328,7 @@ notify:
     timeout_s: 10
     max_retry_wait_s: 60           # longest wait for Discord's retry_after on HTTP 429
   quiet_hours: ["22:00", "07:00"]  # in schedule.timezone (New York); other messages wait for the morning's daily log
-  urgent: [budget_reached, error]  # sent even during quiet hours
+  urgent: [budget_reached, error, order_approved, plan_approved, plan_mode_changed]  # sent even during quiet hours (approvals are always posted at once)
 
 # --- Spending tracker (docs/SERVER.md section 10; defaults: core/spend.py). Costs are estimates;
 # your provider bills are what count. ---

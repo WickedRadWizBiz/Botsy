@@ -1,0 +1,16 @@
+# Every hour at :05, on New York time (America/New_York): the weekly plan's reminders
+# (Monday 08:00 and 19:00), its deadline (Tuesday 20:00), the automatic start (Monday 08:00,
+# so 08:05) and the Sunday 21:00 "No plan this week" notice (docs/OVERSEER.md Part B).
+# systemd 235+ reads the zone name in OnCalendar (Ubuntu 24.04 has 255).
+# Check: systemd-analyze calendar --iterations=3 "*-*-* *:05:00 America/New_York"
+# Persistent=true: after the server was off, one check runs at the next boot.
+[Unit]
+Description=Botsy: weekly plan check, every hour at :05 New York time
+
+[Timer]
+OnCalendar=*-*-* *:05:00 America/New_York
+Persistent=true
+Unit=botsy-plan-check.service
+
+[Install]
+WantedBy=timers.target

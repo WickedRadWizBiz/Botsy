@@ -149,3 +149,160 @@ def test_dry_run_end_to_end_all_niches_and_idempotent_rerun(tmp_path, monkeypatc
     for name in before:
         assert again["items"][name]["generate"]["skipped"] and "publish" not in again["items"][name]
     assert len(list((out / "runs").glob("run-*.json"))) == 3  # earlier summaries are kept
+
+
+# ---------------------------------------------------------------- weekly plan lines (fast, fake stages)
+
+PLAN_DATE = "2026-10-26"
+ORDER = "pl-20261025-0001"
+
+
+@pytest.fixture
+def planned(tmp_path, monkeypatch):
+    """Fake generate / qa / listing / publish (as in tests/test_pipeline_cooldown.py) and a brief
+    file with two stationery briefs of pack sizes 5, 12 and 20."""
+    import generators
+    import listing
+    import publisher
+    import qa
+    from core import config
+    from generators import packs
+
+    settings = config.load_settings()
+    config.deep_merge(settings, {"paths": {"output_dir": str(tmp_path / "real"),
+                                           "review_dir": str(tmp_path / "real" / "review")},
+                                 "pipeline": {"dry_run_output_dir": str(tmp_path / "dry")},
+                                 "packs": {"state_file": str(tmp_path / "packs_state.json")}})
+    calls = {"generate": [], "qa": [], "publish": []}
+
+    def fake_generate(brief, *, brief_file=None, shop_id="main", out_root=None, date=None, dry_run=False,
+                      settings=None, client=None, sizes=None):
+        calls["generate"].append((brief["brief_id"], sizes))
+        dirs = []
+        for pk in packs.preview(brief, settings=settings, out_root=out_root, shop_id=shop_id, date=date,
+                                dry_run=dry_run, sizes=sizes):
+            d = items.item_dir(pk.item_id, out_root)
+            items.write_manifest(d, {"item_id": d.name, "niche": brief["niche"], "shop_id": shop_id,
+                                     "brief_id": brief["brief_id"], "theme": brief["theme"], "created": date,
+                                     "status": "generated", "generator": {"name": brief["niche"], "dry_run": dry_run},
+                                     "pack": {"size": pk.size, "source": pk.source, "set_id": pk.spec.set_id}})
+            dirs.append(d)
+        return dirs
+
+    def fake_qa(d, *, settings=None, review_dir=None, mockups=True):
+        calls["qa"].append(d.name)
+        items.set_status(d, "qa_passed")
+        return {"item_id": d.name, "passed": True, "needs_review": False, "checks": []}
+
+    def fake_listing(d, *, client=None, dry_run=False, settings=None, review_dir=None):
+        items.set_status(d, "listed")
+        return {"title": f"title {d.name}"}
+
+    def fake_publish(d, *, client=None, dry_run=False, settings=None, review_dir=None):
+        calls["publish"].append(d.name)
+        items.write_json(d / "publish.json", {"listing_id": 7, "dry_run": dry_run, "complete": True})
+        items.set_status(d, "drafted")
+        return {"listing_id": 7, "dry_run": dry_run}
+
+    monkeypatch.setattr(generators, "generate", fake_generate)
+    monkeypatch.setattr(qa, "run", fake_qa)
+    monkeypatch.setattr(listing, "write_listing", fake_listing)
+    monkeypatch.setattr(listing, "needs_listing",
+                        lambda d, *, dry_run=False, settings=None: items.read_manifest(d)["status"] == "qa_passed")
+    monkeypatch.setattr(publisher, "publish_draft", fake_publish)
+    monkeypatch.setattr(publisher, "review_wait", lambda d, *, settings=None: None)
+    themes = ["weekly reset", "habit grid", "focus blocks"]
+    bf = items.write_json(tmp_path / "briefs" / "stationery-2026-10-24.json", {
+        "schema": "brief/v1", "niche": "stationery", "created": "2026-10-24", "shop_id": "main",
+        "listing_count": 50, "min_listings_per_pattern": 10, "patterns": {},
+        "briefs": [{"brief_id": f"stationery-2026-10-24-0{i}", "niche": "stationery", "theme": t, "keywords": [t],
+                    "pack_sizes": [5, 12, 20], "page_count": 20, "evidence": {"listing_count": 12},
+                    "compliance": {"blocked": [], "flagged": []}, "needs_review": False}
+                   for i, t in enumerate(themes, 1)]})
+
+    def line(n, sizes, theme=None, **kw):
+        return {"brief_file": str(bf), "brief_id": f"stationery-2026-10-24-0{n}", "niche": "stationery",
+                "theme": theme or themes[n - 1], "sizes": sizes, "origin": "plan", "order_id": ORDER, **kw}
+
+    def run(lines, **kw):
+        kw.setdefault("stages", ("generate", "qa", "listing", "publish"))
+        return prun.run(dry_run=True, out_root=tmp_path / "out", briefs_dir=tmp_path / "briefs", date=PLAN_DATE,
+                        settings=settings, plan_lines=lines, **kw)
+
+    return {"run": run, "line": line, "calls": calls, "out": tmp_path / "out", "bf": bf}
+
+
+def test_plan_lines_make_only_their_sizes_and_tag_the_manifests(planned):
+    summary = planned["run"]([planned["line"](2, [20, 5])])
+    assert prun.exit_code(summary) == 0
+    assert planned["calls"]["generate"] == [("stationery-2026-10-24-02", [20, 5])]   # never the brief's 12
+    made = {items.read_manifest(d)["pack"]["size"]: items.read_manifest(d) for d in items.iter_item_dirs(planned["out"])}
+    assert sorted(made) == [5, 20]
+    assert all(m["origin"] == "plan" and m["order_id"] == ORDER for m in made.values())
+    res = summary["plan"]["lines"][0]
+    assert res["dropped"] is None and set(res["made"]) == {"5", "20"} and res["skipped"] == {}
+    assert summary["briefs"] == [items.repo_relative(planned["bf"])]
+
+
+def test_packs_already_made_take_no_slot_and_still_go_on_to_drafts(planned):
+    first = planned["run"]([planned["line"](1, [20])])
+    made = next(iter(first["plan"]["lines"][0]["made"].values()))
+    planned["calls"]["generate"].clear()
+    summary = planned["run"]([planned["line"](1, [20]), planned["line"](3, [5, 20])], max_items=2)
+    assert planned["calls"]["generate"] == [("stationery-2026-10-24-03", [20, 5])]    # 2 new packs: the cap
+    assert summary["items"][made]["generate"]["skipped"] and summary["plan"]["lines"][0]["made"] == {"20": made}
+    assert made in planned["calls"]["publish"]                                        # drafts of made items go on
+    capped = planned["run"]([planned["line"](2, [5, 12, 20])], max_items=1)
+    assert len(capped["plan"]["lines"][0]["made"]) == 1                               # the rest waits for a later run
+
+
+def test_a_rewritten_or_missing_brief_drops_the_line(planned, tmp_path):
+    lines = [planned["line"](1, [5], theme="something else"),
+             planned["line"](3, [5], brief_file=str(tmp_path / "briefs" / "stationery-2026-10-01.json")),
+             planned["line"](2, [7, 12])]
+    summary = planned["run"](lines)
+    got = [(r["brief_id"], r["dropped"]) for r in summary["plan"]["lines"]]
+    assert got == [("stationery-2026-10-24-01", "brief_changed"), ("stationery-2026-10-24-03", "brief_missing"),
+                   ("stationery-2026-10-24-02", None)]
+    assert summary["plan"]["lines"][2]["skipped"] == {"7": "size_not_in_brief"}
+    assert planned["calls"]["generate"] == [("stationery-2026-10-24-02", [12])]
+
+
+def test_bad_plan_lines_are_refused_and_other_shops_niches_ignored(planned):
+    bad = planned["line"](1, [5])
+    bad.pop("order_id")
+    other = {**planned["line"](2, [5]), "niche": "bookmarks", "brief_id": "bookmarks-2026-10-24-02"}
+    summary = planned["run"]([bad, other, planned["line"](1, [5])])
+    assert [r["dropped"] for r in summary["plan"]["lines"]] == ["bad_line", "not_this_shop", None]
+    assert any("not well formed" in e for e in summary["errors"])
+    planned["calls"]["generate"].clear()
+    empty = planned["run"]([])
+    assert empty["plan"] == {"lines": []} and planned["calls"]["generate"] == []      # nothing new is made
+    assert all(r["generate"].get("skipped") for r in empty["items"].values())        # made packs still go on
+
+
+def test_the_theme_cooldown_still_applies_to_plan_lines(planned):
+    d = items.item_dir(items.new_item_id("2026-10-01", "stationery", "Habit Grid", salt="old"), planned["out"])
+    items.write_manifest(d, {"item_id": d.name, "niche": "stationery", "shop_id": "main", "brief_id": "old",
+                             "theme": "Habit Grid", "created": "2026-10-01", "status": "drafted",
+                             "pack": {"size": 5, "source": "master"}})
+    summary = planned["run"]([planned["line"](2, [5, 20])])
+    res = summary["plan"]["lines"][0]
+    assert res["skipped"] == {"5": f"cooldown: {d.name}"} and list(res["made"]) == ["20"]
+
+
+def test_items_made_before_the_plan_still_get_qa_listing_and_drafts(planned):
+    """docs/OVERSEER.md B5: under a plan only its lines are made, but items already made from
+    the newest briefs (under the normal rules, before the plan) still go on to drafts."""
+    from pipeline import run as prun
+
+    d = items.item_dir(items.new_item_id(PLAN_DATE, "stationery", "habit grid", salt="before"), planned["out"])
+    items.write_manifest(d, {"item_id": d.name, "niche": "stationery", "shop_id": "main",
+                             "brief_id": "stationery-2026-10-24-02", "theme": "habit grid", "created": PLAN_DATE,
+                             "status": "generated", "generator": {"name": "stationery", "dry_run": True},
+                             "pack": {"size": 12, "source": "master"}})
+    summary = planned["run"]([planned["line"](1, [5])])
+    assert planned["calls"]["generate"] == [("stationery-2026-10-24-01", [5])]   # brief 2's 5 and 20: not made
+    assert d.name in planned["calls"]["publish"]                                 # but its made item is drafted
+    assert items.read_manifest(d).get("origin") is None                          # and not tagged as a plan item
+    assert prun.exit_code(summary) == 0

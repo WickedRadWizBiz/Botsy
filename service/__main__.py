@@ -17,10 +17,26 @@ runs it as the botsy user.
     notify-test  send a test message to Discord and say whether it worked
     cleanup      remove old rejected uploads, old exports and old practice items now
                  (every tick already does this at the end)
+    plan ACTION  the weekly plan (service/plan.py, docs/OVERSEER.md Part B):
+                   prepare    write this week's facts and Botsy's draft plan (Sunday 20:00 timer;
+                              --force makes it even when the run is more than 24 hours late)
+                   check      reminders, deadline, automatic start, no-plan notice (hourly timer)
+                   status     show the plan, its deadline and progress
+                   approve    approve the plan that waits for you; it starts at once (posted in
+                              Discord at once; at most limits level3_per_day a day)
+                   hold       hold the plan                 start-now  start it now
+                   again      approve every plan yourself from now on
+                   auto       plans start by themselves (Monday 08:00, with Hold; posted in Discord)
+    control ACTION your orders (service/control_cli.py; created_by "user", no codes):
+                   pause, resume, lower-cap USD, raise-cap USD, resume-budget,
+                   approve ITEM... [--batch N] | approve --order ID, reject / hold ITEM --reason R,
+                   cancel ORDER, undo ORDER, orders [--week W], limits, capacity.
+                   Approvals, cap raises and restarting paid work are posted at once to Discord.
 
 Every command that changes Botsy's working files takes the service lock first, so two
 never run at once. digest, spend and notify-test only read them (digest writes only the
-daily log), so they never wait for a running check.
+daily log), so they never wait for a running check. plan has its own lock (data/plans) and
+takes the service lock only to run a started plan's first check.
 Exit codes: 0 ok, 1 something failed (see outbox/status.txt), 2 setup problem, 3 another
 service command held the lock longer than service.lock_timeout_s.
 """
@@ -51,9 +67,13 @@ COMMANDS = {
     "spend": "show this month's estimated API spending",
     "notify-test": "send a test message to Discord",
     "cleanup": "remove old rejected uploads, old exports and old practice items",
+    "plan": "the weekly plan: prepare, check, status, approve, hold, start-now, again, auto",
+    "control": "your orders: pause, resume, caps, review approvals, cancel, undo, orders, limits",
 }
-# Read-only commands: they never wait for the service lock (a long check may hold it).
-NO_LOCK = {"digest", "spend", "notify-test"}
+# Commands that never wait for the service lock (a long check may hold it): digest, spend and
+# notify-test only read; plan has its own lock and takes the service lock itself only for
+# a started plan's first check; control uses only the orders lock (data/orders/.lock).
+NO_LOCK = {"digest", "spend", "notify-test", "plan", "control"}
 MAX_DIGEST_HOURS = 24 * 31
 DIGEST_HOURS = 24.0
 DIGEST_CATCH_UP_DAYS = 7      # without --hours, a log also covers back to the last one, this far
@@ -86,6 +106,15 @@ def build_parser() -> argparse.ArgumentParser:
                                         "the last daily log when that is older)")
     parsers["spend"].add_argument("--month", type=_month, default=None,
                                   help="month to show, YYYY-MM (default: this month)")
+    from service.plan import ACTIONS as PLAN_ACTIONS
+
+    parsers["plan"].add_argument("action", choices=PLAN_ACTIONS, help="what to do with the weekly plan")
+    parsers["plan"].add_argument("--force", action="store_true",
+                                 help="prepare: make the plan even when the Sunday run is more than "
+                                      "schedule.stale_skip_hours late")
+    from service import control_cli
+
+    control_cli.add_arguments(parsers["control"], parents=[_common(True)])
     return ap
 
 
@@ -189,7 +218,7 @@ def cmd_tick(a, settings: dict, paths: ServicePaths, day: str) -> int:
 
 
 def cmd_status(a, settings: dict, paths: ServicePaths, day: str) -> int:
-    txt = status.refresh(paths.outbox, live=is_live(settings))
+    txt = status.refresh(paths.outbox, live=is_live(settings), plan=tick.plan_summary(settings))
     sys.stdout.write(txt.read_text(encoding="utf-8").replace("\r\n", "\n"))
     return 0
 
@@ -269,10 +298,31 @@ def cmd_cleanup(a, settings: dict, paths: ServicePaths, day: str) -> int:
     return 1 if problems else 0
 
 
+def cmd_plan(a, settings: dict, paths: ServicePaths, day: str) -> int:
+    plan = importlib.import_module("service.plan")   # looked up at call time (tests swap it)
+    if a.force and a.action != "prepare":
+        print(f"service plan {a.action}: --force is only for prepare", file=sys.stderr)
+        return 2
+    try:
+        return plan.cli(a.action, settings, force=a.force, outbox=paths.outbox)
+    except LockTimeout as e:
+        print(f"service plan: {e}", file=sys.stderr)
+        return EXIT_LOCKED
+
+
+def cmd_control(a, settings: dict, paths: ServicePaths, day: str) -> int:
+    control_cli = importlib.import_module("service.control_cli")
+    try:
+        return control_cli.run(a, settings)
+    except LockTimeout as e:
+        print(f"service control: {e}", file=sys.stderr)
+        return EXIT_LOCKED
+
+
 HANDLERS = {"ingest": cmd_ingest, "research": cmd_research, "run": cmd_run,
             "searchlist": cmd_searchlist, "tick": cmd_tick, "status": cmd_status,
             "digest": cmd_digest, "spend": cmd_spend, "notify-test": cmd_notify_test,
-            "cleanup": cmd_cleanup}
+            "cleanup": cmd_cleanup, "plan": cmd_plan, "control": cmd_control}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -45,7 +45,7 @@ def test_schedule_defaults_are_the_sunday_plan_as_planned():
     assert SCHEDULE_DEFAULTS == {
         "timezone": "America/New_York", "plan_post": "Sun 20:00", "reminders": ["Mon 08:00", "Mon 19:00"],
         "deadline": "Tue 20:00", "auto_start": "Mon 08:00", "revision_min_hours": 2, "max_revisions": 3,
-        "approvals_before_auto": 4, "auto_start_max_cost_share": 0.40, "stale_skip_hours": 24,
+        "approvals_before_auto": 0, "auto_start_max_cost_share": 1.0, "stale_skip_hours": 24,
         "upload_cutoff": "Sun 19:00"}
     raw = yaml.safe_load((ROOT / "config" / "settings.yaml").read_text(encoding="utf-8"))
     if "schedule" in raw:     # once the integrator merges the block, it must say the same

@@ -1,0 +1,42 @@
+# The hourly plan check: reminders, the deadline, the automatic start and the no-plan
+# notice. It makes no paid calls itself. When a plan has just started (by itself, after you
+# approved it, or Start now) it runs that plan's first check, a forced Botsy check under the main
+# lock (like the daily check: research if the exports changed, then the plan's lines ->
+# qa -> listing -> draft), so work begins right away. Started by botsy-plan-check.timer.
+[Unit]
+Description=Botsy: weekly plan check (reminders, deadline, automatic start)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=botsy
+Group=botsy
+WorkingDirectory=/opt/botsy
+ExecStart=/opt/botsy/.venv/bin/python -m service plan check
+Environment=PYTHONUNBUFFERED=1
+UMask=0027
+Nice=10
+# A plan's first check can make items (image generation), like the daily check.
+TimeoutStartSec=4h
+# Not restarted: the next hourly run tries again (a busy lock leaves the first check for it).
+# Hardening: no privilege gain, /usr /boot /etc read-only, no access to /home, a private
+# /tmp and /dev, no kernel or clock changes, network only over IP (Etsy, the APIs, Discord).
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/opt/botsy -/srv/botsy-inbox/incoming -/srv/botsy-inbox/outbox

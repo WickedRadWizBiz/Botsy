@@ -369,6 +369,54 @@ approve each one), spending, problems and what runs next. You find it:
 To make one now, type `botsy service digest` (`--hours 48` covers two days). If the
 server was off for a morning, the next log also covers the missed days (up to 7).
 
+## Step 14. The weekly plan
+
+Every Sunday at 8 pm New York time Botsy writes a plan for the coming week: which themes
+and pack sizes it makes, from the newest briefs with the best opportunity across the niches,
+leaving out what is already made or blocked by the theme cooldown, at most 12 packs, and
+only as much as this week's share of the money left (the money left divided by the weeks
+left in the month, and at most $10 of a $25 cap). It posts the plan in Discord. While a plan
+runs, Botsy makes only the plan's packs (at most 10 new ones a check); packs made before
+still go on to QA, listing and drafts; uploads are still taken in and studied at once, and
+the new briefs wait for next Sunday's plan.
+
+**Your first 4 plans wait for your OK** (no codes: decided 2026-10-21). Approve on the
+server, or, once Hermes is installed, tell Hermes in Discord:
+
+```
+botsy service plan status          what the plan is, its deadline and progress
+botsy service plan approve         approve the plan; it starts at once
+botsy service plan hold            hold the plan
+```
+
+Reminders come Monday at 8 am and 7 pm. A plan you have not approved by Tuesday at 8 pm
+expires, and Botsy runs on its normal rules for the rest of that week (an approval after
+the deadline does not start it). When you approve, Botsy starts one check right away, so
+work begins that night.
+
+Every approval of a plan that waits for you, and every switch to automatic starts, is
+posted at once in the main Discord channel, even at night: what changed, who asked (you on
+the server, or Hermes) and how to undo it (`plan hold`, `plan again`). At most 10 of these
+happen in 24 hours (`level3_per_day` in `/etc/botsy/limits.yaml`); more are refused
+until 24 hours after the oldest one.
+
+**From plan 5 a plan starts by itself** on Monday at 8 am (the 8:05 check starts it) unless
+you hold it. `botsy service plan start-now` starts it at once (on a plan that waits for you
+it is the same as approve). A plan that costs more than $10 (40% of the cap) still waits for
+your approval, as in the first month. `botsy service plan again` makes every plan wait for
+your approval from now on (a plan that has not started yet then waits too); `botsy service
+plan auto` switches back to automatic starts, or goes automatic before 4 plans.
+
+If the server was off on Sunday evening, the plan runs when it starts again, or is skipped
+when that is more than 24 hours late ("this week's plan was missed"; normal rules that
+week). `botsy service plan prepare --force` makes a late plan anyway. If no plan exists at
+9 pm Sunday, Botsy posts "No plan this week" and keeps running on its normal rules. To
+switch plans off completely, add `plan:` with `  enabled: false` under it to this server's
+settings file.
+
+Plans need the admin-only limits file (`/etc/botsy/limits.yaml`): without it Botsy cannot
+store a plan (small changes are switched off), and runs on its normal rules.
+
 ## Change a setting
 
 Switches for this server only (test or live mode, the spending cap) are in
@@ -409,7 +457,10 @@ The week, New York time:
 | When | What |
 |---|---|
 | Saturday 9:07 am | the weekly search list is written (the helper opens it); export over the weekend, by about 7 pm Sunday |
-| Sunday 8 pm | **planned, not built yet:** the weekly plan is posted (see below) |
+| Sunday 8 pm | the weekly plan is posted (step 14); "No plan this week" at 9 pm if there is none |
+| Monday 8 am | first month: reminder 1 (7 pm: reminder 2). From plan 5: the plan starts by itself |
+| Tuesday 8 pm | first month: a plan you have not approved expires |
+| every hour at :05 | the plan check (reminders, deadline, automatic start; no paid calls) |
 | every day 6:17 am | the daily check |
 | every day 7:07 am | the daily log, with the Discord messages held overnight |
 | 10 pm to 7 am | Discord quiet hours: only urgent news is posted |
@@ -419,15 +470,11 @@ and Botsy reads the quiet hours and the daily log's date in `schedule.timezone`,
 stay on New York time even if the server's clock were different. The spending cap still
 resets at 00:00 UTC on the 1st (that is how the providers count months).
 
-**The Sunday plan (planned for a later update; nothing runs yet).** Every Sunday at 8 pm
-a weekly plan is posted in Discord. Your first 4 plans wait for your OK, given with a code
-(reminders Monday 8 am and 7 pm; a plan not approved by Tuesday 8 pm expires and Botsy runs
-on its normal rules that week). From plan 5 a plan starts by itself on Monday at 8 am
-unless you press Hold; a plan over $10 (40% of the cap) still needs your code. A revised
-plan starts at least 2 hours after the revision and never before Monday 8 am. The schedule
-is already in `config/settings.yaml` under `schedule:` so the settings, the timers and
-this page agree; the plan's own timer (`botsy-plan.timer`, Sunday 20:00) is added when the
-plan command exists.
+**The Sunday plan** (step 14) uses the same clock: `botsy-plan.timer`
+(`OnCalendar=Sun *-*-* 20:00:00 America/New_York`) and `botsy-plan-check.timer` (every hour
+at :05). Its times are in `config/settings.yaml` under `schedule:`. Sunday 8 pm EDT is
+Monday 00:00 UTC; after the clocks change in November it is Monday 01:00 UTC. A revised plan
+starts at least 2 hours after the revision and never before Monday 8 am.
 
 To use another zone instead, give it to the setup once (it is remembered) and put the same
 name in this server's settings file, then run the setup again:
@@ -506,6 +553,12 @@ The most important files, if you ever copy things by hand: `/opt/botsy/.env`,
   shows the problem). Fix the problem, then switch it back on:
   `sudo systemctl reset-failed 'botsy-*' && sudo systemctl restart botsy-inbox.path`
   (running `sudo botsy-setup` does the same).
+- **No weekly plan, or "could not make a plan"**: `botsy service plan status` says why
+  (no current briefs, no money left this week, the review queue is full, or the limits file
+  `/etc/botsy/limits.yaml` is missing). Botsy runs on its normal rules meanwhile.
+- **"Too many approvals in the last 24 hours"**: the daily limit on approvals
+  (`level3_per_day`, step 14) was reached. Try again tomorrow; the plan's deadline still
+  applies.
 - **The setup says STOPPED**: read the sentence after it, fix that, and run it again.
 - **The disk is full**: `df -h /` shows the free space. Old dry-run items can go:
   `sudo rm -rf /opt/botsy/output/dry-run`.
@@ -529,6 +582,8 @@ The most important files, if you ever copy things by hand: `/opt/botsy/.env`,
 | `/opt/botsy/config/settings.local.yaml` | this server's own settings: test or live mode, spending cap (updates never change it) |
 | `/opt/botsy/data/events.jsonl` | the server's diary of what happened (the daily log is made from it) |
 | `/opt/botsy/data/spend/ledger.jsonl` | the estimated cost of every paid API call |
+| `/opt/botsy/data/plans/` | the weekly plans: `state.json`, and per week `facts.json`, Botsy's draft `plan.json` and `plan_due.json` |
+| `/opt/botsy/data/orders/` | the plan orders (and later Hermes's orders), one file each |
 | `/etc/ssh/sshd_config.d/botsy-upload.conf` | the upload account's SSH rules |
 | `/etc/ssh/botsy-upload/authorized_keys` | the PC keys that may upload |
 | `/etc/systemd/system/botsy-*` | the automatic jobs |

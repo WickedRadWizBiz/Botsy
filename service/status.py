@@ -164,10 +164,13 @@ def write(outbox: str | Path, doc: dict) -> Path:
 
 
 def update(outbox: str | Path, record: dict, *, keep_days: int = 35,
-           last_research: dict | None = None, now: _dt.datetime | None = None) -> dict:
-    """Add one tick record (when it did anything), prune old ones, recount the week, write."""
+           last_research: dict | None = None, now: _dt.datetime | None = None, plan: dict | None = None) -> dict:
+    """Add one tick record (when it did anything), prune old ones, recount the week, write.
+    `plan`: the weekly plan's summary (service.plan.summary), shown in its own section."""
     now = now or _dt.datetime.now(_dt.timezone.utc)
     doc = load(outbox) or {}
+    if plan is not None:
+        doc["plan"] = _plan_doc(plan)
     ticks = [t for t in doc.get("ticks") or [] if isinstance(t, dict)]
     if has_activity(record):
         ticks.append(record)
@@ -183,10 +186,31 @@ def update(outbox: str | Path, record: dict, *, keep_days: int = 35,
     return doc
 
 
-def refresh(outbox: str | Path, *, live: bool, now: _dt.datetime | None = None) -> Path:
+def _plan_doc(plan: dict) -> dict:
+    """The part of service.plan.summary() kept in status.json (fixed fields and its plain lines)."""
+    keep = ("enabled", "mode", "approved_count", "approvals_before_auto", "week", "status", "order_id",
+            "needs_approval", "approval_reason", "deadline", "auto_start", "progress", "tick")
+    out = {k: plan.get(k) for k in keep if k in plan}
+    out["lines"] = [" ".join(str(x).split())[:MAX_DETAIL] for x in (plan.get("lines") or [])][:MAX_LINES_SHOWN]
+    out["updated"] = now_iso()
+    return out
+
+
+def set_plan(outbox: str | Path, plan: dict) -> Path:
+    """Store the weekly plan's summary in status.json and rewrite status.txt (the plan
+    commands call this; a tick passes it to update())."""
+    doc = load(outbox) or {"schema": SCHEMA, "ticks": [], "last_checked": None}
+    doc["plan"] = _plan_doc(plan)
+    doc["updated"] = now_iso()
+    return write(outbox, doc)
+
+
+def refresh(outbox: str | Path, *, live: bool, now: _dt.datetime | None = None, plan: dict | None = None) -> Path:
     """`python -m service status`: rebuild status.txt from status.json (or say nothing ran yet)."""
     now = now or _dt.datetime.now(_dt.timezone.utc)
     doc = load(outbox) or {"schema": SCHEMA, "ticks": [], "last_checked": None}
+    if plan is not None:
+        doc["plan"] = _plan_doc(plan)
     doc.update({"updated": now.isoformat(timespec="seconds"), "live": bool(live),
                 "week": week_totals(doc.get("ticks") or [], now=now)})
     return write(outbox, doc)
@@ -255,6 +279,12 @@ def _tick_lines(rec: dict) -> list[str]:
         lines.append("Items: none made this time")
         lines += _cap([f"Note: {n}" for n in run.get("notes") or []], "  ")
 
+    plan = rec.get("plan")
+    if isinstance(plan, dict) and plan.get("mode") and plan.get("mode") != "normal":
+        lines.append(f"Weekly plan: {plan.get('note') or plan.get('mode')}")
+        dropped = plan.get("dropped") or []
+        lines += _cap([f"Plan line dropped: {d.get('brief_id')} ({d.get('reason')})" for d in dropped
+                       if isinstance(d, dict)], "  ")
     if rec.get("own_stats"):
         lines.append(f"Our own shop stats: {rec['own_stats'].get('detail', '')}")
     cleanup = rec.get("cleanup")
@@ -279,6 +309,9 @@ def render(doc: dict) -> str:
         lines.append('Mode: TEST (dry run). No API calls and no Etsy drafts. To go live, see '
                      '"Go live" in deploy/lightsail/README.md.')
     lines.append(f"Last checked for uploads: {_show_time(doc.get('last_checked'))}")
+    plan = doc.get("plan")
+    if isinstance(plan, dict) and plan.get("lines"):
+        lines += ["", "Weekly plan", *_cap([str(x) for x in plan["lines"]], "  ")]
     ticks = [t for t in doc.get("ticks") or [] if isinstance(t, dict)]
     if not ticks:
         lines += ["", ("Nothing has happened yet. Make a research export (an eRank/EverBee CSV, or the "

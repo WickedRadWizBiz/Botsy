@@ -46,8 +46,10 @@ UNIT_DIR=/etc/systemd/system
 WRAPPER=/usr/local/bin/botsy
 LAUNCHER=/usr/local/sbin/botsy-setup
 UNITS=(botsy-inbox.path botsy-tick.service botsy-daily.service botsy-daily.timer
-       botsy-weekly.service botsy-weekly.timer botsy-digest.service botsy-digest.timer)
-ENABLE=(botsy-inbox.path botsy-daily.timer botsy-weekly.timer botsy-digest.timer)
+       botsy-weekly.service botsy-weekly.timer botsy-digest.service botsy-digest.timer
+       botsy-plan.service botsy-plan.timer botsy-plan-check.service botsy-plan-check.timer)
+ENABLE=(botsy-inbox.path botsy-daily.timer botsy-weekly.timer botsy-digest.timer
+        botsy-plan.timer botsy-plan-check.timer)
 
 DEFAULT_TIMEZONE=America/New_York   # the same as schedule.timezone in config/settings.yaml
 ZONEINFO=/usr/share/zoneinfo         # root-owned (package tzdata); zone names are checked here
@@ -464,7 +466,7 @@ LOCAL
 check_data_dirs() {
   say "Checking Botsy's working folders"
   local dir
-  for dir in "$APP_DIR/data/spend"; do
+  for dir in "$APP_DIR/data/spend" "$APP_DIR/data/control" "$APP_DIR/data/orders"; do
     as_app mkdir -p -m 750 "$dir"
     if ! as_app test -w "$dir"; then
       note "WARNING: $dir cannot be written by $APP_USER, so a spending cap would pause paid steps."
@@ -473,6 +475,30 @@ check_data_dirs() {
     fi
   done
   note "Done."
+}
+
+# The admin-only limits file (docs/OVERSEER.md "Four permission levels"): Hermes's change
+# limits, the cap ceiling, the daily limit on approvals. Root's file, never Botsy's: it is
+# installed from root's own copy of the code only when none exists, and never overwritten,
+# so an edit you made with sudo stays. Without it every Level 2 order (weekly plans included)
+# is refused with limits_unavailable.
+LIMITS_DIR=/etc/botsy
+LIMITS_FILE=$LIMITS_DIR/limits.yaml
+install_limits() {
+  say "Checking the admin-only limits file ($LIMITS_FILE)"
+  install -d -m 755 -o root -g root "$LIMITS_DIR"
+  if [[ -L $LIMITS_FILE ]]; then
+    note "WARNING: $LIMITS_FILE is a link; Botsy refuses it. Replace it with a real file:"
+    note "  sudo rm $LIMITS_FILE && sudo botsy-setup"
+    return 0
+  fi
+  if [[ -e $LIMITS_FILE ]]; then
+    note "Kept as it is (your values). Change it with:  sudo nano $LIMITS_FILE"
+  else
+    install -m 644 -o root -g root "$SRC_DIR/../../config/limits.example.yaml" "$LIMITS_FILE"
+    note "Installed the shipped values. Please read them once:"
+  fi
+  grep -E '^[a-z_0-9]+:|^  [a-z_0-9]+:' "$LIMITS_FILE" | sed 's/[[:space:]]*#.*$//; s/^/      /'
 }
 
 # ---------------------------------------------------------------- 9. services
@@ -508,11 +534,9 @@ install_services() {
   systemctl enable --quiet "${ENABLE[@]}"
   systemctl restart "${ENABLE[@]}"
   note "Watching $INBOX/incoming; daily check at 06:17, daily log at 07:07, weekly search list"
-  note "on Saturday 09:07, all New York time (America/New_York), whatever the server's clock."
+  note "on Saturday 09:07, weekly plan on Sunday 20:00 (plan check every hour at :05), all New"
+  note "York time (America/New_York), whatever the server's clock."
   note "Check with:  systemctl list-timers 'botsy*'"
-  # TODO (Sunday plan, docs/OVERSEER.md "Scale-ups ... and the Sunday plan"): botsy-plan.timer
-  # (Sun *-*-* 20:00:00 America/New_York) and botsy-plan.service are not installed yet,
-  # because `python -m service plan` does not exist. Add them to UNITS and ENABLE when it does.
 }
 
 # ---------------------------------------------------------------- 10. helper command
@@ -589,6 +613,7 @@ main() {
   check_env_file
   check_local_settings
   check_data_dirs
+  install_limits
   install_services
   install_wrapper
   finish

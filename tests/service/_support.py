@@ -39,6 +39,18 @@ def make_settings(tmp_path: Path, service: dict | None = None, **sections) -> tu
         "spend": {"ledger_file": str(tmp_path / "data" / "spend" / "ledger.jsonl")},
         "packs": {"state_file": str(tmp_path / "data" / "packs_state.json")},
         "publisher": {"performance_dir": str(tmp_path / "data" / "performance")},
+        # Orders and the control state never touch the repo's data/; the limits file
+        # stays missing (fail closed) unless a test writes it.
+        "control": {"orders_dir": str(tmp_path / "data" / "orders"),
+                    "state_file": str(tmp_path / "data" / "control" / "state.json"),
+                    "limits_path": str(tmp_path / "limits.yaml"), "limits_require_root": False,
+                    "winners_file": str(tmp_path / "data" / "performance" / "winners.json"),
+                    "log_file": str(tmp_path / "data" / "logs" / "botsy-control.log")},
+        "plan": {"dir": str(tmp_path / "data" / "plans")},
+        # The approval-mode numbers stay pinned here so the first-month flow keeps its tests; the
+        # repo's own settings start plans by themselves from week 1 (user, 2026-10-21), covered
+        # by tests/service/test_plan_auto_week1.py.
+        "schedule": {"approvals_before_auto": 4, "auto_start_max_cost_share": 0.40},
         # Discord stays off unless a test switches it on (and then it passes a fake session).
         "notify": {"discord": {"enabled": False}},
     })

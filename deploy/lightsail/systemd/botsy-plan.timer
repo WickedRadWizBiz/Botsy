@@ -1,0 +1,19 @@
+# Every Sunday at 20:00 New York time (America/New_York: EDT in summer, EST in winter),
+# whatever the server's own time zone: the weekly plan (docs/OVERSEER.md Part B). Sunday
+# 20:00 EDT is Monday 00:00 UTC; after the clocks change (first Sunday of November) it is
+# Monday 01:00 UTC, and from the second Sunday of March 00:00 UTC again. systemd 235+ reads
+# the zone name in OnCalendar (Ubuntu 24.04 has 255).
+# Check: systemd-analyze calendar --iterations=3 "Sun *-*-* 20:00:00 America/New_York"
+# Persistent=true: a run missed while the server was off happens at the next boot; the
+# plan service skips one more than schedule.stale_skip_hours (24) late ("this week's plan
+# was missed").
+[Unit]
+Description=Botsy: weekly plan, Sunday 20:00 New York time
+
+[Timer]
+OnCalendar=Sun *-*-* 20:00:00 America/New_York
+Persistent=true
+Unit=botsy-plan.service
+
+[Install]
+WantedBy=timers.target

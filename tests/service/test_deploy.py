@@ -269,3 +269,34 @@ def test_a_wrong_upload_key_is_refused(tmp_path):
     res = _setup(tmp_path, "--upload-pubkey", "ssh-ed25519 not-a-key")
     assert res.returncode == 1 and "is not a public SSH key" in res.stderr
     assert not (tmp_path / "keys" / "authorized_keys").exists()
+
+
+LIMITS_HARNESS = r'''
+source "$SCRIPT"
+install() { local a=(); while (($#)); do case $1 in -o|-g) shift 2;; *) a+=("$1"); shift;; esac; done
+            command install "${a[@]}"; }
+TRUSTED=$T/trusted; SRC_DIR=$TRUSTED/deploy/lightsail; LIMITS_DIR=$T/etc-botsy; LIMITS_FILE=$LIMITS_DIR/limits.yaml
+say() { :; }
+install_limits
+'''
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_setup_installs_the_limits_file_once_and_never_overwrites_it(tmp_path):
+    script = tmp_path / "setup-defs.sh"
+    script.write_text("\n".join(_text(SETUP).rstrip().splitlines()[:-1]) + "\n", encoding="utf-8")
+    (tmp_path / "trusted" / "config").mkdir(parents=True)
+    (tmp_path / "trusted" / "deploy" / "lightsail").mkdir(parents=True)
+    shutil.copy(ROOT / "config" / "limits.example.yaml", tmp_path / "trusted" / "config" / "limits.example.yaml")
+    env = {"PATH": os.environ["PATH"], "SCRIPT": str(script), "T": str(tmp_path), "HOME": str(tmp_path)}
+    run = lambda: subprocess.run(["bash", "-c", LIMITS_HARNESS], env=env, text=True,  # noqa: E731
+                                 capture_output=True, timeout=60)
+    res = run()
+    installed = tmp_path / "etc-botsy" / "limits.yaml"
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert installed.read_text() == (ROOT / "config" / "limits.example.yaml").read_text()
+    assert stat.S_IMODE(installed.stat().st_mode) == 0o644
+    assert "Installed the shipped values" in res.stdout and "level3_per_day: 10" in res.stdout
+    installed.write_text("cap_ceiling_usd: 50\n")                          # the admin's own edit
+    res = run()
+    assert "Kept as it is" in res.stdout and installed.read_text() == "cap_ceiling_usd: 50\n"

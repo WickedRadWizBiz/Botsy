@@ -13,7 +13,11 @@ one with force=True. A tick:
 4. if anything was accepted (or force), works out the research stage (discovery or
    refined, research.stages.resolve_stage), runs research for every shop niche with that
    stage, writing history snapshots, then the pipeline (generate -> qa -> listing ->
-   draft) for every shop, as a dry run unless service.live is true;
+   draft) for every shop, as a dry run unless service.live is true. Under the weekly plan
+   (service/plan.py, docs/OVERSEER.md B5) the pipeline makes only the plan's lines (a
+   running plan; last week's lines while this week's plan waits for your approval; nothing new
+   while it is on hold), so the briefs an upload brings wait for the next plan; with no plan,
+   an expired or stale one, or plan.enabled false, the normal rules apply;
 5. looks at the inbox again, and goes round once more for uploads that finished while
    it was busy (service.max_rounds), because systemd does not queue path events that
    arrive while the tick is still running;
@@ -348,22 +352,43 @@ def stale_exports_note(inputs_dir: Path, settings: dict, day: str) -> str | None
     return f"all exports are older than {days} days; new exports are needed (see this week's search list)"
 
 
-def run_all(settings: dict, paths: ServicePaths, day: str, *, live: bool, stages=RUN_STAGES) -> dict:
+PLAN_MODES = ("plan", "finish", "wait")      # service.plan.for_tick modes that replace the normal rules
+
+
+def run_all(settings: dict, paths: ServicePaths, day: str, *, live: bool, stages=RUN_STAGES,
+            plan: dict | None = None) -> dict:
     """pipeline.run (generate, qa, listing, publish) for every shop that has brief files.
-    `stages` is UNPAID_STAGES while the monthly spending cap is reached."""
+    `stages` is UNPAID_STAGES while the monthly spending cap is reached.
+
+    `plan` (service.plan.for_tick): in plan mode ("plan": a running plan; "finish": last week's
+    plan while this week's waits) each shop makes only the plan's lines for its niches
+    (docs/OVERSEER.md B5); in "wait" nothing new is made. Otherwise the normal rules."""
     from pipeline import run as prun
 
     out = {"summaries": [], "notes": [], "errors": []}
     stages = tuple(stages)
+    planned = isinstance(plan, dict) and plan.get("mode") in PLAN_MODES
     for shop in settings.get("shops") or []:
         niches = list(shop.get("niches") or [])
-        if not prun.latest_briefs(paths.briefs, niches):
+        kw = {}
+        if planned:
+            # Only the plan's lines are made; packs already made (plan lines or not) still go
+            # on to QA, listing and drafts, so the pipeline runs even with no line for this shop.
+            lines = [ln for ln in plan.get("lines") or [] if ln.get("niche") in niches
+                     and ln.get("shop_id", shop["id"]) == shop["id"]]
+            if not lines:
+                out["notes"].append(f"shop {shop['id']}: {plan.get('note') or 'weekly plan'}; nothing new to make "
+                                    "this time")
+                if not prun.latest_briefs(paths.briefs, niches):
+                    continue
+            kw["plan_lines"] = lines
+        elif not prun.latest_briefs(paths.briefs, niches):
             out["notes"].append(f"shop {shop['id']}: no brief files yet; items start after "
                                 "the first exports are researched")
             continue
         try:
             summary = prun.run(stages=stages, shop_id=shop["id"], dry_run=not live,
-                               briefs_dir=paths.briefs, date=day, settings=settings)
+                               briefs_dir=paths.briefs, date=day, settings=settings, **kw)
         except Exception as e:
             log.warning("pipeline run for shop %s failed: %s", shop["id"], e)
             out["errors"].append(quiet_error(f"run[{shop['id']}]", e))
@@ -518,8 +543,12 @@ def _state_dict(state: dict, key: str) -> dict:
     return state[key]
 
 
-def _budget_events(b: dict, state: dict, journal: Journal, *, reached: bool = False) -> None:
-    """spend_warning / budget_reached, each once per month (and again if the cap changes)."""
+def _budget_events(b: dict, state: dict, journal: Journal, *, reached: bool = False,
+                   settings: dict | None = None, rec: dict | None = None) -> None:
+    """spend_warning / budget_reached, each once per month (and again if the cap changes).
+    When budget_reached is first recorded, Botsy's budget stop is noted too
+    (service.orders.note_budget_stop): paid work then stays stopped this month until a Level 3
+    order (raise_cap or resume_after_budget_stop)."""
     sp = _state_dict(state, "spend")
     mark = {"month": b.get("month"), "cap": b.get("cap")}
     mtd = round(float(b.get("mtd") or 0.0), 2)
@@ -527,6 +556,15 @@ def _budget_events(b: dict, state: dict, journal: Journal, *, reached: bool = Fa
         if sp.get("reached") != mark:
             journal.emit("budget_reached", month_to_date=mtd, cap=b.get("cap"))
             sp["reached"] = mark
+            if settings is not None:
+                try:
+                    from service import orders as _orders
+
+                    _orders.note_budget_stop(settings, month=b.get("month"))
+                except Exception as e:  # noqa: BLE001 - logged; paid_work_block fails closed on a bad file
+                    log.warning("could not note the budget stop: %s", type(e).__name__)
+                    if rec is not None:
+                        rec["errors"].append(f"control: {type(e).__name__}: {scrub(e)}")
         sp["warned"] = mark            # no warning after the cap itself was reached
     elif b.get("warn") and sp.get("warned") != mark:
         journal.emit("spend_warning", month_to_date=mtd, cap=b.get("cap"), pct=b.get("pct"))
@@ -537,6 +575,32 @@ def _spend_problem(rec: dict, e: BaseException) -> None:
     error = f"spend: {type(e).__name__}: {scrub(e)}"
     if error not in rec["errors"]:          # checked more than once per tick
         rec["errors"].append(error)
+
+
+def control_block(settings: dict, rec: dict) -> str | None:
+    """service.orders.paid_work_block: "paused" (a pause order, or a control state file that
+    cannot be read), "budget_stop" (Botsy stopped paid work for the cap this month), or None.
+    An error here counts as paused (fail closed)."""
+    try:
+        from service import orders as _orders
+
+        return _orders.paid_work_block(settings)
+    except Exception as e:  # noqa: BLE001 - fail closed: a broken control state means paused
+        log.warning("control state check failed: %s", type(e).__name__)
+        rec["errors"].append(f"control: {type(e).__name__}: {scrub(e)}")
+        return "paused"
+
+
+def pause_note(settings: dict) -> str:
+    """The plain-words note for a paused tick (who paused, which order)."""
+    try:
+        from service import orders as _orders
+
+        p = _orders.paused(settings) or {}
+    except Exception:  # noqa: BLE001 - only the note's detail is lost
+        p = {}
+    oid, by = p.get("order_id") or "unknown", p.get("by") or "unknown"
+    return f"Botsy is paused (order {oid}, by {by}); nothing new is made until resume"
 
 
 def budget_step(settings: dict, state: dict, journal: Journal, rec: dict, *, reached: bool = False,
@@ -558,7 +622,7 @@ def budget_step(settings: dict, state: dict, journal: Journal, rec: dict, *, rea
     except Exception as e:  # the ledger cannot be read
         _spend_problem(rec, e)
         return "the spending log could not be read (see Problems); paid steps wait until it can"
-    _budget_events(b, state, journal, reached=reached)
+    _budget_events(b, state, journal, reached=reached, settings=settings, rec=rec)
     if b.get("reached") or reached:
         return "the monthly spending cap is reached"
     if live and b.get("cap") is not None:
@@ -814,6 +878,53 @@ def notify_step(settings: dict, journal: Journal) -> bool | None:
         return False
 
 
+# ---------------------------------------------------------------- the weekly plan
+
+def plan_step(settings: dict, rec: dict) -> dict:
+    """What this tick makes under the weekly plan (service.plan.for_tick). A plan that cannot be
+    read is a problem in status.txt and the tick runs on the normal rules (as without Hermes)."""
+    try:
+        from service import plan
+
+        tp = plan.for_tick(settings)
+    except Exception as e:  # noqa: BLE001 - the plan must never stop the tick
+        log.warning("weekly plan not read: %s", e)
+        rec["errors"].append(f"plan: {type(e).__name__}: {scrub(e)}")
+        tp = {"mode": "normal", "week": None, "order_id": None, "status": None, "lines": [], "dropped": [],
+              "note": "the weekly plan could not be read (see Problems); normal rules"}
+    rec["plan"] = {"mode": tp.get("mode"), "week": tp.get("week"), "order_id": tp.get("order_id"),
+                   "status": tp.get("status"), "note": tp.get("note"), "lines": len(tp.get("lines") or []),
+                   "dropped": list(tp.get("dropped") or [])}
+    return tp
+
+
+def plan_record(settings: dict, tp: dict, summaries: list[dict], rec: dict) -> None:
+    """service.plan.record_run after the pipeline runs (dropped lines, a finished plan)."""
+    if not isinstance(tp, dict) or tp.get("mode") not in ("plan", "finish"):
+        return
+    try:
+        from service import plan
+
+        new = plan.record_run(settings, tp, summaries)
+    except Exception as e:  # noqa: BLE001
+        log.warning("weekly plan progress not recorded: %s", e)
+        rec["errors"].append(f"plan: {type(e).__name__}: {scrub(e)}")
+        return
+    seen = {(d.get("brief_id"), d.get("reason")) for d in rec["plan"]["dropped"]}
+    rec["plan"]["dropped"] += [d for d in new if (d.get("brief_id"), d.get("reason")) not in seen]
+
+
+def plan_summary(settings: dict) -> dict | None:
+    """service.plan.summary for status.txt; None when it cannot be built (never stops the tick)."""
+    try:
+        from service import plan
+
+        return plan.summary(settings)
+    except Exception as e:  # noqa: BLE001
+        log.warning("weekly plan summary not built: %s", e)
+        return None
+
+
 # ---------------------------------------------------------------- the tick
 
 def _exit_code(rec: dict) -> int:
@@ -841,7 +952,12 @@ def tick(settings: dict, *, inbox_dir: str | Path | None = None, force: bool = F
             if live:
                 token_step(settings, state, journal, day)
         paused = budget_step(settings, state, journal, rec, live=live)
+        block = control_block(settings, rec)
+        if block == "budget_stop" and not paused:
+            paused = ("paid steps stopped for the budget this month; restarting needs your OK "
+                      "(resume_after_budget_stop)")
         new = ingest_step(paths, settings, rec, day, settle=True, sleep=sleep, journal=journal)
+        tp = plan_step(settings, rec)
         rounds, stage, stage_known, paused_noted = 0, None, False, False
         while new or (force and rounds == 0):
             rounds += 1
@@ -867,6 +983,14 @@ def tick(settings: dict, *, inbox_dir: str | Path | None = None, force: bool = F
             else:
                 rec["research"]["notes"].append(
                     f"research skipped: no new exports since the last research ({last_research.get('date')})")
+            if block == "paused":
+                if not paused_noted:
+                    rec["run"]["notes"].append(pause_note(settings))
+                    paused_noted = True
+                if rounds >= max(1, int(cfg["max_rounds"])):
+                    break
+                new = ingest_step(paths, settings, rec, day, settle=True, sleep=sleep, journal=journal)
+                continue
             stages = RUN_STAGES
             if live and paused:
                 stages = UNPAID_STAGES
@@ -874,7 +998,8 @@ def tick(settings: dict, *, inbox_dir: str | Path | None = None, force: bool = F
                     rec["run"]["notes"].append(f"paid steps skipped: {paused}. No new items or listing text "
                                                "this time; QA and drafts of finished items still run.")
                     paused_noted = True
-            ran = run_all(settings, paths, day, live=live, stages=stages)
+            ran = run_all(settings, paths, day, live=live, stages=stages, plan=tp)
+            plan_record(settings, tp, ran["summaries"], rec)
             rec["run"]["notes"] += ran["notes"]
             rec["errors"] += ran["errors"]
             for summary in ran["summaries"]:
@@ -902,7 +1027,7 @@ def tick(settings: dict, *, inbox_dir: str | Path | None = None, force: bool = F
     rec["finished"] = status.now_iso()
     rec["exit_code"] = _exit_code(rec)
     status.update(paths.outbox, rec, keep_days=int(cfg["status_keep_days"]),
-                  last_research=last_research)
+                  last_research=last_research, plan=plan_summary(settings))
     _prune_held(state, day)
     save_state(settings, state)
     notify_step(settings, journal)

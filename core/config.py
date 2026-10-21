@@ -55,9 +55,9 @@ _logged: set[str] = set()   # log lines already written by this process (each is
 
 
 # Settings section "schedule" (read with section(settings, "schedule", SCHEDULE_DEFAULTS)).
-# Times are "Day HH:MM" on the wall clock of schedule.timezone. Only `timezone` is used
-# today (timers, quiet hours, the daily log); the plan_* keys are the Sunday plan's schedule
-# as planned in docs/OVERSEER.md, kept here so the settings and docs agree before it is built.
+# Times are "Day HH:MM" on the wall clock of schedule.timezone. `timezone` sets the timers,
+# quiet hours and the daily log; the other keys are the Sunday plan's schedule, used by
+# service/plan.py.
 DEFAULT_TIMEZONE = "America/New_York"
 SCHEDULE_DEFAULTS: dict = {
     "timezone": DEFAULT_TIMEZONE,
@@ -67,8 +67,8 @@ SCHEDULE_DEFAULTS: dict = {
     "auto_start": "Mon 08:00",           # from plan 5: starts by itself unless held
     "revision_min_hours": 2,
     "max_revisions": 3,
-    "approvals_before_auto": 4,
-    "auto_start_max_cost_share": 0.40,   # plans above this share of the cap still need a code
+    "approvals_before_auto": 0,          # user, 2026-10-21: plans start by themselves from week 1
+    "auto_start_max_cost_share": 1.0,    # user, 2026-10-21: no cost gate (money left still limits plans)
     "stale_skip_hours": 24,              # a plan run more than this late is skipped
     "upload_cutoff": "Sun 19:00",        # shown in messages only: export by then for the plan
 }

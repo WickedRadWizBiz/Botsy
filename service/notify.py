@@ -21,7 +21,8 @@ status only, and urllib3's debug lines that name a webhook path are dropped.
   the change-of-clocks weeks too. A message that is not urgent is not sent then. It is
   recorded in the event journal as `notification_held`, and the morning digest
   (service/digest.py) includes it; it is not sent again later. Urgent kinds
-  (notify.urgent: budget_reached, error) always go out.
+  (notify.urgent: budget_reached, error, and the Level 3 approvals order_approved,
+  plan_approved, plan_mode_changed) always go out.
 - Mentions are switched off (allowed_mentions), so no text can ping @everyone.
 
 While pytest runs, the real webhook is never called: tests pass a fake `session`.
@@ -60,7 +61,7 @@ DEFAULTS: dict = {
         "max_retry_wait_s": 60,       # longest wait for Discord's retry_after on HTTP 429
     },
     "quiet_hours": ["22:00", "07:00"],   # in schedule.timezone; [] or null = no quiet hours
-    "urgent": ["budget_reached", "error"],   # sent even during quiet hours
+    "urgent": ["budget_reached", "error", "order_approved", "plan_approved", "plan_mode_changed"],  # sent even in quiet hours
 }
 
 _HHMM = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")

@@ -17,7 +17,9 @@ SETUP = DEPLOY / "setup.sh"
 UNITS_DIR = DEPLOY / "systemd"
 TIMERS = {"botsy-daily.timer": "*-*-* 06:17:00 America/New_York",
           "botsy-digest.timer": "*-*-* 07:07:00 America/New_York",
-          "botsy-weekly.timer": "Sat *-*-* 09:07:00 America/New_York"}
+          "botsy-weekly.timer": "Sat *-*-* 09:07:00 America/New_York",
+          "botsy-plan.timer": "Sun *-*-* 20:00:00 America/New_York",
+          "botsy-plan-check.timer": "*-*-* *:05:00 America/New_York"}
 
 
 def _text(path: Path) -> str:
@@ -50,14 +52,81 @@ def test_timers_name_new_york_time(name, spec):
     assert spec.endswith(" " + DEFAULT_TIMEZONE)
 
 
-def test_every_installed_timer_is_one_of_these_and_the_plan_timer_is_not_added_yet():
+def test_every_installed_timer_is_one_of_these_and_the_plan_timers_are_installed():
     units, enable = _setup_lists()
     assert {u for u in units if u.endswith(".timer")} == set(TIMERS)
     assert set(TIMERS) <= set(enable)
-    assert not any("plan" in u for u in units)
-    assert not (UNITS_DIR / "botsy-plan.timer").exists() and not (UNITS_DIR / "botsy-plan.service").exists()
-    text = _text(SETUP)
-    assert "TODO (Sunday plan" in text and "botsy-plan.timer" in text   # left as a clear note instead
+    for name in ("botsy-plan.service", "botsy-plan-check.service"):
+        assert name in units and name not in enable              # the timers start them
+        assert (UNITS_DIR / name).is_file()
+    assert "TODO (Sunday plan" not in _text(SETUP)
+
+
+def test_the_plan_services_run_the_plan_commands_hardened():
+    prepare, check = _unit("botsy-plan.service"), _unit("botsy-plan-check.service")
+    assert prepare["ExecStart"] == ["/opt/botsy/.venv/bin/python -m service plan prepare"]
+    assert check["ExecStart"] == ["/opt/botsy/.venv/bin/python -m service plan check"]
+    for keys in (prepare, check):
+        assert keys["User"] == ["botsy"] and keys["WorkingDirectory"] == ["/opt/botsy"]
+        assert keys["Type"] == ["oneshot"] and "Restart" not in keys
+        for k, v in {"NoNewPrivileges": "yes", "ProtectSystem": "full", "PrivateTmp": "yes", "ProtectHome": "yes",
+                     "PrivateDevices": "yes", "RestrictSUIDSGID": "yes", "ProtectKernelTunables": "yes",
+                     "LockPersonality": "yes", "RestrictNamespaces": "yes"}.items():
+            assert keys.get(k) == [v], k
+        assert keys.get("CapabilityBoundingSet") == [""]
+        rw = keys["ReadWritePaths"][0].split()
+        assert "/opt/botsy" in rw and "-/srv/botsy-inbox/outbox" in rw
+    # The check can run a started plan's first check (a forced tick that ingests uploads too).
+    assert "-/srv/botsy-inbox/incoming" in check["ReadWritePaths"][0].split()
+    assert "-/srv/botsy-inbox/incoming" not in prepare["ReadWritePaths"][0].split()
+
+
+def test_the_plan_schedule_matches_the_settings_and_the_daily_log():
+    from core.config import SCHEDULE_DEFAULTS
+    from service import digest
+
+    assert SCHEDULE_DEFAULTS["plan_post"] == "Sun 20:00" and TIMERS["botsy-plan.timer"].startswith("Sun *-*-* 20:00:00")
+    assert digest.SCHEDULE["weekly_plan"] == (6, 20, 0)
+    assert "prepare|check|status|approve|hold|start-now|again|auto" in _text(ROOT / "service" / "plan.py")
+
+
+def _base_time_supported() -> bool:
+    if not shutil.which("systemd-analyze"):
+        return False
+    res = subprocess.run(["systemd-analyze", "calendar", "--base-time=2026-10-24 12:00:00 UTC", "--", "*-*-* 06:17:00"],
+                         text=True, capture_output=True, timeout=30, env={**os.environ, "TZ": "UTC"})
+    return res.returncode == 0
+
+
+@pytest.mark.skipif(not _base_time_supported(), reason="needs systemd-analyze with --base-time (systemd 254+)")
+@pytest.mark.parametrize("base, want", [
+    # The Sunday plan through both changes of clocks (Nov 1, 2026 and Mar 14, 2027).
+    ("2026-10-24 12:00:00 UTC", ["Mon 2026-10-26 00:00:00", "Mon 2026-11-02 01:00:00", "Mon 2026-11-09 01:00:00"]),
+    ("2027-03-07 12:00:00 UTC", ["Mon 2027-03-08 01:00:00", "Mon 2027-03-15 00:00:00", "Mon 2027-03-22 00:00:00"]),
+])
+def test_the_sunday_plan_timer_through_the_clock_changes(base, want):
+    res = subprocess.run(["systemd-analyze", "calendar", "--iterations=3", f"--base-time={base}", "--",
+                          TIMERS["botsy-plan.timer"]], text=True, capture_output=True, timeout=30,
+                         env={**os.environ, "TZ": "UTC"})
+    assert res.returncode == 0, res.stderr
+    got = re.findall(r"(?:Next elapse|Iteration #\d): (\w+ \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC", res.stdout)
+    assert got == want
+
+
+@pytest.mark.skipif(not _base_time_supported(), reason="needs systemd-analyze with --base-time (systemd 254+)")
+def test_the_hourly_plan_check_runs_at_five_past_through_the_clock_change():
+    res = subprocess.run(["systemd-analyze", "calendar", "--iterations=4", "--base-time=2026-11-01 04:30:00 UTC",
+                          "--", TIMERS["botsy-plan-check.timer"]], text=True, capture_output=True, timeout=30,
+                         env={**os.environ, "TZ": "UTC"})
+    assert res.returncode == 0, res.stderr
+    got = re.findall(r"(?:Next elapse|Iteration #\d): \w+ \d{4}-\d{2}-\d{2} (\d{2}:\d{2}):\d{2} UTC", res.stdout)
+    assert got and all(t.endswith(":05") for t in got)
+    # Mon 08:05 New York time, the check that starts a plan by itself, in both seasons:
+    for base, hour in (("2026-10-26 11:30:00 UTC", "12"), ("2026-11-02 12:30:00 UTC", "13")):
+        res = subprocess.run(["systemd-analyze", "calendar", f"--base-time={base}", "--",
+                              "Mon *-*-* 08:05:00 America/New_York"], text=True, capture_output=True, timeout=30,
+                             env={**os.environ, "TZ": "UTC"})
+        assert f" {hour}:05:00 UTC" in res.stdout
 
 
 @pytest.mark.skipif(not shutil.which("systemd-analyze"), reason="needs systemd-analyze")
@@ -70,6 +139,9 @@ def test_systemd_accepts_the_calendar_lines(name, spec):
     assert f"Normalized form: {spec}" in res.stdout
     # The next runs are given in UTC and differ from New York's wall time by 4 or 5 hours.
     hours = [int(h) for h in re.findall(r"Next elapse: \w+ \d{4}-\d{2}-\d{2} (\d{2}):\d{2}:\d{2} UTC", res.stdout)]
+    if "*:" in spec:                       # the hourly plan check: every hour, the zone only fixes the minute
+        assert hours
+        return
     wall = int(re.search(r"(\d{2}):\d{2}:\d{2} America", spec).group(1))
     assert hours and all((h - wall) % 24 in (4, 5) for h in hours)
 

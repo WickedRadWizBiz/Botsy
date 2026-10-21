@@ -393,3 +393,149 @@ def test_every_tick_keeps_the_blank_templates_in_the_outbox(tmp_path, fakes):
     tick.tick(settings, date=DATE)
     for name in searchlist.TEMPLATE_NAMES:
         assert (paths.outbox / name).read_bytes() == (searchlist.TEMPLATES_DIR / name).read_bytes()
+
+
+# ---------------------------------------------------------------- the weekly plan (docs/OVERSEER.md B5)
+
+PLAN_LINE = {"brief_file": "briefs/stationery-2026-10-15.json", "brief_id": "stationery-2026-10-15-01",
+             "niche": "stationery", "theme": "weekly reset", "sizes": [5, 20], "origin": "plan",
+             "order_id": "pl-20261018-0001", "shop_id": "main"}
+
+
+def fixed_plan(monkeypatch, **tp):
+    from service import plan
+
+    base = {"mode": "normal", "week": "2026-W43", "order_id": None, "status": None, "lines": [], "dropped": [],
+            "note": None}
+    monkeypatch.setattr(plan, "for_tick", lambda settings=None, now=None: {**base, **tp})
+
+
+def test_a_running_plan_makes_only_its_lines_and_an_upload_still_researches(tmp_path, fakes, monkeypatch):
+    r, p = fakes
+    settings, paths = setup(tmp_path)
+    fixed_plan(monkeypatch, mode="plan", order_id="pl-20261018-0001", status="running", lines=[PLAN_LINE],
+               note="weekly plan 2026-W43: only its lines are made")
+    upload(paths.incoming, "everbee export.csv", everbee_csv())
+    rec = tick.tick(settings, date=DATE)
+    assert r.niches() == NICHES                         # the upload is still researched at once
+    assert len(p.calls) == 1 and p.calls[0]["plan_lines"] == [PLAN_LINE]   # the new briefs wait for the next plan
+    assert rec["plan"]["mode"] == "plan" and rec["plan"]["lines"] == 1
+    _, text = read_status(paths)
+    assert "Weekly plan: weekly plan 2026-W43: only its lines are made" in text
+
+
+def test_a_plan_waiting_for_your_approval_makes_nothing_new(tmp_path, fakes, monkeypatch):
+    r, p = fakes
+    settings, paths = setup(tmp_path)
+    fixed_plan(monkeypatch, mode="wait", status="waiting",
+               note="plan 2026-W44 waits for your approval; nothing new is made until it starts")
+    upload(paths.incoming, "everbee export.csv", everbee_csv())
+    rec = tick.tick(settings, date=DATE)
+    # The pipeline still runs, with no plan line: nothing new, but items already made go on to drafts.
+    assert r.niches() == NICHES and [c["plan_lines"] for c in p.calls] == [[]]
+    assert any("waits for your approval" in n and "nothing new to make" in n for n in rec["run"]["notes"])
+    assert rec["errors"] == []                    # (the fake run's own QA failure sets the exit code)
+
+
+def test_finishing_last_weeks_lines_goes_to_the_shop_that_has_the_niche(tmp_path, fakes, monkeypatch):
+    r, p = fakes
+    settings, paths = setup(tmp_path)
+    other = {**PLAN_LINE, "brief_id": "stickers-2026-10-15-01", "niche": "stickers", "shop_id": "second"}
+    fixed_plan(monkeypatch, mode="finish", lines=[PLAN_LINE, other], note="finishing last week's plan 2026-W42")
+    tick.tick(settings, force=True, date=DATE)
+    assert [c["plan_lines"] for c in p.calls] == [[PLAN_LINE]]   # shop "main" only: the stickers line is shop "second"'s
+
+
+def test_no_plan_keeps_todays_normal_rules(tmp_path, fakes, monkeypatch):
+    r, p = fakes
+    settings, paths = setup(tmp_path)
+    fixed_plan(monkeypatch, mode="normal", note="no plan in force for 2026-W43; normal rules")
+    upload(paths.incoming, "everbee export.csv", everbee_csv())
+    rec = tick.tick(settings, date=DATE)
+    assert len(p.calls) == 1 and "plan_lines" not in p.calls[0]
+    assert rec["plan"]["mode"] == "normal"
+
+
+def test_a_plan_that_cannot_be_read_falls_back_to_the_normal_rules(tmp_path, fakes, monkeypatch):
+    from service import plan
+
+    r, p = fakes
+    settings, paths = setup(tmp_path)
+
+    def broken(settings=None, now=None):
+        raise ValueError("state 'damaged'")
+
+    monkeypatch.setattr(plan, "for_tick", broken)
+    upload(paths.incoming, "everbee export.csv", everbee_csv())
+    rec = tick.tick(settings, date=DATE)
+    assert len(p.calls) == 1 and "plan_lines" not in p.calls[0]
+    assert "plan: ValueError: state '...'" in rec["errors"]           # quoted text kept out of the outbox
+    assert rec["plan"]["mode"] == "normal"
+
+
+def test_plan_mode_with_the_real_plan_state_records_dropped_lines(tmp_path, monkeypatch):
+    """prepare -> Start now -> a tick: the pipeline gets the plan's lines, and a line the pipeline
+    drops (research rewrote that brief) is remembered and journaled once."""
+    import functools
+    import os
+    import shutil
+    from collections import namedtuple
+    from datetime import datetime, timezone
+
+    from core import items
+    from core.config import ROOT
+    from service import capacity, plan
+
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(capacity.shutil, "disk_usage", lambda p: Usage(10**12, 0, 10**12))
+    lim = tmp_path / "limits.yaml"
+    shutil.copy(ROOT / "config" / "limits.example.yaml", lim)
+    os.chmod(lim, 0o644)
+    settings, _ = make_settings(tmp_path, control={
+        "orders_dir": str(tmp_path / "data" / "orders"),
+        "state_file": str(tmp_path / "data" / "control" / "state.json"), "limits_path": str(lim),
+        "limits_require_root": False}, plan={"dir": str(tmp_path / "data" / "plans")})
+    paths = service_paths(settings)
+    briefs = [{"brief_id": f"stationery-2026-10-24-0{i}", "niche": "stationery", "theme": t, "keywords": [t],
+               "pack_sizes": [5, 20], "page_count": 20,
+               "evidence": {"listing_count": 12, "shop_count": 4, "opportunity": 0.8 - i / 10},
+               "compliance": {"blocked": [], "flagged": []}, "needs_review": False}
+              for i, t in enumerate(["weekly reset", "habit grid"], 1)]
+    items.write_json(paths.briefs / "stationery-2026-10-24.json",
+                     {"schema": "brief/v1", "niche": "stationery", "created": "2026-10-24", "shop_id": "main",
+                      "listing_count": 50, "min_listings_per_pattern": 10, "patterns": {}, "briefs": briefs})
+    st = plan.load_state(settings)
+    st["approved_count"] = 5
+    plan._save_state(settings, st)
+    sunday = datetime(2026, 10, 26, 0, 1, tzinfo=timezone.utc)            # Sun 25 Oct 20:01 EDT
+    plan.prepare(settings, now=sunday)
+    plan.start_now(settings, now=sunday, run_check=lambda s: {"exit_code": 0})
+    monday = datetime(2026, 10, 26, 14, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(plan, "for_tick", functools.partial(plan.for_tick, now=monday))
+
+    calls = []
+
+    def fake_run(**kw):
+        calls.append(kw)
+        s = fake_summary(kw["date"], kw["shop_id"], kw["dry_run"])
+        s["plan"] = {"lines": [{"order_id": ln["order_id"], "brief_id": ln["brief_id"], "sizes": ln["sizes"],
+                                "made": {}, "skipped": {},
+                                "dropped": "brief_changed" if ln["brief_id"].endswith("-02") else None}
+                               for ln in kw["plan_lines"]]}
+        return s
+
+    monkeypatch.setattr(prun, "run", fake_run)
+    monkeypatch.setattr(research, "run", FakeResearch())
+    rec = tick.tick(settings, force=True, date="2026-10-26")
+    assert [ln["brief_id"] for ln in calls[0]["plan_lines"]] == ["stationery-2026-10-24-01",
+                                                                 "stationery-2026-10-24-02"]
+    assert rec["plan"]["mode"] == "plan" and rec["plan"]["week"] == "2026-W44"
+    assert rec["plan"]["dropped"] == [{"week": "2026-W44", "brief_id": "stationery-2026-10-24-02",
+                                       "reason": "brief_changed"}]
+    assert plan.load_state(settings)["plans"]["2026-W44"]["dropped"] == {"stationery-2026-10-24-02": "brief_changed"}
+    journal = [json.loads(x) for x in Path(settings["service"]["events_file"]).read_text().splitlines()]
+    assert [e["brief_id"] for e in journal if e["kind"] == "plan_line_dropped"] == ["stationery-2026-10-24-02"]
+    tick.tick(settings, force=True, date="2026-10-26")
+    assert [ln["brief_id"] for ln in calls[1]["plan_lines"]] == ["stationery-2026-10-24-01"]   # not again
+    _, text = read_status(paths)
+    assert "\r\nWeekly plan\r\n" in text and "Plan 2026-W44: running" in text
