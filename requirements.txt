@@ -21,6 +21,11 @@ PyYAML>=6.0
 python-dotenv>=1.0
 requests>=2.31
 
+# botsy-control (Hermes's only way into Botsy, docs/OVERSEER.md): the official MCP Python SDK,
+# MIT, pinned exactly. 2.3.0 was released 2026-10-02 (the newest release at least 7 days old on
+# 2026-10-21, no hotfix after it). In mcp 2.x FastMCP is called MCPServer.
+mcp==2.3.0
+
 # Tests
 pytest>=8.0
 httpx2                      # tests/listing build SDK responses with it (also an anthropic dependency)

@@ -1,0 +1,12 @@
+# /etc/sudoers.d/botsy-control: root:root, mode 0440. Check it before installing:
+#     visudo -cf deploy/lightsail/sudoers.d/botsy-control
+# (docs/OVERSEER.md "Lock-down: three layers" and "botsy-control reference")
+#
+# The hermes user may start exactly the two botsy-control MCP servers as the botsy user, and
+# nothing else: no other command, no other target user or group, no arguments ("" means none
+# are allowed), no password prompt, a reset environment it cannot add to, and no I/O logging
+# (the MCP stream is Botsy's own facts; Botsy logs each call itself). !requiretty: Hermes starts the servers
+# from a service, with pipes and no terminal.
+Cmnd_Alias BOTSY_CONTROL = /usr/local/bin/botsy-control-read "", /usr/local/bin/botsy-control-act ""
+Defaults!BOTSY_CONTROL env_reset, !setenv, !requiretty, !log_input, !log_output, secure_path="/usr/bin:/bin"
+hermes ALL = (botsy) NOPASSWD: NOSETENV: BOTSY_CONTROL

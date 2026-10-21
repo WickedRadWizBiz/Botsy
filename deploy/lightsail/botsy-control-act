@@ -1,0 +1,22 @@
+#!/bin/sh
+# botsy-control-act: Hermes's Botsy action tools, an MCP server on stdio (docs/OVERSEER.md
+# "botsy-control reference"). Every action is an order that service/orders.py checks.
+# Installed root-owned, mode 755, as /usr/local/bin/botsy-control-act. The hermes user starts
+# it only through the one sudo rule in /etc/sudoers.d/botsy-control
+# (deploy/lightsail/sudoers.d/botsy-control):
+#     sudo -n -u botsy /usr/local/bin/botsy-control-act
+# It takes no arguments and runs the installed code in /opt/botsy as the botsy user, with an
+# empty environment (so nothing the caller sets reaches Botsy) and Python's -E -s flags.
+set -eu
+if [ "$#" -ne 0 ]; then
+  echo "botsy-control-act takes no arguments" >&2
+  exit 64
+fi
+if [ "$(id -un)" != botsy ]; then
+  echo "botsy-control-act runs only as the botsy user: sudo -n -u botsy /usr/local/bin/botsy-control-act" >&2
+  exit 77
+fi
+umask 027
+cd /opt/botsy
+exec /usr/bin/env -i PATH=/usr/bin:/bin HOME=/opt/botsy LANG=C.UTF-8 \
+  /opt/botsy/.venv/bin/python -E -s -B -m control act
