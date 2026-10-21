@@ -39,12 +39,29 @@ stage that fails refuses it with fixed reason codes (never free text):
 Levels: 1 suggest (stored only), 2 small change (capped and undoable), 3 your approval (every
 review approval, raising the cap, restarting paid work after a budget stop, resuming after
 Botsy's own stop or Hermes lifting your pause, the first 4 weekly plans and plans over 40% of
-the cap). There are no codes: a Level 3 order sent by you (CLI) or by Hermes (the allowlisted
-Discord user) is your approval and is applied at once by submit(); a plan that waits for you
-is approved with approve(). Guards: hard-blocked items are never approved, raise_cap never
-goes above the root-only ceiling, at most limits level3_per_day approvals in 24 hours, each
-one posted at once to the main Discord channel (urgent: it ignores quiet hours) with what
-changed, who asked and how to undo it, and all journaled with fixed fields.
+the cap, a KDP kit approval). There are no codes: a Level 3 order sent by you (CLI, also
+`python -m qa review approve`) or by Hermes (the allowlisted Discord user) is your approval
+and is applied at once by submit(); a plan that waits for you is approved with approve().
+Guards: hard-blocked items are never approved, raise_cap never goes above the root-only
+ceiling, every approval is posted at once to the main Discord channel (urgent: it ignores
+quiet hours) with what changed, who asked and how to undo it, and all journaled with fixed
+fields. limits level3_per_day caps approvals in 24 hours (user, 2026-10-21, D1): every
+approval Hermes makes counts; yours count only when they lead to posting on Etsy or KDP
+(review_approve, batches included, and kdp_kit_approve: counts_toward_level3); your pause,
+resume, cap and plan commands are never counted (still posted and journaled).
+
+Plan Holds (D3): a plan_hold records who set it (user | hermes | botsy). A Hold sticks until
+someone of the same or a higher rank lifts it (may_lift: user > hermes > botsy), so your Hold
+can only be lifted by an order of yours: Hermes's plan_start_now, its approval of a waiting
+plan and its plan_revision / weekly_plan of that week are refused with held_by_user, a Hold
+Hermes sends never replaces yours, the automatic start never lifts it, and a revision or a new
+plan of the week inherits it.
+
+Fixes (D4.7): fix_retry_run, fix_clear_stale_lock, fix_rerun_qa, fix_resend_daily_log and
+fix_retry_notify are Level 2 orders for the fixed watchdog recipes in service/fixes.py, which
+checks their hard preconditions (stage "switches", with the facts journaled) and again when
+it runs them. Hermes may send at most limits fixes_per_day (6) in 24 hours; a run retry also
+counts toward run_now_per_day. Each applied fix is posted and journaled (fix_applied).
 
 Accepted orders are written to data/orders/<week>/<id>.json (settings control.orders_dir);
 refused ones are not stored. Every decision is journaled (core/events.py order_accepted,
@@ -67,6 +84,7 @@ tests point control.orders_dir and control.state_file into tmp_path.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import copy
 import json
 import logging
@@ -112,16 +130,34 @@ KINDS: dict = {
     "raise_cap": {"level": 3, "prefix": "rc"},
     "resume_after_budget_stop": {"level": 3, "prefix": "rb"},
     "search_ideas": {"level": 1, "prefix": "si"},
+    # A KDP kit approval (the step that leads to a KDP upload). A placeholder until the KDP build:
+    # always refused with kdp_not_built.
+    "kdp_kit_approve": {"level": 3, "prefix": "ka"},
+    # Fixed watchdog fixes (service/fixes.py; user, 2026-10-21 D4.7). Level 2, Botsy checks the
+    # preconditions itself, limits fixes_per_day.
+    "fix_retry_run": {"level": 2, "prefix": "fr"},
+    "fix_clear_stale_lock": {"level": 2, "prefix": "fl"},
+    "fix_rerun_qa": {"level": 2, "prefix": "fq"},
+    "fix_resend_daily_log": {"level": 2, "prefix": "fd"},
+    "fix_retry_notify": {"level": 2, "prefix": "fn"},
 }
+FIX_KINDS = ("fix_retry_run", "fix_clear_stale_lock", "fix_rerun_qa", "fix_resend_daily_log", "fix_retry_notify")
 PLAN_KINDS = ("weekly_plan", "plan_revision")
 # Only stop work or make things stricter: allowed without a limits file, never rate-refused.
 STOP_ONLY = ("pause", "order_cancel", "plan_hold", "lower_cap", "review_hold")
 # Applied at once by submit() when no approval is needed.
 IMMEDIATE = ("pause", "resume", "lower_cap", "review_reject", "review_hold", "order_cancel", "plan_hold",
-             "plan_start_now", "search_ideas")
+             "plan_start_now", "search_ideas") + FIX_KINDS
 # Level 3 orders that are your approval when you (CLI) or Hermes send them: submit() applies
 # them at once through approve() (counted, posted urgent, journaled). From Botsy they wait.
-DIRECT_APPROVAL = ("review_approve", "raise_cap", "resume_after_budget_stop", "resume")
+DIRECT_APPROVAL = ("review_approve", "raise_cap", "resume_after_budget_stop", "resume", "kdp_kit_approve")
+# Approvals that lead to posting on Etsy (a review approval lets the items become drafts) or KDP
+# (a kit approval). User, 2026-10-21 (D1): limits level3_per_day counts your own approvals only
+# when they are one of these; every approval Hermes makes counts, whatever its kind.
+POSTING_KINDS = ("review_approve", "kdp_kit_approve")
+# Who may lift whose plan Hold (D3): a Hold sticks until someone of the same or a higher rank
+# lifts it. Your Hold can only be lifted by you; Hermes's or Botsy's by you or Hermes.
+HOLD_RANK = {"botsy": 0, "hermes": 1, "user": 2}
 REVIEW_KINDS = ("review_approve", "review_reject", "review_hold")
 APPROVERS = ("user", "hermes")
 CANCELLABLE = ("weekly_plan", "plan_revision", "search_ideas", "review_approve", "raise_cap",
@@ -148,10 +184,13 @@ REASONS = (
     "control_state_unreadable", "plan_exists", "no_plan", "no_plan_to_revise", "too_many_revisions",
     "plan_needs_approval", "plan_already_started", "plan_held", "before_start_time", "plan_expired", "superseded",
     "brief_niche_mismatch", "no_winners_yet", "scale_up_not_built", "no_such_order", "not_hermes_order",
+    "held_by_user", "kdp_not_built",
     "not_cancellable", "item_unknown", "item_not_pending", "item_failed_qa", "item_not_ready",
     "already_rejected", "already_drafted", "blocklisted_term", "health_claim",
     # limits
-    "change_limit_reached", "search_ideas_limit", "batch_too_large", "level3_daily_limit",
+    "change_limit_reached", "search_ideas_limit", "batch_too_large", "level3_daily_limit", "fixes_limit",
+    "run_now_limit",
+    # fixes: service/fixes.py REASONS (preconditions, stage "switches" or "apply")
     # capacity: service/capacity.py REASONS
     # cost
     "over_cap", "above_ceiling", "not_a_raise", "not_lower", "money_unknown",
@@ -167,6 +206,7 @@ BRIEF_ID_RE = re.compile(r"[a-z][a-z0-9_]{0,40}-\d{4}-\d{2}-\d{2}-\d{1,4}")
 SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 CLIENT_REF_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 WINNER_REF_RE = re.compile(r"win-[a-z0-9_-]{1,100}")
+ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?")
 QUERY_RE = re.compile(r"[a-z0-9](?:[a-z0-9 '&-]{0,58}[a-z0-9])?")
 ITEM_MAX = 160
 
@@ -187,11 +227,12 @@ _HANDLERS: dict[str, dict] = {}
 
 
 class _Refused(Exception):
-    def __init__(self, stage: str, reasons, fields=()):
+    def __init__(self, stage: str, reasons, fields=(), facts=None):
         super().__init__(stage)
         self.stage = stage
         self.reasons = [r for r in dict.fromkeys(reasons)]
         self.fields = list(dict.fromkeys(fields))
+        self.facts = facts
 
 
 # ---------------------------------------------------------------- paths, time, files
@@ -527,7 +568,18 @@ def counts(settings: dict | None = None, *, now: datetime | None = None) -> dict
             "search_ideas_this_week": _count(rows, "search_ideas", "hermes", week_start),
             "page_redos_this_week": _count(rows, "page_redos", "hermes", week_start),
             "run_now_today": _count(rows, "run_now", "hermes", now - timedelta(days=1)),
+            "fixes_today": _count(rows, "fixes", "hermes", now - timedelta(days=1)),
             "level3_last_24h": _count(rows, "level3", None, now - timedelta(hours=24))}
+
+
+def counts_toward_level3(kind: str, by: str) -> bool:
+    """Whether an approval counts toward limits level3_per_day (user, 2026-10-21, D1): every
+    approval Hermes makes counts; yours count only when they lead to posting on Etsy or KDP
+    (review approvals, KDP kit approvals). Your pause, cap, resume and plan commands are still
+    posted and journaled, just not counted."""
+    if by == "hermes":
+        return True
+    return by == "user" and kind in POSTING_KINDS
 
 
 LEVEL3_PER_DAY = 10          # limits level3_per_day when the file is missing or broken
@@ -554,10 +606,14 @@ def level3_room(settings: dict | None = None, *, now: datetime | None = None, li
 def level3_take(settings: dict | None, action: str, by: str, *, now: datetime | None = None) -> bool:
     """Count one Level 3 approval that is not an order (service/plan.py `plan auto`), under the
     orders lock. False (nothing counted) when the day's limit is used up or `by` is not an
-    approver. Never call it from inside an order handler (it takes data/orders/.lock)."""
+    approver. Your own `action` that does not lead to posting (counts_toward_level3: anything
+    but review_approve / kdp_kit_approve) is allowed and not counted (D1). Never call it from
+    inside an order handler (it takes data/orders/.lock)."""
     settings = settings if settings is not None else load_settings()
     if by not in APPROVERS or not isinstance(action, str) or not REASON_RE.fullmatch(action):
         return False
+    if not counts_toward_level3(action, by):
+        return True
     now = _utc(now)
     with _lock(settings):
         if not level3_room(settings, now=now):
@@ -616,6 +672,12 @@ def _specs(settings: dict) -> dict:
         "review_hold": {"item_id": (True, item), "reason_code": (True, ("enum", HOLD_REASONS))},
         "review_approve": {"item_ids": (True, ("list", item, 1, 200, True)), "batch": (False, ("re", SLUG_RE))},
         "search_ideas": {"ideas": (True, ("list", idea, 1, 20, False))},
+        "kdp_kit_approve": {"kit_id": (True, ("re", SLUG_RE))},
+        "fix_retry_run": {"tick_started": (False, ("re", ISO_RE))},
+        "fix_clear_stale_lock": {"lock": (True, ("enum", ("service", "plans")))},
+        "fix_rerun_qa": {"item_id": (True, item)},
+        "fix_resend_daily_log": {},
+        "fix_retry_notify": {},
     }
 
 
@@ -701,10 +763,41 @@ def _format(order, settings: dict) -> tuple[dict, list[tuple[str, str]]]:
 
 # ---------------------------------------------------------------- helpers the stages share
 
+# The output root and review queue a review order of yours works on when you name them
+# (`python -m qa review approve --out DIR / --review-dir DIR / --dry-run`). Set only by
+# submit(target=...) from Python callers on the server (never from an order's fields, so
+# Hermes cannot set it), stored on the order as "target" and used while that order is
+# checked, applied or undone.
+_TARGET: contextvars.ContextVar = contextvars.ContextVar("orders_target", default=None)
+
+
+@contextlib.contextmanager
+def _targeting(target):
+    tok = _TARGET.set(target if isinstance(target, dict) and target.get("out") else None)
+    try:
+        yield
+    finally:
+        _TARGET.reset(tok)
+
+
+def _norm_target(target) -> dict | None:
+    if target is None:
+        return None
+    if not isinstance(target, dict) or not target.get("out"):
+        raise ValueError("target must be {'out': DIR, 'review_dir': DIR?}")
+    out = {"out": str(Path(target["out"]).resolve())}
+    if target.get("review_dir"):
+        out["review_dir"] = str(Path(target["review_dir"]).resolve())
+    return out
+
+
 def _work_root(settings: dict) -> Path:
     from core.items import dry_run_root, output_root
     from service.paths import is_live
 
+    t = _TARGET.get()
+    if t:
+        return Path(t["out"])
     return output_root(settings) if is_live(settings) else dry_run_root(settings)
 
 
@@ -712,6 +805,9 @@ def review_dir(settings: dict) -> Path:
     """The review queue of the output Botsy works on (live: paths.review_dir; else the dry-run one)."""
     from core.items import review_dir_for_root
 
+    t = _TARGET.get()
+    if t and t.get("review_dir"):
+        return Path(t["review_dir"])
     return review_dir_for_root(_work_root(settings), settings)
 
 
@@ -898,12 +994,45 @@ def _num(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x
 
 
+# ---------------------------------------------------------------- plan holds (D3)
+
+def hold_of(plan_order: dict | None) -> dict | None:
+    """The plan order's Hold mark {"order_id", "by", "at"} or None."""
+    h = (plan_order or {}).get("held")
+    return h if isinstance(h, dict) else None
+
+
+def held_by_user(plan_order: dict | None) -> bool:
+    """A Hold you set (user, 2026-10-21, D3): only an order of yours lifts it."""
+    return (hold_of(plan_order) or {}).get("by") == "user"
+
+
+def may_lift(hold: dict | None, by: str | None) -> bool:
+    """Whether `by` may lift (or start past) `hold`: a Hold sticks until someone of the same or
+    a higher rank (user > hermes > botsy) lifts it."""
+    if not hold:
+        return True
+    return HOLD_RANK.get(by, -1) >= HOLD_RANK.get(hold.get("by"), HOLD_RANK["user"])
+
+
+def _week_hold(settings: dict, week: str | None, self_id: str | None = None) -> dict | None:
+    """The Hold a new plan of `week` inherits: the one on the week's latest plan order (in force,
+    replaced, cancelled or expired), so neither a revision nor cancel-and-replan drops it."""
+    if not isinstance(week, str) or not WEEK_RE.fullmatch(week):
+        return None
+    plans = [o for o in list_orders(settings, week=week) if o.get("kind") in PLAN_KINDS and o.get("id") != self_id]
+    return hold_of(plans[-1]) if plans else None
+
+
 # ---------------------------------------------------------------- switches
 
 def _switches(order: dict, settings: dict, lim, now: datetime, self_id: str | None = None) -> list[str]:
     kind, p = order["kind"], order["payload"]
+    by = order.get("created_by")
     level = KINDS[kind]["level"]
     reasons: list[str] = []
+    if kind == "kdp_kit_approve":
+        return ["kdp_not_built"]          # a placeholder until the KDP build (D1 counts it as posting)
     if kind == "scale_up":
         # Not active until winners exist (about 20 listings live 30 days): the order type and its
         # refusal path are built, the winners engine is not. Fail closed whatever the file says.
@@ -926,6 +1055,9 @@ def _switches(order: dict, settings: dict, lim, now: datetime, self_id: str | No
         plans = [o for o in list_orders(settings, week=p.get("plan_week")) if o.get("id") != self_id]
         live = [o for o in plans if o.get("kind") in PLAN_KINDS and o.get("status") in ("waiting_approval",
                                                                                        "accepted", "applied")]
+        if by == "hermes" and not may_lift(_week_hold(settings, p.get("plan_week"), self_id), by):
+            reasons.append("held_by_user")            # Hermes never revises or replaces past your Hold
+            # (Botsy's own plan of a held week inherits the Hold instead: _validate)
         if kind == "weekly_plan" and live:
             reasons.append("plan_exists")
         elif kind == "weekly_plan" and len([o for o in plans if o.get("kind") in PLAN_KINDS]) \
@@ -943,6 +1075,8 @@ def _switches(order: dict, settings: dict, lim, now: datetime, self_id: str | No
         if plan is None:
             reasons.append("no_plan")
         elif kind == "plan_start_now":
+            if not may_lift(hold_of(plan), by):
+                reasons.append("held_by_user")        # only you lift your Hold
             if plan.get("status") == "waiting_approval":
                 reasons.append("plan_needs_approval")
             elif plan.get("status") == "applied":
@@ -1039,8 +1173,15 @@ def _limit_reasons(order: dict, settings: dict, lim, now: datetime) -> list[str]
     if kind == "review_approve" and len(p.get("item_ids") or []) > int(lim.get("approve_batch_max", 20)):
         reasons.append("batch_too_large")
     if kind in DIRECT_APPROVAL and by in APPROVERS and _needs_approval(order, settings, {}) \
-            and not level3_room(settings, now=now, limits=lim):
+            and counts_toward_level3(kind, by) and not level3_room(settings, now=now, limits=lim):
         reasons.append("level3_daily_limit")
+    if kind in FIX_KINDS and by == "hermes":
+        if _count(rows, "fixes", "hermes", now - timedelta(days=1)) >= int(lim.get("fixes_per_day", 6)):
+            reasons.append("fixes_limit")
+    if kind == "fix_retry_run":
+        # Retries count toward "run now" (limits run_now_per_day), whoever asks.
+        if _count(rows, "run_now", None, now - timedelta(days=1)) >= int(lim.get("run_now_per_day", 3)):
+            reasons.append("run_now_limit")
     return reasons
 
 
@@ -1117,12 +1258,17 @@ def _needs_approval(order: dict, settings: dict, info: dict) -> bool:
 
 def _refuse(err: _Refused, norm: dict, settings: dict, store: bool) -> dict:
     reasons = [r for r in err.reasons if REASON_RE.fullmatch(r)]
+    extra = {}
+    if err.facts is not None:
+        from service import fixes
+
+        extra["facts"] = fixes.safe_facts(err.facts)
     if store:
         events.emit("order_refused", settings=settings, order_kind=norm.get("kind") or "unknown",
                     created_by=norm.get("created_by") or "unknown", stage=err.stage, reasons=reasons,
-                    fields=err.fields)
+                    fields=err.fields, **extra)
     return {"ok": False, "stage": err.stage, "reasons": reasons, "fields": err.fields, "order": None,
-            "order_id": None, "status": "refused", "needs_approval": False}
+            "order_id": None, "status": "refused", "needs_approval": False, **extra}
 
 
 def _same_ref(settings: dict, norm: dict) -> dict | None:
@@ -1137,7 +1283,7 @@ def _same_ref(settings: dict, norm: dict) -> dict | None:
 
 def validate(order, settings: dict | None = None, limits=None, capacity=None, *, store: bool = True,
              now: datetime | None = None, cost_usd: float | None = None, context: dict | None = None,
-             content_check=None) -> dict:
+             content_check=None, target: dict | None = None) -> dict:
     """Check an order: format -> content -> switches -> limits -> capacity -> cost.
 
     Returns {"ok", "stage", "reasons", "fields", "needs_approval", "order_id", "status", "order",
@@ -1147,14 +1293,26 @@ def validate(order, settings: dict | None = None, limits=None, capacity=None, *,
     (default: service.capacity.check when the kind needs it). `cost_usd`: Botsy's own estimate of
     a plan (default: estimate_cost). `context`: {"approved_plans": int, "approve_each": bool}
     for plans (plan service; missing = 0 approved, so it waits for you). `content_check(order)`
-    -> list of reason codes, run after the format stage (stage "content")."""
+    -> list of reason codes, run after the format stage (stage "content"). `target`:
+    {"out": DIR, "review_dir": DIR?}, the output root and review queue a review order of yours
+    works on (`python -m qa review approve --out/--review-dir/--dry-run`); only for orders with
+    created_by "user", stored on the order (never an order field, so Hermes cannot set it)."""
     settings = settings if settings is not None else load_settings()
     now = _utc(now)
     context = dict(context or {})
-    if store:
-        with _lock(settings):          # checks and the write together: two plans cannot both pass
-            return _validate(order, settings, limits, capacity, True, now, cost_usd, context, content_check)
-    return _validate(order, settings, limits, capacity, False, now, cost_usd, context, content_check)
+    target = _norm_target(target)
+    if target is not None:
+        by = order.get("created_by") if isinstance(order, dict) else None
+        kind = order.get("kind") if isinstance(order, dict) else None
+        if by != "user" or kind not in REVIEW_KINDS:
+            raise ValueError("a target is only for review orders you send (created_by 'user')")
+    with _targeting(target):
+        if store:
+            with _lock(settings):          # checks and the write together: two plans cannot both pass
+                res = _validate(order, settings, limits, capacity, True, now, cost_usd, context, content_check)
+        else:
+            res = _validate(order, settings, limits, capacity, False, now, cost_usd, context, content_check)
+    return res
 
 
 def _validate(order, settings: dict, limits, capacity, store: bool, now: datetime, cost_usd, context: dict,
@@ -1180,6 +1338,14 @@ def _validate(order, settings: dict, limits, capacity, store: bool, now: datetim
         reasons = _switches(norm, settings, lim, now)
         if reasons:
             raise _Refused("switches", reasons)
+        fix_facts = None
+        if norm["kind"] in FIX_KINDS:
+            from service import fixes
+
+            reasons, fix_facts = fixes.check(norm["kind"], norm["payload"], settings, now=now)
+            fix_facts = fixes.safe_facts(fix_facts)
+            if reasons:
+                raise _Refused("switches", reasons, facts=fix_facts)
         reasons = _limit_reasons(norm, settings, lim, now)
         if reasons:
             raise _Refused("limits", reasons)
@@ -1209,6 +1375,14 @@ def _validate(order, settings: dict, limits, capacity, store: bool, now: datetim
            "history": []}
     if kind in PLAN_KINDS and isinstance(context.get("approved_plans"), int):
         out["plan_number"] = context["approved_plans"] + 1
+    if _TARGET.get():
+        out["target"] = dict(_TARGET.get())
+    if kind in PLAN_KINDS:
+        inherited = _week_hold(settings, week)
+        if inherited:                  # a revision or a new plan of a held week stays held (D3)
+            out["held"] = {**inherited, "inherited": True}
+    if kind in FIX_KINDS:
+        out["checks"]["facts"] = fix_facts
     if cap_result:
         out["checks"]["capacity"] = {"ok": cap_result.get("ok"), "reasons": cap_result.get("reasons"),
                                      "spent": (cap_result.get("facts") or {}).get("spent"),
@@ -1234,6 +1408,8 @@ def _validate(order, settings: dict, limits, capacity, store: bool, now: datetim
         _bump(settings, now, "changes", "hermes")
     if kind == "search_ideas":
         _bump(settings, now, "search_ideas", out["created_by"], len(out["payload"]["ideas"]))
+    if kind in FIX_KINDS and out["created_by"] == "hermes":
+        _bump(settings, now, "fixes", "hermes")
     events.emit("order_accepted", settings=settings, order_id=out["id"], order_kind=kind, level=out["level"],
                 created_by=out["created_by"], week=week, needs_approval=needs, status=out["status"])
     result["order_id"], result["order"] = out["id"], out
@@ -1242,7 +1418,7 @@ def _validate(order, settings: dict, limits, capacity, store: bool, now: datetim
 
 def submit(order, settings: dict | None = None, *, limits=None, capacity=None, now: datetime | None = None,
            cost_usd: float | None = None, context: dict | None = None, content_check=None,
-           apply_now: bool | None = None) -> dict:
+           apply_now: bool | None = None, target: dict | None = None) -> dict:
     """validate() and store, then act. A Level 3 order you (CLI) or Hermes send (review_approve,
     raise_cap, resume_after_budget_stop, resume after Botsy's stop or of your pause by Hermes)
     is your approval: it is applied at once through approve() and added as "applied" (refused
@@ -1255,7 +1431,7 @@ def submit(order, settings: dict | None = None, *, limits=None, capacity=None, n
     settings = settings if settings is not None else load_settings()
     now = _utc(now)
     res = validate(order, settings, limits, capacity, store=True, now=now, cost_usd=cost_usd, context=context,
-                   content_check=content_check)
+                   content_check=content_check, target=target)
     if not res["ok"] or res.get("duplicate"):
         return res
     o = res["order"]
@@ -1297,13 +1473,18 @@ def register_handler(kind: str, apply=None, undo=None) -> None:
     _HANDLERS[kind] = {"apply": apply, "undo": undo}
 
 
-def _failed(order: dict, stage: str, reasons, settings: dict, *, journal: bool = True) -> dict:
+def _failed(order: dict, stage: str, reasons, settings: dict, *, journal: bool = True, facts=None) -> dict:
     reasons = [r for r in reasons if isinstance(r, str) and REASON_RE.fullmatch(r)]
+    extra = {}
+    if facts is not None:
+        from service import fixes
+
+        extra["facts"] = fixes.safe_facts(facts)
     if journal:
         events.emit("order_failed", settings=settings, order_id=order.get("id"), order_kind=order.get("kind"),
-                    stage=stage, reasons=reasons)
+                    stage=stage, reasons=reasons, **extra)
     return {"ok": False, "stage": stage, "reasons": reasons, "order_id": order.get("id"),
-            "status": order.get("status")}
+            "status": order.get("status"), **extra}
 
 
 def apply(order, settings: dict | None = None, *, now: datetime | None = None) -> dict:
@@ -1337,8 +1518,14 @@ def _run(order, settings: dict | None, now: datetime | None, by: str | None) -> 
     settings = settings if settings is not None else load_settings()
     now = _utc(now)
     oid = order if isinstance(order, str) else (order.get("id") if isinstance(order, dict) else None)
-    if load(oid, settings) is None:
+    stored = load(oid, settings)
+    if stored is None:
         return {"ok": False, "stage": "apply", "reasons": ["no_such_order"], "order_id": None, "status": None}
+    with _targeting(stored.get("target")):
+        return _run_locked(oid, settings, now, by)
+
+
+def _run_locked(oid: str, settings: dict, now: datetime, by: str | None) -> dict:
     with _lock(settings):
         o = load(oid, settings)
         if o is None:
@@ -1366,7 +1553,10 @@ def _run(order, settings: dict | None, now: datetime | None, by: str | None) -> 
                 return _failed(o, stage, reasons, settings)
         if o["kind"] == "resume" and not o.get("needs_approval") and _needs_approval(o, settings, {}):
             return _failed(o, "switches", ["state_changed"], settings)   # the pause is now yours or Botsy's
-        if by is not None and not level3_room(settings, now=now, limits=lim):
+        if by is not None and o["kind"] in PLAN_KINDS and not may_lift(hold_of(o), by):
+            return _failed(o, "switches", ["held_by_user"], settings)    # Hermes never approves past your Hold
+        counted = by is not None and counts_toward_level3(o["kind"], by)
+        if counted and not level3_room(settings, now=now, limits=lim):
             return _failed(o, "limits", ["level3_daily_limit"], settings)
         # Review orders also hold the review queue's lock (lock order: orders, then review queue),
         # so the entry that was checked is the one the decision is written to: a tick rewriting
@@ -1376,7 +1566,11 @@ def _run(order, settings: dict | None, now: datetime | None, by: str | None) -> 
             try:
                 result, undo_rec = _effect(o, settings, now, by)
             except _Refused as err:
-                return _failed(o, err.stage, err.reasons, settings)
+                if o["kind"] in FIX_KINDS:        # a fix whose preconditions broke is done with, not left open
+                    o["status"] = "failed"
+                    o.setdefault("history", []).append({"ts": _iso(now), "status": "failed", "by": "botsy"})
+                    _save(settings, o)
+                return _failed(o, err.stage, err.reasons, settings, facts=err.facts)
             except Exception as e:  # noqa: BLE001 - recorded, never half-silent
                 log.warning("order %s could not be applied: %s", o["id"], type(e).__name__)
                 o["status"] = "failed"
@@ -1388,8 +1582,11 @@ def _run(order, settings: dict | None, now: datetime | None, by: str | None) -> 
         o["result"] = result
         o["undo"] = undo_rec
         if by is not None:
-            o["approved"] = {"by": by, "at": _iso(now)}
-            _bump(settings, now, "level3", by)
+            o["approved"] = {"by": by, "at": _iso(now), "counted": counted}
+            if counted:
+                _bump(settings, now, "level3", by)
+        if o["kind"] == "fix_retry_run":
+            _bump(settings, now, "run_now", o["created_by"])      # a retry counts toward "run now"
         o.setdefault("history", []).append({"ts": _iso(now), "status": "applied", "by": by or "botsy"})
         _save(settings, o)
     fields = {"approved_by": by} if by else {}
@@ -1401,9 +1598,45 @@ def _run(order, settings: dict | None, now: datetime | None, by: str | None) -> 
         announced = False if o["kind"] in PLAN_KINDS else _announce(o, settings, by, result, now)
         count = len((o.get("payload") or {}).get("item_ids") or []) or 1
         events.emit("order_approved", settings=settings, order_id=o["id"], order_kind=o["kind"], level=o["level"],
-                    by=by, count=count, announced=announced)
+                    by=by, count=count, announced=announced, counted=counted)
+        out["announced"] = announced
+        if o["kind"] not in PLAN_KINDS:
+            _note_announced(settings, o["id"], announced)
+    elif o["kind"] in FIX_KINDS:
+        from service import fixes
+
+        facts = (o.get("checks") or {}).get("facts") or {}
+        events.emit("fix_applied", settings=settings, order_id=o["id"], fix=o["kind"], recipe=fixes.RECIPES[o["kind"]],
+                    created_by=o["created_by"], facts=facts, result=fixes.safe_facts(result))
+        announced = _announce_fix(o, settings, result, facts, now)
+        _note_announced(settings, o["id"], announced)
         out["announced"] = announced
     return out
+
+
+def _note_announced(settings: dict, order_id: str, announced: bool) -> None:
+    """Record whether Discord took the order's notice (fixes.retry_notify_outbox re-posts the
+    ones it did not)."""
+    try:
+        with _lock(settings):
+            o = load(order_id, settings)
+            if o is not None:
+                o["announced"] = bool(announced)
+                _save(settings, o)
+    except Exception as e:  # noqa: BLE001 - the journal has it either way
+        log.warning("could not record the notice of %s: %s", order_id, type(e).__name__)
+
+
+def _announce_fix(o: dict, settings: dict, result: dict, facts: dict, now: datetime) -> bool:
+    """Post an applied fix to the main Discord channel with the facts Botsy checked."""
+    from service import fixes, notify
+
+    try:
+        return bool(notify.send(fixes.post_text(o, result, facts), settings=settings, kinds=["fix_applied"],
+                                now=now))
+    except Exception as e:  # noqa: BLE001
+        log.warning("fix notice for %s not sent: %s", o.get("id"), type(e).__name__)
+        return False
 
 
 def _asked(by: str) -> str:
@@ -1576,6 +1809,17 @@ def _effect(o: dict, settings: dict, now: datetime, by: str | None) -> tuple[dic
     if kind == "search_ideas":
         flags = [c["flagged"] for c in _idea_checks(p, settings)]
         return {"ideas": len(p["ideas"]), "flagged": [i for i, f in enumerate(flags) if f]}, {"kind": "cancel_order"}
+    if kind in FIX_KINDS:
+        from service import fixes
+
+        try:
+            result, facts = fixes.perform(o, settings, now=now)
+        except fixes.FixRefused as err:
+            raise _Refused("apply", err.reasons, facts=err.facts) from None
+        o.setdefault("checks", {})["facts"] = fixes.safe_facts(facts)       # the facts at run time
+        return result, None
+    if kind == "kdp_kit_approve":
+        raise _Refused("switches", ["kdp_not_built"])
     if kind in PLAN_KINDS + ("plan_hold", "plan_start_now"):
         plan_id = _mark_plan(o, settings, now) if kind in ("plan_hold", "plan_start_now") else None
         h = _HANDLERS.get(kind, {}).get("apply")
@@ -1600,6 +1844,10 @@ def _mark_plan(o: dict, settings: dict, now: datetime) -> str | None:
     if target is None:
         return None
     key = MARKS[o["kind"]]
+    if key == "held" and not may_lift(hold_of(target), o["created_by"]):
+        return target["id"]            # your Hold stays yours: Hermes's hold never replaces it (D3)
+    if key == "start_now" and not may_lift(hold_of(target), o["created_by"]):
+        raise _Refused("switches", ["held_by_user"])
     target[key] = {"order_id": o["id"], "by": o["created_by"], "at": _iso(now)}
     target.pop("start_now" if key == "held" else "held", None)
     target.setdefault("history", []).append({"ts": _iso(now), "status": target.get("status"), "by": o["created_by"],
@@ -1642,6 +1890,15 @@ def _hold_locked(settings: dict, item_id: str, reason_code: str, oid: str) -> st
 # ---------------------------------------------------------------- undo
 
 def undo(order_id: str, settings: dict | None = None, *, by: str = "user", now: datetime | None = None) -> dict:
+    """Undo an applied order (see _undo). A review order you sent for a named output root
+    (`qa review approve --out`) is undone there."""
+    settings = settings if settings is not None else load_settings()
+    stored = load(order_id, settings) if isinstance(order_id, str) else None
+    with _targeting((stored or {}).get("target")):
+        return _undo(order_id, settings, by=by, now=now)
+
+
+def _undo(order_id: str, settings: dict | None = None, *, by: str = "user", now: datetime | None = None) -> dict:
     """Undo an applied order with the record it saved. Refused (state_changed) when someone
     changed the same thing since; an undo never approves an item or raises the cap above what
     was in force before the order. A Hermes undo counts toward its changes an hour.
@@ -1673,6 +1930,8 @@ def undo(order_id: str, settings: dict | None = None, *, by: str = "user", now: 
             return _failed(o, "apply", ["nothing_to_undo"], settings, journal=False)
         kind = rec.get("kind")
         stop_only = kind in STRICTER_UNDOS or o["kind"] == "raise_cap"
+        if o["kind"] == "plan_hold" and not may_lift({"by": o.get("created_by")}, by):
+            return _failed(o, "switches", ["held_by_user"], settings)     # only you lift your Hold (D3)
         if by == "hermes" and not stop_only:
             if o.get("created_by") != "hermes":
                 return _failed(o, "switches", ["not_hermes_order"], settings)
@@ -1757,13 +2016,17 @@ def undo(order_id: str, settings: dict | None = None, *, by: str = "user", now: 
                 if h and rec["status"] == "applied":
                     h(target, settings, now)
             elif kind == "handler":
-                target = load(rec.get("plan_id"), settings) if rec.get("plan_id") else None
                 key = MARKS.get(o["kind"])
-                if target is not None and key and (target.get(key) or {}).get("order_id") == o["id"]:
-                    target.pop(key, None)      # lift this order's own hold / start-now mark only
-                    target.setdefault("history", []).append({"ts": _iso(now), "status": target.get("status"),
-                                                             "by": by, "unmark": key, "order_id": o["id"]})
-                    _save(settings, target)
+                week = (o.get("payload") or {}).get("plan_week")
+                # The mark may have moved on with the plan (a revision or a new plan of the week
+                # inherits a Hold): lift it wherever this order's own mark is, and only there.
+                for target in [x for x in list_orders(settings, week=week) if x.get("kind") in PLAN_KINDS] \
+                        if key and week else []:
+                    if (target.get(key) or {}).get("order_id") == o["id"]:
+                        target.pop(key, None)
+                        target.setdefault("history", []).append({"ts": _iso(now), "status": target.get("status"),
+                                                                 "by": by, "unmark": key, "order_id": o["id"]})
+                        _save(settings, target)
                 h = _HANDLERS.get(o["kind"], {}).get("undo")
                 if h:
                     h(o, settings, now)
@@ -1842,6 +2105,11 @@ DESCRIBE = {
     "state_changed": "Something changed since; the undo would overwrite it.",
     "nothing_to_undo": "There is nothing to undo.",
     "apply_failed": "Botsy could not apply the order (the server log says why).",
+    "held_by_user": "You put this plan on hold. Only you can lift your Hold (botsy service plan approve or "
+                    "start-now on the server); Hermes cannot start, approve or revise it.",
+    "kdp_not_built": "KDP kits are not built yet, so there is nothing to approve.",
+    "fixes_limit": "Hermes has used the most watchdog fixes allowed in 24 hours (limits fixes_per_day).",
+    "run_now_limit": "The most extra checks allowed in 24 hours were used (limits run_now_per_day).",
 }
 
 
@@ -1849,14 +2117,17 @@ def describe(reason: str) -> str:
     """Plain words for a reason code (orders or capacity)."""
     if reason in DESCRIBE:
         return DESCRIBE[reason]
-    from service import capacity, limits
+    from service import capacity, fixes, limits
 
+    if fixes.describe(reason):
+        return fixes.describe(reason)
     if reason in limits.REASONS:
         return DESCRIBE["limits_unavailable"]
     return capacity.DESCRIBE.get(reason) or reason
 
 
-__all__ = ["APPROVERS", "CREATORS", "KINDS", "REASONS", "SCHEMA", "STATUSES", "apply", "approval_text", "approve",
+__all__ = ["APPROVERS", "CREATORS", "FIX_KINDS", "HOLD_RANK", "KINDS", "POSTING_KINDS", "counts_toward_level3",
+           "held_by_user", "hold_of", "may_lift", "REASONS", "SCHEMA", "STATUSES", "apply", "approval_text", "approve",
            "control_state", "counts", "current_plan", "describe", "effective_cap", "estimate_cost", "iso_week",
            "level3_room", "level3_take", "list_orders", "load", "note_budget_stop", "paid_work_block", "paused",
            "plan_needs_approval", "plan_start_at", "plan_weeks", "register_handler", "review_dir", "settings_cap",

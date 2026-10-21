@@ -1,5 +1,7 @@
 """qa.run / run_all end to end: report, status, mockups, review queue, CLI."""
+import copy
 import json
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -11,6 +13,26 @@ from qa import mockups, review
 from qa.__main__ import main
 
 from .conftest import by_name, coloring_item, make_item, make_pdf, sticker_item
+
+
+def with_orders(settings, tmp_path, monkeypatch):
+    """D2: `qa review approve` is an order. Its order files, control state and journal go into
+    tmp_path, and Discord posts are captured: returns (settings, posts)."""
+    from service import notify
+
+    s = copy.deepcopy(settings)
+    s["control"] = {**(s.get("control") or {}), "orders_dir": str(tmp_path / "data" / "orders"),
+                    "state_file": str(tmp_path / "data" / "control" / "state.json"),
+                    "limits_path": str(tmp_path / "limits.yaml"), "limits_require_root": False}
+    s["service"] = {**(s.get("service") or {}), "events_file": str(tmp_path / "data" / "events.jsonl")}
+    posts = []
+    monkeypatch.setattr(notify, "send", lambda text, **kw: posts.append((text, kw.get("urgent"))) or True)
+    return s, posts
+
+
+def journal(s):
+    p = Path(s["service"]["events_file"])
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
 
 
 def test_clean_coloring_item_passes(tmp_path, settings):
@@ -199,6 +221,7 @@ def test_text_helpers():
 
 
 def test_cli_run_and_review(tmp_path, settings, capsys, monkeypatch):
+    settings, posts = with_orders(settings, tmp_path, monkeypatch)
     monkeypatch.setattr("qa.__main__.load_settings", lambda path=None: settings)
     out = tmp_path / "out"
     d = coloring_item(out)
@@ -208,7 +231,18 @@ def test_cli_run_and_review(tmp_path, settings, capsys, monkeypatch):
     assert main(["review", "list", "--out", str(out)]) == 0
     assert d.name in capsys.readouterr().out
     assert main(["review", "approve", d.name, "--out", str(out), "--note", "ok"]) == 0
-    assert review.read_entry(d.name, out / "review")["status"] == "approved"
+    printed = capsys.readouterr().out
+    e = review.read_entry(d.name, out / "review")
+    assert e["status"] == "approved" and "approved by user (order ra-" in e["decision_note"]
+    # D2: an order, posted at once (urgent) with how to undo it, journaled and counted.
+    assert "Undo: botsy service control undo ra-" in printed
+    assert len(posts) == 1 and posts[0][1] is True and d.name in posts[0][0] and "Undo:" in posts[0][0]
+    ev = [x for x in journal(settings) if x["kind"] == "order_approved"]
+    assert ev and ev[-1]["by"] == "user" and ev[-1]["counted"] is True
+    from service import orders
+
+    assert orders.counts(settings)["level3_last_24h"] == 1
+    assert main(["review", "approve", d.name, "--out", str(out)]) == 1        # not pending any more
     with pytest.raises(SystemExit):
         main(["review", "reject", d.name, "--out", str(out)])  # --reason is required
     assert main(["review", "reject", d.name, "--out", str(out), "--reason", "blurry"]) == 0

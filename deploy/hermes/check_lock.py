@@ -2,6 +2,7 @@
 """check_lock.py: is Botsy's lock on Hermes Agent still in place? (docs/OVERSEER.md "Hermes setup")
 
     check_lock.py check [--quick] [--probe] [--stop UNIT] [--root DIR]
+    check_lock.py jobs [--stop UNIT]
     check_lock.py render --env FILE [--mode socket|sudo] [--out FILE]
     check_lock.py render-env --env FILE [--out FILE]
     check_lock.py pin
@@ -9,17 +10,21 @@
 check   exit 0 when locked, 1 with one "PROBLEM:" line per problem, 2 on wrong usage. It checks:
         the rendered configs (/etc/hermes/config.yaml, the managed scope, and
         /home/hermes/.hermes/config.yaml) equal the template and still lock everything (no forbidden
-        toolset, only the two Botsy MCP servers, sampling and elicitation off, memory and skill
-        approval on, your user ID as the only allowed user, no agent-made scheduled jobs); that the
+        toolset outside each place's list, only the two Botsy MCP servers, sampling and elicitation
+        off, memory and skill approval on, your user ID as the only allowed user, no worker agents,
+        vision kept off the web); Hermes's scheduled jobs (see jobs); that the
         hermes user cannot write any of them, its .env, SOUL.md, hooks/ or plugins/, or the code in
         /opt/hermes; the pinned version; the secrets file; the systemd units and that no foreign
         drop-in changes them; that the hermes user has no sudo beyond botsy-control and cannot read
-        Botsy's folders; and the firewall when it is on.
+        Botsy's folders; and the firewall (required since 2026-10-21).
         --quick skips walking every file of /opt/hermes (used before each start).
         --probe also asks the installed Hermes itself, as the hermes user, which toolsets and tools
         each place gets (Discord, scheduled jobs, CLI, webhooks, API server) and what its merged
         settings and environment say.
         --stop UNIT stops that systemd unit when there is a problem (the daily timer stops Hermes).
+jobs    only Hermes's scheduled jobs (hourly timer): at most 10 on, none more often than hourly, no
+        scripts, URL monitors, work folders, other providers or toolsets; Sonnet only on
+        botsy-weekly-plan and botsy-creative-director, at most weekly.
 render  writes the config from config.yaml.template with your Discord user ID from the secrets
         file. It refuses a missing or malformed ID. Nothing secret is ever printed.
 
@@ -58,21 +63,65 @@ MCP_NAMES = ("botsy-read", "botsy-act")
 # scheduled jobs and other sessions nobody can answer. Since there are no codes (decided
 # 2026-10-21), this is the one check on Botsy's action tools that does not depend on the model.
 MCP_TRUST = {"botsy-read": "full", "botsy-act": "untrusted"}
-ALLOWED_TOOLSETS = frozenset({"botsy-read", "botsy-act", "memory"})
-ALLOWED_PROBE_TOOLS = frozenset({"memory"})       # built-in tool names; MCP tools register at connect
+# What each place gets (decided 2026-10-21, "too cautious; I want Hermes pulling its weight"):
+# Discord chat gets everything below; scheduled jobs and the command line get no Discord tool, task
+# board or job tools; webhooks and the API server (unused) keep the minimum. Exact allowlists.
+_JOB_TOOLSETS = ("botsy-read", "botsy-act", "memory", "vision", "session_search", "todo", "skills")
+PLATFORM_TOOLSETS = {
+    "discord": frozenset(_JOB_TOOLSETS + ("cronjob", "kanban", "discord")),
+    "cron": frozenset(_JOB_TOOLSETS),
+    "cli": frozenset(_JOB_TOOLSETS),
+    "webhook": frozenset({"botsy-read", "botsy-act", "memory"}),
+    "api_server": frozenset({"botsy-read", "botsy-act", "memory"}),
+}
+ALLOWED_TOOLSETS = frozenset().union(*PLATFORM_TOOLSETS.values())
+CRON_TOOLSETS = PLATFORM_TOOLSETS["cron"]       # what a scheduled job may name in enabled_toolsets
+# Built-in tool names the probe may see per place (v0.21.7 toolsets.py; MCP tools register at
+# connect). A tool the pin does not list here is refused, so an update cannot add one quietly.
+_JOB_TOOLS = frozenset({"memory", "vision_analyze", "session_search", "todo_list",
+                        "skills_list", "skill_view", "skill_manage"})
+KANBAN_TOOLS = frozenset({"kanban_attach", "kanban_attach_url", "kanban_attachments", "kanban_block",
+                          "kanban_comment", "kanban_complete", "kanban_create", "kanban_heartbeat",
+                          "kanban_link", "kanban_list", "kanban_request_changes", "kanban_request_review",
+                          "kanban_schedule", "kanban_show", "kanban_unblock"})
+PLATFORM_PROBE_TOOLS = {
+    "discord": _JOB_TOOLS | KANBAN_TOOLS | {"cronjob_manage", "discord"},
+    "cron": _JOB_TOOLS,
+    "cli": _JOB_TOOLS,
+    "webhook": frozenset({"memory"}),
+    "api_server": frozenset({"memory"}),
+}
+# Must be in agent.disabled_toolsets (Hermes subtracts these last, whatever else is on). Single
+# toolsets only: a bundle ("safe", "coding", "debugging") there would also strip vision and skills.
 FORBIDDEN_TOOLSETS = (
-    "terminal", "file", "web", "search", "browser", "delegation", "cronjob", "code_execution",
-    "discord", "discord_admin", "computer_use", "vision", "video", "image_gen", "video_gen", "tts",
-    "x_search", "kanban", "connections", "catalog", "project", "desktop_ui", "session_search",
-    "skills", "todo", "yuanbao", "feishu_doc", "feishu_drive")
-ALLOWED_MODELS = frozenset({"claude-haiku-5-5"})
+    "terminal", "file", "web", "search", "browser", "delegation", "code_execution", "discord_admin",
+    "computer_use", "video", "image_gen", "video_gen", "tts", "x_search", "connections", "catalog",
+    "project", "desktop_ui", "start_chat", "setup", "bot_room", "context_engine", "yuanbao",
+    "feishu_doc", "feishu_drive")
+DEFAULT_MODEL = "claude-haiku-5-5"            # chat and routine jobs
+SONNET_MODEL = "claude-sonnet-5-5"            # only the two weekly jobs you pin yourself
+ALLOWED_MODELS = frozenset({DEFAULT_MODEL, SONNET_MODEL})
+SONNET_JOBS = ("botsy-weekly-plan", "botsy-creative-director")
+MAX_CRON_JOBS = 10                            # v0.21.7 has no job-count setting
+MIN_JOB_MINUTES = 60                          # no job more often than hourly
+WEEK_MINUTES = 7 * 24 * 60
+JOBS_FILE = "home/hermes/.hermes/cron/jobs.json"
+MAX_JOBS_FILE_BYTES = 4_000_000
+# The non-admin Discord tool: these actions only (discord.server_actions). Member search is left
+# out (other people's details); pins, deletes and roles belong to discord_admin and stay off.
+DISCORD_ACTIONS = frozenset({"fetch_messages", "create_thread"})
+BLOCK_ALL_HOSTS = "*.*"                       # security.website_blocklist: vision never downloads
 # Slash commands (gateway/slash_access.py): an admin list that names no real account turns the
-# gate on with nobody as admin; you keep /help, /whoami and these.
+# gate on with nobody as admin; you keep /help, /whoami and these. Hermes gates per user and you
+# are the only allowed user, so /bg, /loop and /goal are yours alone ("/goal gate add" runs a
+# shell command and needs an admin, so it stays refused). /cron is command-line only in v0.21.7.
 NO_ADMIN = ("0",)
-SAFE_SLASH_COMMANDS = frozenset({"new", "retry", "status", "stop", "compress", "memory", "help", "whoami"})
-RISKY_SLASH_COMMANDS = ("model", "yolo", "cron", "loop", "heartbeat", "goal", "bg", "moa", "tools",
-                        "skills", "approvals", "reasoning", "fast", "personality", "import", "snapshot",
-                        "learn", "refine", "review", "kanban", "curator", "btw", "queue", "steer")
+SAFE_SLASH_COMMANDS = frozenset({"new", "retry", "status", "stop", "compress", "memory", "skills",
+                                 "bg", "loop", "goal", "help", "whoami"})
+RISKY_SLASH_COMMANDS = ("model", "yolo", "cron", "heartbeat", "moa", "tools", "approvals",
+                        "reasoning", "fast", "personality", "import", "snapshot", "learn", "refine",
+                        "review", "kanban", "curator", "btw", "queue", "steer", "subgoal", "plan",
+                        "init", "suggestions")
 MAX_COMPRESSION_TOKENS = 80000      # Haiku 5.5 charges 5x above 100,000 prompt tokens
 MODES = ("socket", "sudo")
 MCP_COMMANDS = {
@@ -99,6 +148,8 @@ UNITS = {  # installed name -> source file in systemd/ (socket mode)
     "hermes-gateway.service": "hermes-gateway.service",
     "botsy-hermes-lock.service": "botsy-hermes-lock.service",
     "botsy-hermes-lock.timer": "botsy-hermes-lock.timer",
+    "botsy-hermes-jobs.service": "botsy-hermes-jobs.service",
+    "botsy-hermes-jobs.timer": "botsy-hermes-jobs.timer",
 }
 SOCKET_UNITS = ("botsy-control-read.socket", "botsy-control-act.socket",
                 "botsy-control-read@.service", "botsy-control-act@.service")
@@ -141,6 +192,22 @@ out["memory_write_approval"] = sec("memory").get("write_approval")
 out["memory_provider"] = sec("memory").get("provider")
 out["skills_write_approval"] = sec("skills").get("write_approval")
 out["agent_scheduling"] = sec("cron").get("allow_agent_scheduling")
+out["cron"] = {k: sec("cron").get(k) for k in ("provider", "model", "model_provider")}
+out["kanban"] = {k: sec("kanban").get(k) for k in ("dispatch_in_gateway", "dispatch_profiles", "auto_decompose")}
+out["background"] = {"review": (sec("auxiliary").get("background_review") or {}).get("enabled"),
+                     "curator": sec("curator").get("enabled")}
+try:
+    from tools.website_policy import check_website_access
+    out["web_blocked"] = {u: bool(check_website_access(u)) for u in
+                          ("https://www.etsy.com/x.jpg", "https://i.etsystatic.com/x.jpg",
+                           "https://cdn.discordapp.com/x.png", "https://example.com/x.png")}
+except Exception as e:
+    out["web_blocked_error"] = type(e).__name__
+try:
+    from tools.discord_tool import _load_allowed_actions_config
+    out["discord_actions"] = _load_allowed_actions_config()
+except Exception as e:
+    out["discord_actions_error"] = type(e).__name__
 out["model"] = sec("model").get("default")
 out["provider"] = sec("model").get("provider")
 out["allow_from"] = sec("discord").get("allow_from")
@@ -284,8 +351,8 @@ def check_config(cfg, values: dict[str, str], mode: str, *, where: str = "config
     model = sec("model")
     if model.get("provider") != "anthropic":
         p.append(f"{where}: model.provider is not anthropic")
-    if model.get("default") not in ALLOWED_MODELS:
-        p.append(f"{where}: model.default is not one of {sorted(ALLOWED_MODELS)}")
+    if model.get("default") != DEFAULT_MODEL:
+        p.append(f"{where}: model.default is not one of [{DEFAULT_MODEL!r}] (Sonnet only in the jobs you pin)")
     for k in ("base_url", "api_key"):
         if model.get(k):
             p.append(f"{where}: model.{k} is set (Hermes must use the Anthropic API with the key from the secrets file)")
@@ -299,21 +366,23 @@ def check_config(cfg, values: dict[str, str], mode: str, *, where: str = "config
         if cfg.get(k):
             p.append(f"{where}: {k} is on")
 
-    def toolset_list(name, value):
+    def toolset_list(name, value, allowed):
         if not isinstance(value, list) or not value:
             p.append(f"{where}: {name} is not a list of Botsy toolsets")
             return
-        extra = sorted(str(t) for t in value if str(t) not in ALLOWED_TOOLSETS)
+        extra = sorted(str(t) for t in value if str(t) not in allowed)
         if extra:
             p.append(f"{where}: {name} turns on {', '.join(extra)}")
+        if not set(MCP_NAMES) <= {str(t) for t in value}:
+            p.append(f"{where}: {name} does not name Botsy's two tool servers")
 
-    toolset_list("toolsets", cfg.get("toolsets"))
+    toolset_list("toolsets", cfg.get("toolsets"), ALLOWED_TOOLSETS)
     plat = sec("platform_toolsets")
     for name in PLATFORMS:
-        toolset_list(f"platform_toolsets.{name}", plat.get(name))
+        toolset_list(f"platform_toolsets.{name}", plat.get(name), PLATFORM_TOOLSETS[name])
     for name in plat:
         if name not in PLATFORMS:
-            toolset_list(f"platform_toolsets.{name}", plat.get(name))
+            p.append(f"{where}: platform_toolsets.{name} is not one of Botsy's places ({', '.join(PLATFORMS)})")
     disabled = sec("agent").get("disabled_toolsets")
     disabled = {str(t) for t in disabled} if isinstance(disabled, list) else set()
     missing = [t for t in FORBIDDEN_TOOLSETS if t not in disabled]
@@ -367,11 +436,31 @@ def check_config(cfg, values: dict[str, str], mode: str, *, where: str = "config
         p.append(f"{where}: skills load from outside folders or auto-load")
     if skills.get("project_discovery") is not False or skills.get("inline_shell") is not False:
         p.append(f"{where}: skills.project_discovery or skills.inline_shell is not off")
+    if skills.get("guard_agent_created") is not True:
+        p.append(f"{where}: skills.guard_agent_created is not on (skills Hermes writes are not scanned)")
     cron = sec("cron")
     if cron.get("allow_agent_scheduling") is not False:
-        p.append(f"{where}: cron.allow_agent_scheduling is not off (Hermes could make its own scheduled jobs)")
-    if cron.get("provider") != "anthropic" or cron.get("model") not in ALLOWED_MODELS:
-        p.append(f"{where}: scheduled jobs are not fixed to {sorted(ALLOWED_MODELS)} on anthropic")
+        p.append(f"{where}: cron.allow_agent_scheduling is not off (a running job could make more jobs)")
+    # cron.provider is the SCHEDULER (v0.21.7: "" = the built-in ticker); the model's provider is
+    # cron.model_provider.
+    if cron.get("provider") not in ("", None):
+        p.append(f"{where}: cron.provider is set (an outside scheduler)")
+    if cron.get("model_provider") != "anthropic" or cron.get("model") != DEFAULT_MODEL:
+        p.append(f"{where}: scheduled jobs are not fixed to {DEFAULT_MODEL} on anthropic")
+    kanban = sec("kanban")
+    if kanban.get("dispatch_in_gateway") is not False or kanban.get("dispatch_profiles") != []:
+        p.append(f"{where}: the task board may start worker agents (kanban.dispatch_in_gateway "
+                 f"must be false and kanban.dispatch_profiles [])")
+    if kanban.get("auto_decompose") is not False or kanban.get("review_dispatch") is not False:
+        p.append(f"{where}: kanban.auto_decompose or kanban.review_dispatch is not off")
+    block = sec("security").get("website_blocklist")
+    block = block if isinstance(block, dict) else {}
+    domains = block.get("domains") if isinstance(block.get("domains"), list) else []
+    if block.get("enabled") is not True or BLOCK_ALL_HOSTS not in domains:
+        p.append(f"{where}: security.website_blocklist does not block every host "
+                 f"(vision could download images from the web)")
+    if sec("security").get("allow_private_urls") is not False:
+        p.append(f"{where}: security.allow_private_urls is not off")
     approvals = sec("approvals")
     for k in ("cron_mode", "unattended_mode"):
         if approvals.get(k) != "deny":
@@ -389,6 +478,10 @@ def check_config(cfg, values: dict[str, str], mode: str, *, where: str = "config
         p.append(f"{where}: discord.allowed_roles is set (roles must never unlock Hermes)")
     if discord.get("require_mention") is not True:
         p.append(f"{where}: discord.require_mention is not on")
+    actions = discord.get("server_actions")
+    if not isinstance(actions, list) or not actions or not {str(a) for a in actions} <= DISCORD_ACTIONS:
+        p.append(f"{where}: discord.server_actions is not a list within {sorted(DISCORD_ACTIONS)} "
+                 f"(empty means every action)")
     for key in ("allow_admin_from", "group_allow_admin_from"):
         if discord.get(key) != list(NO_ADMIN):
             p.append(f"{where}: discord.{key} is not [\"0\"] (without it every slash command is open, "
@@ -640,7 +733,8 @@ def check_home(ctx: Ctx) -> None:
     except (OSError, UnicodeDecodeError):
         pass
     same_text(ctx, "home/hermes/.hermes/SOUL.md", SOUL.read_text(encoding="utf-8"), str(SOUL))
-    for rel in ("home/hermes/.hermes/hooks", "home/hermes/.hermes/plugins", "home/hermes/.hermes/profiles"):
+    for rel in ("home/hermes/.hermes/hooks", "home/hermes/.hermes/plugins", "home/hermes/.hermes/profiles",
+                "home/hermes/.hermes/scripts"):
         st = locked_path(ctx, rel, kind="dir")
         check_mode(ctx, rel, st, 0o755, group="root")
         try:
@@ -868,11 +962,133 @@ def check_groups_and_botsy(ctx: Ctx) -> None:
 
 
 def check_firewall(ctx: Ctx, firewall: bool) -> None:
-    if not firewall or not ctx.system:
+    if not firewall:
+        ctx.add("the firewall is off (/etc/hermes/install.conf). It is required since 2026-10-21: scheduled "
+                "jobs, the task board and vision can fetch web addresses (run install_hermes.sh --firewall)")
+        return
+    if not ctx.system:
         return
     r = subprocess.run(["nft", "list", "table", "inet", "botsy_hermes"], capture_output=True, text=True)
     if r.returncode != 0 or 'skuid != "hermes"' not in r.stdout.replace("meta skuid", "skuid"):
         ctx.add("the firewall is on in /etc/hermes/install.conf, but table inet botsy_hermes is not loaded")
+
+
+# ---------------------------------------------------------------------------- scheduled jobs
+
+_DOW = {"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
+
+
+def _plain_int(field: str, lo: int, hi: int) -> bool:
+    return field.isdigit() and lo <= int(field) <= hi
+
+
+def _single_day(field: str) -> bool:
+    return _plain_int(field, 0, 7) or field.lower() in _DOW
+
+
+def job_minutes_problem(schedule, sonnet: bool) -> str | None:
+    """Why this schedule runs too often (None when it is fine). Haiku jobs: at most hourly. Sonnet
+    jobs: at most once a week. Read from the stored schedule (cron/jobs.py parse_schedule)."""
+    if not isinstance(schedule, dict):
+        return "has no readable schedule"
+    kind = schedule.get("kind")
+    if kind == "once":
+        return None
+    if kind == "interval":
+        minutes = schedule.get("minutes")
+        floor = WEEK_MINUTES if sonnet else MIN_JOB_MINUTES
+        if isinstance(minutes, bool) or not isinstance(minutes, int) or minutes < floor:
+            return f"runs every {minutes} minutes (at least every {floor} minutes is the limit)"
+        return None
+    if kind == "cron":
+        fields = str(schedule.get("expr") or "").split()
+        if len(fields) != 5:
+            return "has a cron schedule that is not 5 plain fields"
+        minute, hour, dom, _month, dow = fields
+        if not _plain_int(minute, 0, 59):
+            return f"runs more often than hourly ({' '.join(fields)})"
+        if sonnet and not (_plain_int(hour, 0, 23) and ((dom == "*" and _single_day(dow))
+                                                         or (_plain_int(dom, 1, 31) and dow == "*"))):
+            return f"runs more often than once a week on Sonnet ({' '.join(fields)})"
+        return None
+    return f"has an unknown schedule kind {kind!r}"
+
+
+def job_problems(jobs) -> list[str]:
+    """What is wrong with Hermes's scheduled jobs (~/.hermes/cron/jobs.json). Hermes may make its
+    own check-ins, but v0.21.7 has no setting for how many, how often, or what they may run, so
+    these limits live here (checked hourly by botsy-hermes-jobs.timer and before every start)."""
+    p: list[str] = []
+    if not isinstance(jobs, list):
+        return ["the scheduled jobs file has no job list"]
+    active = [j for j in jobs if isinstance(j, dict) and j.get("enabled", True) is not False]
+    if len(active) > MAX_CRON_JOBS:
+        p.append(f"{len(active)} scheduled jobs are on (at most {MAX_CRON_JOBS})")
+    seen: dict[str, int] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            p.append("a scheduled job is not a record")
+            continue
+        name = str(job.get("name") or job.get("id") or "?")[:60]
+        label = f"scheduled job {name!r}"
+        for key, why in (("script", "runs a script"), ("monitor_script", "runs a monitor script"),
+                         ("monitor_url", "fetches a web address"), ("base_url", "sends to another endpoint"),
+                         ("workdir", "has a work folder")):
+            if job.get(key):
+                p.append(f"{label} {why} ({key})")
+        if job.get("no_agent"):
+            p.append(f"{label} is a script-only job (no_agent)")
+        if job.get("provider") not in (None, "", "anthropic"):
+            p.append(f"{label} uses the provider {str(job.get('provider'))[:40]!r}")
+        model = job.get("model") or None
+        if model is not None and model not in ALLOWED_MODELS:
+            p.append(f"{label} uses the model {str(model)[:40]!r}")
+        sonnet = model == SONNET_MODEL
+        if sonnet:
+            if name not in SONNET_JOBS:
+                p.append(f"{label} runs on Sonnet (only {', '.join(SONNET_JOBS)} may)")
+            seen[name] = seen.get(name, 0) + 1
+        toolsets = job.get("enabled_toolsets")
+        if toolsets is not None:
+            if not isinstance(toolsets, list):
+                p.append(f"{label} has an unreadable toolset list")
+            else:
+                extra = sorted(str(t) for t in toolsets if str(t) not in CRON_TOOLSETS)
+                if extra:
+                    p.append(f"{label} turns on {', '.join(extra)}")
+        if job.get("enabled", True) is not False:
+            why = job_minutes_problem(job.get("schedule"), sonnet)
+            if why:
+                p.append(f"{label} {why}")
+    for name, n in sorted(seen.items()):
+        if n > 1:
+            p.append(f"{n} scheduled jobs named {name!r} run on Sonnet (one each)")
+    return p
+
+
+def check_jobs(ctx: Ctx) -> None:
+    path = ctx.path(JOBS_FILE)
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return                                   # no jobs yet
+    except OSError:
+        ctx.add(f"/{JOBS_FILE} cannot be read")
+        return
+    if not stat.S_ISREG(st.st_mode):
+        ctx.add(f"/{JOBS_FILE} is not a plain file")
+        return
+    if st.st_size > MAX_JOBS_FILE_BYTES:
+        ctx.add(f"/{JOBS_FILE} is larger than {MAX_JOBS_FILE_BYTES} bytes")
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        ctx.add(f"/{JOBS_FILE} is not readable JSON")
+        return
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    for problem in job_problems(jobs):
+        ctx.add(problem)
 
 
 def install_conf(ctx: Ctx) -> tuple[str, bool]:
@@ -927,10 +1143,10 @@ def judge_probe(ctx: Ctx, data: dict, values: dict[str, str], mode: str) -> None
     pin = load_pin()
     for platform in PLATFORMS:
         got = (data.get("platforms") or {}).get(platform) or {}
-        extra = sorted(set(got.get("toolsets") or []) - ALLOWED_TOOLSETS)
+        extra = sorted(set(got.get("toolsets") or []) - PLATFORM_TOOLSETS[platform])
         if extra:
             ctx.add(f"Hermes gives {platform} the toolsets {', '.join(extra)}")
-        tools = sorted(set(got.get("tools") or []) - ALLOWED_PROBE_TOOLS)
+        tools = sorted(set(got.get("tools") or []) - PLATFORM_PROBE_TOOLS[platform])
         if tools:
             ctx.add(f"Hermes gives {platform} the built-in tools {', '.join(tools)}")
         if not set(MCP_NAMES) <= set(got.get("toolsets") or []):
@@ -955,9 +1171,26 @@ def judge_probe(ctx: Ctx, data: dict, values: dict[str, str], mode: str) -> None
     if data.get("memory_provider"):
         ctx.add("Hermes uses an outside memory service")
     if data.get("agent_scheduling") is not False:
-        ctx.add("Hermes may create its own scheduled jobs")
-    if data.get("provider") != "anthropic" or data.get("model") not in ALLOWED_MODELS:
+        ctx.add("Hermes lets a running scheduled job make more jobs")
+    if data.get("provider") != "anthropic" or data.get("model") != DEFAULT_MODEL:
         ctx.add("Hermes's model is not the pinned Anthropic model")
+    cron = data.get("cron") if isinstance(data.get("cron"), dict) else {}
+    if cron.get("provider") not in ("", None) or cron.get("model") != DEFAULT_MODEL \
+            or cron.get("model_provider") != "anthropic":
+        ctx.add(f"Hermes's scheduled jobs are not fixed to {DEFAULT_MODEL} on anthropic")
+    kanban = data.get("kanban") if isinstance(data.get("kanban"), dict) else {}
+    if kanban.get("dispatch_in_gateway") is not False or kanban.get("dispatch_profiles") != [] \
+            or kanban.get("auto_decompose") is not False:
+        ctx.add("Hermes's task board may start worker agents or extra model calls")
+    background = data.get("background") if isinstance(data.get("background"), dict) else {}
+    if background.get("review") is not False or background.get("curator") is not False:
+        ctx.add("Hermes's background review or curator is on")
+    blocked = data.get("web_blocked")
+    if not isinstance(blocked, dict) or not blocked or not all(v is True for v in blocked.values()):
+        ctx.add("Hermes's website blocklist does not block every web address (vision could download)")
+    actions = data.get("discord_actions")
+    if not isinstance(actions, list) or not actions or not set(actions) <= DISCORD_ACTIONS:
+        ctx.add(f"Hermes's Discord tool allows actions beyond {sorted(DISCORD_ACTIONS)}")
     allow = data.get("allow_from")
     if allow != [values.get("DISCORD_ALLOWED_USER_ID")]:
         ctx.add("Hermes's Discord allowlist is not exactly your user ID")
@@ -1002,6 +1235,7 @@ def check(ctx: Ctx, *, quick: bool = False, probe: bool = False, probe_python: s
     check_sudoers(ctx, mode)
     check_groups_and_botsy(ctx)
     check_firewall(ctx, firewall)
+    check_jobs(ctx)
     if probe and not ctx.problems:
         run_probe(ctx, values, mode, python=probe_python, as_user=HERMES_USER if ctx.system else None)
     elif probe:
@@ -1032,6 +1266,32 @@ def _cmd_check(args) -> int:
     mode, firewall = install_conf(ctx)
     print(f"Hermes lock: OK (v{pin.get('HERMES_VERSION')}, {mode} bridge, firewall {'on' if firewall else 'off'}"
           f"{', probe passed' if args.probe else ''})")
+    return 0
+
+
+def _cmd_jobs(args) -> int:
+    """Only the scheduled-jobs limits (hourly, botsy-hermes-jobs.timer): cheap, no probe."""
+    root = Path(args.root)
+    system = root == Path("/")
+    if system and os.geteuid() != 0:
+        print("check_lock.py jobs must run as root (sudo)", file=sys.stderr)
+        return 2
+    ctx = Ctx(root=root, hermes=hermes_identity(), admin_uid=0, system=system)
+    try:
+        check_jobs(ctx)
+        problems = ctx.problems
+    except Exception as e:  # noqa: BLE001 - fail closed
+        problems = ctx.problems + [f"the job check itself failed ({type(e).__name__})"]
+    for problem in problems:
+        print(f"PROBLEM: {problem}")
+    if problems:
+        print(f"Hermes jobs: {len(problems)} problem(s). Remove or fix the job: sudo -u hermes ... hermes cron list "
+              f"(deploy/hermes/README.md \"Scheduled jobs\").")
+        if args.stop and system:
+            subprocess.run(["systemctl", "stop", args.stop], check=False)
+            print(f"Stopped {args.stop}.")
+        return 1
+    print("Hermes jobs: OK")
     return 0
 
 
@@ -1076,6 +1336,9 @@ def main(argv=None) -> int:
     c.add_argument("--probe", action="store_true")
     c.add_argument("--stop", metavar="UNIT")
     c.add_argument("--root", default="/", help=argparse.SUPPRESS)
+    j = sub.add_parser("jobs")
+    j.add_argument("--stop", metavar="UNIT")
+    j.add_argument("--root", default="/", help=argparse.SUPPRESS)
     r = sub.add_parser("render")
     r.add_argument("--env", required=True)
     r.add_argument("--mode", choices=MODES, default="socket")
@@ -1090,6 +1353,8 @@ def main(argv=None) -> int:
         return 2 if ex.code else 0
     if args.cmd == "check":
         return _cmd_check(args)
+    if args.cmd == "jobs":
+        return _cmd_jobs(args)
     if args.cmd == "render":
         return _cmd_render(args)
     if args.cmd == "render-env":

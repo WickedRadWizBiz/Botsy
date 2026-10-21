@@ -520,7 +520,7 @@ def test_start_now_starts_at_once_and_approves_a_waiting_plan(tmp_path, posts):
     plan.prepare(s2, now=SUN_8PM + M)
     res = plan.start_now(s2, now=SUN_8PM + 60 * M, run_check=Checks())
     assert res["ok"] and res["step"] == "started" and posts[-1][0] == "plan_approved" and posts.urgent[-1]
-    assert orders.counts(s2, now=SUN_8PM + 60 * M)["level3_last_24h"] == 1
+    assert orders.counts(s2, now=SUN_8PM + 60 * M)["level3_last_24h"] == 0    # D1: your plan approval: posted, not counted
 
 
 def test_approve_on_a_plan_that_starts_by_itself_says_so(tmp_path, posts):
@@ -661,21 +661,37 @@ def test_auto_needs_no_code_but_is_posted_at_once_and_journaled(tmp_path, posts)
     # After "again", going back to automatic is the same plain step (and counted again).
     plan.again(s, now=SUN_8PM + 10 * M)
     assert plan.auto(s, by="hermes", now=SUN_8PM + 11 * M)["step"] == "switched"
-    assert orders.counts(s, now=SUN_8PM + 11 * M)["level3_last_24h"] == 2       # one shared counter
+    assert orders.counts(s, now=SUN_8PM + 11 * M)["level3_last_24h"] == 1       # one shared counter
     rows = json.loads((tmp_path / "data" / "orders" / "counters.json").read_text())["events"]
-    assert [r["by"] for r in rows if r["counter"] == "level3"] == ["user", "hermes"]
+    assert [r["by"] for r in rows if r["counter"] == "level3"] == ["hermes"]     # D1: only Hermes's counts
 
 
 def test_level_3_approvals_have_a_daily_limit(tmp_path, posts):
     s = ctx(tmp_path, limits_doc="level3_per_day: 1\n")
     three_niches(s)
     plan.prepare(s, now=SUN_8PM + M)
-    assert plan.auto(s, now=SUN_8PM - 23 * 60 * M)["ok"]                      # 24 hours minus a bit before
+    assert plan.auto(s, by="hermes", now=SUN_8PM - 23 * 60 * M)["ok"]         # 24 hours minus a bit before
     plan.again(s, now=SUN_8PM - 22 * 60 * M)
-    res = plan.approve(s, now=SUN_8PM + 2 * M, run_check=Checks())
+    res = plan.approve(s, by="hermes", now=SUN_8PM + 2 * M, run_check=Checks())
     assert not res["ok"] and res["reason"] == "level3_daily_limit" and entry(s)["status"] == "waiting"
-    assert plan.auto(s, now=SUN_8PM + 3 * M)["reason"] == "level3_daily_limit"
-    assert plan.approve(s, now=SUN_8PM + 2 * 60 * M, run_check=Checks())["ok"]  # 24 hours later: room again
+    assert plan.auto(s, by="hermes", now=SUN_8PM + 3 * M)["reason"] == "level3_daily_limit"
+    assert plan.approve(s, by="hermes", now=SUN_8PM + 2 * 60 * M, run_check=Checks())["ok"]   # 24 h later: room
+
+
+def test_your_plan_commands_are_not_limited_by_the_approval_count(tmp_path, posts):
+    """D1 (user, 2026-10-21): only approvals that lead to posting on Etsy or KDP count when you
+    give them; your plan approve and plan auto are still posted at once and journaled."""
+    s = ctx(tmp_path, limits_doc="level3_per_day: 1\n")
+    three_niches(s)
+    plan.prepare(s, now=SUN_8PM + M)
+    assert orders.level3_take(s, "review_approve", "user", now=SUN_8PM + M)           # the one approval used
+    assert not orders.level3_room(s, now=SUN_8PM + 2 * M)
+    res = plan.approve(s, now=SUN_8PM + 2 * M, run_check=Checks())
+    assert res["ok"] and res["step"] == "started" and posts[-1][0] == "plan_approved" and posts.urgent[-1]
+    assert journal(s, "plan_approved")[-1]["by"] == "user"
+    assert plan.again(s, now=SUN_8PM + 3 * M)["ok"]
+    assert plan.auto(s, now=SUN_8PM + 4 * M)["step"] == "switched"
+    assert orders.counts(s, now=SUN_8PM + 5 * M)["level3_last_24h"] == 1
 
 
 def test_only_the_user_or_hermes_may_ask(tmp_path, posts):
@@ -869,3 +885,57 @@ def test_approve_binds_to_the_named_order_and_can_leave_the_first_check_to_the_h
     later = Checks()
     plan.check(s, now=SUN_8PM + 65 * M, run_check=later)                     # the hourly :05 check runs it
     assert later.calls == 1
+
+
+# ---------------------------------------------------------------- D3: your Hold sticks (user, 2026-10-21)
+
+def test_your_hold_survives_monday_and_hermes(tmp_path, posts):
+    s = ctx(tmp_path)
+    three_niches(s)
+    set_approved(s, 5)
+    res = plan.prepare(s, now=SUN_8PM + M)
+    assert plan.hold(s, now=SUN_8PM + 10 * M)["ok"]
+    e = entry(s)
+    assert e["status"] == "held" and e["held_by"] == "user"
+    # The hourly check at Monday 08:05 (and later) never starts it.
+    checks = Checks()
+    for hour in range(0, 4):
+        plan.check(s, now=MON_8AM + 5 * M + hour * 60 * M, run_check=checks)
+    assert entry(s)["status"] == "held" and checks.calls == 0
+    assert orders.current_plan(s, WEEK)["status"] == "accepted"
+    # Hermes's Start now, approve and revision are all refused.
+    assert plan.start_now(s, by="hermes", now=MON_8AM + 5 * 60 * M)["reason"] == "held_by_user"
+    assert plan.approve(s, by="hermes", now=MON_8AM + 5 * 60 * M)["reason"] == "held_by_user"
+    o = orders.current_plan(s, WEEK)
+    rev = {"schema": "order/v1", "kind": "weekly_plan", "created_by": "hermes", "payload": o["payload"]}
+    got = plan.submit_order(rev, s, now=MON_8AM + 5 * 60 * M)
+    assert not got.get("ok") and "held_by_user" in (got.get("reasons") or [got.get("reason")])
+    assert entry(s)["status"] == "held" and orders.current_plan(s, WEEK)["id"] == res["order_id"]
+    # You lift it.
+    out = plan.approve(s, now=MON_8AM + 6 * 60 * M, run_check=Checks())
+    assert out["ok"] and out["step"] == "started" and entry(s)["status"] == "running"
+
+
+def test_hermes_hold_can_be_lifted_by_hermes(tmp_path, posts):
+    s = ctx(tmp_path)
+    three_niches(s)
+    set_approved(s, 5)
+    plan.prepare(s, now=SUN_8PM + M)
+    assert plan.hold(s, by="hermes", now=SUN_8PM + 10 * M)["ok"] and entry(s)["held_by"] == "hermes"
+    res = plan.start_now(s, by="hermes", now=SUN_8PM + 20 * M, run_check=Checks())
+    assert res["ok"] and res["step"] == "started"
+
+
+def test_hermes_cannot_lift_your_hold_on_a_running_plan(tmp_path, posts):
+    s = ctx(tmp_path)
+    three_niches(s)
+    set_approved(s, 5)
+    plan.prepare(s, now=SUN_8PM + M)
+    plan.check(s, now=MON_8AM + 5 * M, run_check=Checks())
+    assert entry(s)["status"] == "running"
+    plan.hold(s, now=MON_8AM + 30 * M)
+    assert plan.approve(s, by="hermes", now=MON_8AM + 40 * M)["reason"] == "held_by_user"
+    assert plan.start_now(s, by="hermes", now=MON_8AM + 40 * M)["reason"] == "held_by_user"
+    assert plan.for_tick(s, now=MON_8AM + 41 * M)["mode"] == "wait"
+    assert plan.approve(s, now=MON_8AM + 50 * M, run_check=Checks())["ok"]
+    assert plan.for_tick(s, now=MON_8AM + 51 * M)["mode"] == "plan"

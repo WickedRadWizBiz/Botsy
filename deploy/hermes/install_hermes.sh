@@ -4,8 +4,7 @@
 #
 # Run it as root, from root's own copy of the code (sudo botsy-setup keeps it up to date):
 #   sudo bash /usr/local/lib/botsy/src/deploy/hermes/install_hermes.sh            (install or update)
-#   sudo bash .../install_hermes.sh --firewall       (also limit the hermes user to Anthropic + Discord)
-#   sudo bash .../install_hermes.sh --no-firewall    (take that limit away again)
+#   sudo bash .../install_hermes.sh --firewall       (the default: limit the hermes user to Anthropic + Discord)
 #   sudo bash .../install_hermes.sh --bridge sudo    (fallback: Hermes starts botsy-control with sudo)
 #   sudo bash .../install_hermes.sh --bridge socket  (default: systemd starts it; no sudo for hermes)
 #   sudo bash .../install_hermes.sh --check          (only run the lock check, with the Hermes probe)
@@ -21,9 +20,11 @@
 # rendered root-owned into /etc/hermes/config.yaml (Hermes's managed scope, which wins over
 # everything) and /home/hermes/.hermes/config.yaml (read-only to hermes); root-owned SOUL.md,
 # .env, hooks/ and plugins/ in a sticky home, so Hermes can add its own files but never replace
-# these; a hardened systemd unit; Botsy's two tool sockets; a daily lock check; and, with
-# --firewall, an nftables table that lets only the hermes user's traffic to Anthropic and Discord
-# out. No browser, computer-use or other optional tools are installed.
+# these; a hardened systemd unit; Botsy's two tool sockets; a daily lock check and an hourly check
+# of Hermes's own scheduled jobs; and an nftables table that lets only the hermes user's traffic to
+# Anthropic and Discord out (required since 2026-10-21: Hermes's scheduled jobs, task board and
+# vision can fetch web addresses, and only this table stops that). No browser, computer-use or
+# other optional tools are installed.
 set -euo pipefail
 umask 022
 
@@ -40,13 +41,13 @@ FIREWALL=""
 say()  { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 die()  { printf '\nSTOPPED: %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,/^# out. No browser/p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# other optional tools are installed/p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --bridge)      [[ $# -ge 2 ]] || die "--bridge needs socket or sudo"; BRIDGE=$2; shift 2 ;;
     --firewall)    FIREWALL=1; shift ;;
-    --no-firewall) FIREWALL=0; shift ;;
+    --no-firewall) die "the firewall is required since 2026-10-21 (Hermes's scheduled jobs, task board and vision can fetch web addresses); see deploy/hermes/README.md" ;;
     --check)       CHECK_ONLY=1; shift ;;
     --skip-fetch)  SKIP_FETCH=1; shift ;;
     --root)        [[ $# -ge 2 ]] || die "--root needs a folder"; ROOT=${2%/}; shift 2 ;;
@@ -118,7 +119,10 @@ if [[ -f $CONF ]]; then
   [[ -n $FIREWALL ]] || FIREWALL=${old_fw:-}
 fi
 BRIDGE=${BRIDGE:-socket}
-FIREWALL=${FIREWALL:-0}
+if [[ ${FIREWALL:-} == 0 ]]; then
+  note "The firewall was off in $CONF; it is required now (2026-10-21), so it is turned on."
+fi
+FIREWALL=1
 [[ $BRIDGE == socket || $BRIDGE == sudo ]] || die "--bridge must be socket or sudo"
 
 run_check() {   # $@: extra check_lock.py options
@@ -193,8 +197,9 @@ lay_out_folders() {
     chown "$OWNER:$HGROUP" "$d" && chmod 1770 "$d"
   done
   # hooks/ and plugins/: Hermes runs what it finds there at start; profiles/: its scheduled-job
-  # ticker visits every profile in it, whatever this config says. So they are root's and empty.
-  for d in "$HHOME/hooks" "$HHOME/plugins" "$HHOME/profiles"; do
+  # ticker visits every profile in it, whatever this config says; scripts/: the only place a
+  # scheduled job may run a script from. So they are root's and empty.
+  for d in "$HHOME/hooks" "$HHOME/plugins" "$HHOME/profiles" "$HHOME/scripts"; do
     if [[ -L $d ]] || [[ -e $d && ! -d $d ]]; then
       move_aside "$d"
     elif [[ -d $d ]] && [[ $(stat -c %U "$d") != "$OWNER" || -n $(ls -A "$d") ]]; then
@@ -350,7 +355,8 @@ render_configs() {
 install_units() {
   say "Installing the systemd units ($BRIDGE bridge, firewall $([[ $FIREWALL == 1 ]] && echo on || echo off))"
   local u
-  for u in hermes-gateway.service botsy-hermes-lock.service botsy-hermes-lock.timer; do
+  for u in hermes-gateway.service botsy-hermes-lock.service botsy-hermes-lock.timer \
+           botsy-hermes-jobs.service botsy-hermes-jobs.timer; do
     install -m 644 -o "$OWNER" -g "$ROOTGROUP" "$HERE/systemd/$u" "$UNITS/$u"
   done
   install -d -m 755 -o "$OWNER" -g "$ROOTGROUP" "$DROPIN"
@@ -405,7 +411,7 @@ start_services() {
     rm -f -- "$UNITS"/botsy-hermes-firewall.service "$UNITS"/botsy-hermes-resolve.{service,timer}
     systemctl daemon-reload
   fi
-  systemctl enable --now botsy-hermes-lock.timer > /dev/null
+  systemctl enable --now botsy-hermes-lock.timer botsy-hermes-jobs.timer > /dev/null
   if [[ $SECRETS_READY == 1 ]]; then
     systemctl enable hermes-gateway.service > /dev/null
   else

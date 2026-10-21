@@ -46,14 +46,21 @@ once Hermes is installed it only calls botsy-control, which hands its plans to s
    every plan (any time; a plan not started yet then waits for your approval too). `plan auto`
    switches back to automatic, or goes automatic before 4 approvals.
    These Level 3 approvals (approving a plan that waits for you, going automatic) keep these
-   guards: at most limits level3_per_day (10) Level 3 approvals in 24 hours (one counter shared
-   with service/orders.py: review approvals and cap raises count too), each
+   guards: Hermes's count toward limits level3_per_day (10) in 24 hours (one counter shared
+   with service/orders.py; yours are not counted, D1: only your approvals that lead to posting
+   on Etsy or KDP are), each
    one posted at once to the main Discord channel (urgent: quiet hours do not hold it) with
    what changed, who asked (user | hermes) and how to undo it, and journaled with fixed fields
    (plan_approved, plan_mode_changed).
-5. check, hourly at :05 (no paid calls): reminders, the deadline, the automatic start, and the
-   Sunday 21:00 "No plan this week" notice. It takes the main lock only to run a started
-   plan's first check (also after approve and start-now: work begins that night).
+5. check, hourly at :05 (no paid calls of its own): reminders, the deadline, the automatic
+   start, and the Sunday 21:00 "No plan this week" notice. It takes the main lock only to run a
+   started plan's first check (also after approve and start-now: work begins that night) and a
+   watchdog retry Hermes queued (service/fixes.py run_pending: at most one an hour, its
+   preconditions checked again).
+6. Holds (user, 2026-10-21, D3): a Hold records who set it (user | hermes | botsy). Your Hold
+   sticks until you lift it: Hermes's Start now, approve or revision of a plan you hold is
+   refused (held_by_user), the Monday automatic start never lifts it, and a revision or a new
+   plan of that week inherits it. A Hold Hermes set can be lifted by either of you.
 
 State: data/plans/state.json (plan.dir): approved_count, mode (approve | auto | null =
 default), and per week the order, status (waiting | running | held | expired | done |
@@ -951,6 +958,7 @@ def _sync(settings: dict, st: dict, week: str, entry: dict, *, now: datetime) ->
     if missing:
         themes.update({k: v for k, v in _themes(settings, o).items() if k not in themes})
     held = isinstance(o.get("held"), dict)
+    entry["held_by"] = o["held"].get("by") if held else None
     if o.get("status") == "applied":
         if entry.get("started_order") != o["id"]:
             entry["started_order"] = o["id"]
@@ -1357,6 +1365,18 @@ def check(settings: dict | None = None, *, now: datetime | None = None, run_chec
     out = {"ok": True, "actions": actions}
     if start_week:
         out["first_check"] = _after_start(settings, start_week, run_check=run_check)
+    # A watchdog retry Hermes asked for (service/fixes.py fix_retry_run) runs here, at most one an
+    # hour, after Botsy checks its preconditions again.
+    try:
+        from service import fixes
+
+        fix = fixes.run_pending(settings, now=now, run_check=run_check)
+    except Exception as e:  # noqa: BLE001 - the plan check itself is done
+        log.warning("queued fix not run: %s", type(e).__name__)
+        fix = {"ran": False, "reason": "failed"}
+    if fix.get("reason") != "none":
+        out["fix"] = fix
+        actions.append("fix: " + ("retried the failed check" if fix.get("ran") else f"not run ({fix.get('reason')})"))
     return out
 
 
@@ -1446,6 +1466,9 @@ def approve(settings: dict | None = None, *, by: str = "user", now: datetime | N
         if order_id is not None and o.get("id") != order_id:
             _save_state(settings, st)
             return {"ok": False, "step": None, "reason": "not_waiting", "week": week}
+        if not orders.may_lift(orders.hold_of(o), by):
+            _save_state(settings, st)          # D3: your Hold sticks until you lift it
+            return {"ok": False, "step": "hold", "reason": "held_by_user", "week": week}
         if _waiting(o):
             times = _times(entry, week, settings)
             if now >= times["deadline"]:
@@ -1525,6 +1548,9 @@ def start_now(settings: dict | None = None, *, by: str = "user", now: datetime |
         if o is None:
             _save_state(settings, st)
             return {"ok": False, "reason": "no_plan", "week": None}
+        if not orders.may_lift(orders.hold_of(o), by):
+            _save_state(settings, st)          # D3: your Hold sticks until you lift it
+            return {"ok": False, "reason": "held_by_user", "week": week, "step": "hold"}
         if _waiting(o):                    # approve() takes the lock again and checks everything again
             _save_state(settings, st)
             waiting = True
@@ -1885,6 +1911,8 @@ DESCRIBE = {
     "approval_unavailable": "Botsy could not record the approval (see the journal); nothing was started.",
     "already_auto": "Plans already start by themselves.",
     "already_held": "The plan is already on hold.",
+    "held_by_user": "You put this plan on hold. Only you lift your Hold (botsy service plan approve or "
+                    "start-now on the server); Hermes cannot start, approve or revise it.",
     "brief_unknown": "A plan line names a brief Botsy does not have.",
     "brief_too_old": "A plan line's brief is more than 7 days old.",
     "brief_missing": "The brief file is gone.",

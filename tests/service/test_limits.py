@@ -33,6 +33,7 @@ def test_the_shipped_example_loads_and_matches_the_defaults(tmp_path):
     assert got.level2_allowed and not got.scale_up_allowed      # scale-ups ship switched off
     assert got.get("cap_ceiling_usd") == 100 and got.get("changes_per_hour") == 20
     assert got.get("page_redos_per_week") == 10 and got.get("run_now_per_day") == 3
+    assert got.get("fixes_per_day") == 6                # watchdog fixes (user, 2026-10-21, D4.7)
     assert got.get("plan.max_cost_share_auto") == 1.0   # user, 2026-10-21: no cost gate
     assert got.get("scale_up.monthly_usd") == 6 and got.get("scale_up.per_theme_max_listings") == 8
     assert got.get("nope.nothing", "x") == "x"
@@ -195,3 +196,10 @@ def test_the_file_actually_read_is_checked_too(tmp_path, monkeypatch):
     monkeypatch.setattr(limits, "_admin_problem", lambda path, require_root: None)   # the path check "passed"
     got = limits.load(settings_for(p))
     assert not got.ok and got.reason == "limits_not_admin_only" and "world-writable" in got.detail
+
+
+def test_fixes_per_day_is_checked_like_every_limit(tmp_path):
+    assert limits.load(settings_for(write(tmp_path, "schema: limits/v1\nfixes_per_day: 2\n"))).get("fixes_per_day") == 2
+    for bad in ("-1", "101", "true", "'6'"):
+        got = limits.load(settings_for(write(tmp_path, f"schema: limits/v1\nfixes_per_day: {bad}\n")))
+        assert not got.ok, bad

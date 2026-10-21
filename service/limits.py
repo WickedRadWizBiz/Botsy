@@ -6,7 +6,7 @@ Part A4): /etc/botsy/limits.yaml, owned by root, mode 0644.
     DEFAULTS, REASONS, SCHEMA
 
 What it holds: Hermes's change limits (20 changes an hour, 10 page redos a week, 3 "run now"
-a day), the $100 cap ceiling only root can change, the plan's auto-start share of the cap,
+a day, 6 watchdog fixes a day), the $100 cap ceiling only root can change, the plan's auto-start share of the cap,
 the scale-up limits (off until there are winners), the capacity check's thresholds, the
 batch size and the daily limit on Level 3 approvals (no codes: user, 2026-10-21). setup.sh
 copies config/limits.example.yaml there only when no file exists, and changing it needs sudo.
@@ -64,10 +64,11 @@ DEFAULTS: dict = {
     "schema": SCHEMA,
     "changes_per_hour": 20,          # Hermes's Level 2 changes in any 60 minutes
     "page_redos_per_week": 10,
-    "run_now_per_day": 3,
+    "run_now_per_day": 3,            # extra checks a day (a watchdog retry counts as one)
+    "fixes_per_day": 6,              # Hermes's watchdog fixes (service/fixes.py) in any 24 hours
     "cap_ceiling_usd": 100,          # spend cap ceiling; only root changes it (raise_cap never goes above)
-    "level3_per_day": 10,            # Level 3 approvals (review approvals, cap raises, restarting paid work,
-                                     # approving a waiting plan, plans to automatic) in any 24 hours
+    "level3_per_day": 10,            # approvals in any 24 hours: every approval Hermes makes, and yours only
+                                     # when they lead to posting on Etsy or KDP (review / KDP kit approvals; D1)
     "approve_batch_max": 20,         # items one batch approval may approve
     "search_ideas_per_week": 5,      # Hermes's search ideas per ISO week (Level 1)
     "plan": {
@@ -97,6 +98,7 @@ SPEC: dict = {
     "changes_per_hour": ("int", 0, 1000),
     "page_redos_per_week": ("int", 0, 1000),
     "run_now_per_day": ("int", 0, 100),
+    "fixes_per_day": ("int", 0, 100),
     "cap_ceiling_usd": ("number", 1, 10000),
     "level3_per_day": ("int", 0, 1000),
     "approve_batch_max": ("int", 1, 200),

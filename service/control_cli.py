@@ -3,8 +3,10 @@ permission levels"). Every command is an order with created_by "user" and goes t
 service/orders.py like Hermes's orders do, so the same checks and the same journal apply.
 
 No codes (decided 2026-10-21). A Level 3 command here (approve, raise-cap, resume-budget,
-resume after Botsy's own stop) is your approval: it is applied at once, counted against limits
-level3_per_day, posted at once to the main Discord channel with how to undo it, and journaled.
+resume after Botsy's own stop) is your approval: it is applied at once, posted at once to the
+main Discord channel with how to undo it, and journaled. Only `approve` of review items (they
+become Etsy drafts) counts against limits level3_per_day (user, 2026-10-21, D1); your pause,
+cap and resume commands are never counted. `python -m qa review approve` is the same order.
 
     pause [--reason R]          stop new paid work (always allowed)
     resume                      lift a pause

@@ -289,7 +289,7 @@ def test_resuming_after_botsys_own_stop_is_a_level_3_approval(tmp_path, posts):
     assert not re.search(r"\b\d{6}\b", text)                                     # never a code
     approved = [e for e in journal(s) if e["kind"] == "order_approved"]
     assert approved and approved[-1]["by"] == "user" and approved[-1]["order_kind"] == "resume"
-    assert orders.counts(s, now=NOW)["level3_last_24h"] == 1
+    assert orders.counts(s, now=NOW)["level3_last_24h"] == 0          # D1: your resume is posted, not counted
 
 
 def test_a_resume_botsy_wrote_waits_for_your_approval(tmp_path, posts):
@@ -393,7 +393,8 @@ def test_level_3_approvals_have_a_daily_limit(tmp_path, posts):
     res = refused(submit(s, order("review_approve", {"item_ids": ["2026-10-20-stickers-x-0002"]}, by="user")),
                   "limits", "level3_daily_limit")
     assert entry(s, "2026-10-20-stickers-x-0002")["status"] == "pending" and len(posts) == 2
-    assert not orders.level3_room(s, now=NOW) and not orders.level3_take(s, "plan_auto", "user", now=NOW)
+    assert not orders.level3_room(s, now=NOW) and not orders.level3_take(s, "plan_auto", "hermes", now=NOW)
+    assert orders.level3_take(s, "plan_auto", "user", now=NOW)          # D1: your plan command is not counted
     later = NOW + timedelta(hours=24, minutes=1)
     assert orders.level3_room(s, now=later)
     assert submit(s, order("review_approve", {"item_ids": ["2026-10-20-stickers-x-0002"]}), now=later)["ok"]
@@ -484,7 +485,8 @@ def test_review_approve_a_named_batch_at_once(tmp_path, posts):
         assert e["reasons"] == ["trademark: Winnie the Pooh"]          # reasons are never removed
     ev = [e for e in journal(s) if e["kind"] == "order_approved"][-1]
     assert ev["by"] == "hermes" and ev["count"] == 3 and ev["announced"] is True
-    assert set(ev) <= {"ts", "kind", "order_id", "order_kind", "level", "by", "count", "announced"}
+    assert set(ev) <= {"ts", "kind", "order_id", "order_kind", "level", "by", "count", "announced", "counted"}
+    assert ev["counted"] is True
     assert orders.counts(s, now=NOW)["level3_last_24h"] == 1                    # one batch, one approval
 
 
@@ -945,12 +947,23 @@ def test_hold_blocks_the_start_and_start_now_lifts_it(tmp_path):
     assert orders.load(p["order_id"], s)["held"]["order_id"] == h["order_id"]
     later = datetime(2026, 10, 26, 12, 30, tzinfo=timezone.utc)
     assert orders.apply(p["order_id"], s, now=later)["reasons"] == ["plan_held"]       # Hermes cannot start it
-    assert orders.undo(h["order_id"], s, by="hermes", now=NOW)["reasons"] == ["not_hermes_order"]
-    st = submit(s, order("plan_start_now", {"plan_week": NEXT_WEEK}))                  # Level 2, counted
+    assert orders.undo(h["order_id"], s, by="hermes", now=NOW)["reasons"] == ["held_by_user"]   # D3
+    assert submit(s, order("plan_start_now", {"plan_week": NEXT_WEEK}))["reasons"] == ["held_by_user"]
+    st = submit(s, order("plan_start_now", {"plan_week": NEXT_WEEK}, by="user"))       # only you lift it
     stored = orders.load(p["order_id"], s)
     assert st["ok"] and "held" not in stored and stored["start_now"]["order_id"] == st["order_id"]
     assert st["plan"]["ok"] and stored["status"] == "applied"                          # starts at once
-    assert orders.counts(s, now=NOW)["changes_last_hour"] == 1
+    assert orders.counts(s, now=NOW)["changes_last_hour"] == 0          # Hermes's refused start is not counted
+
+
+def test_hermes_may_start_past_its_own_hold(tmp_path):
+    s = ctx(tmp_path)
+    p = submit(s, order("weekly_plan", plan(), by="botsy"), context={"approved_plans": 5})
+    h = submit(s, order("plan_hold", {"plan_week": NEXT_WEEK}))                        # Hermes's own Hold
+    assert orders.load(p["order_id"], s)["held"]["by"] == "hermes"
+    st = submit(s, order("plan_start_now", {"plan_week": NEXT_WEEK}))
+    assert st["ok"] and st["plan"]["ok"] and "held" not in orders.load(p["order_id"], s)
+    assert orders.counts(s, now=NOW)["changes_last_hour"] == 1 and h["ok"]     # the start counted (a hold never is)
 
 
 def test_undoing_a_hold_lifts_only_its_own_mark(tmp_path):
@@ -1173,3 +1186,152 @@ def test_the_journal_knows_the_order_kinds():
 def test_limits_module_is_used_for_the_file(tmp_path):
     s = ctx(tmp_path)
     assert limits.load(s).ok and orders.validate(order("pause"), s, store=False, now=NOW)["ok"]
+
+
+# ---------------------------------------------------------------- D1: what counts toward level3_per_day
+
+def test_your_approvals_count_only_when_they_lead_to_posting(tmp_path, posts):
+    """D1 (user, 2026-10-21): your review approvals (items become Etsy drafts) count; your cap,
+    resume and pause commands are posted and journaled but not counted; Hermes's always count."""
+    s = ctx(tmp_path, limits_doc="level3_per_day: 2\n")
+    item(s, ITEM_A)
+    item(s, ITEM_B)
+    item(s, ITEM_C)
+    assert submit(s, order("review_approve", {"item_ids": [ITEM_A]}, by="user"))["status"] == "applied"
+    assert orders.counts(s, now=NOW)["level3_last_24h"] == 1
+    raise_ = submit(s, order("raise_cap", {"cap_usd": 40}, by="user"))
+    assert raise_["status"] == "applied" and raise_["applied"]["announced"]
+    assert orders.load(raise_["order_id"], s)["approved"] == {"by": "user", "at": orders._iso(NOW), "counted": False}
+    assert submit(s, order("pause", by="user"))["status"] == "applied"
+    assert submit(s, order("resume", by="user"))["status"] == "applied"
+    assert orders.counts(s, now=NOW)["level3_last_24h"] == 1                    # still one
+    ev = [e for e in journal(s) if e["kind"] == "order_approved"]
+    assert [(e["order_kind"], e["counted"]) for e in ev] == [("review_approve", True), ("raise_cap", False)]
+    assert submit(s, order("raise_cap", {"cap_usd": 50}))["status"] == "applied"   # Hermes's raise counts
+    assert orders.counts(s, now=NOW)["level3_last_24h"] == 2 and not orders.level3_room(s, now=NOW)
+    # The limit is used up: your cap command still works, your next review approval does not.
+    assert submit(s, order("lower_cap", {"cap_usd": 30}, by="user"))["ok"]
+    assert submit(s, order("raise_cap", {"cap_usd": 45}, by="user"))["status"] == "applied"
+    refused(submit(s, order("review_approve", {"item_ids": [ITEM_B]}, by="user")), "limits", "level3_daily_limit")
+    refused(submit(s, order("raise_cap", {"cap_usd": 60})), "limits", "level3_daily_limit")       # Hermes
+    assert entry(s, ITEM_B)["status"] == "pending"
+
+
+def test_a_kdp_kit_approval_is_a_counted_placeholder(tmp_path):
+    s = ctx(tmp_path)
+    for by in ("user", "hermes"):
+        refused(submit(s, order("kdp_kit_approve", {"kit_id": "cozy-journal"}, by=by)), "switches", "kdp_not_built")
+    refused(submit(s, order("kdp_kit_approve", {"kit_id": "../x"}, by="user")), "format", "bad_field")
+    assert orders.counts_toward_level3("kdp_kit_approve", "user") and orders.counts_toward_level3("review_approve", "user")
+    assert not any(orders.counts_toward_level3(k, "user") for k in ("raise_cap", "resume", "resume_after_budget_stop",
+                                                                   "weekly_plan", "plan_auto", "pause", "lower_cap"))
+    assert all(orders.counts_toward_level3(k, "hermes") for k in ("raise_cap", "weekly_plan", "plan_auto"))
+    assert not orders.counts_toward_level3("review_approve", "botsy")
+    assert orders.counts(s, now=NOW)["level3_last_24h"] == 0
+
+
+# ---------------------------------------------------------------- D3: your Hold sticks
+
+def _held_plan(s, by="user", approved_plans=5):
+    p = submit(s, order("weekly_plan", plan(), by="botsy"), context={"approved_plans": approved_plans})
+    h = submit(s, order("plan_hold", {"plan_week": NEXT_WEEK}, by=by))
+    assert p["ok"] and h["ok"]
+    return p, h
+
+
+def test_hermes_cannot_revise_or_replace_a_plan_you_hold(tmp_path):
+    s = ctx(tmp_path)
+    p, h = _held_plan(s)
+    assert orders.load(p["order_id"], s)["held"]["by"] == "user"
+    rev = {**plan(), "replaces": p["order_id"]}
+    refused(submit(s, order("plan_revision", rev), context={"approved_plans": 5}), "switches", "held_by_user")
+    # Cancelling (stopping work) is fine, but a new plan of the week stays refused ...
+    assert submit(s, order("order_cancel", {"order_id": p["order_id"]}))["status"] == "applied"
+    refused(submit(s, order("weekly_plan", plan()), context={"approved_plans": 5}), "switches", "held_by_user")
+    # ... and Botsy's own new plan of that week inherits your Hold.
+    b = submit(s, order("weekly_plan", plan(), by="botsy"), context={"approved_plans": 5})
+    held = orders.load(b["order_id"], s)["held"]
+    assert held["by"] == "user" and held["order_id"] == h["order_id"] and held["inherited"]
+    later = datetime(2026, 10, 26, 12, 30, tzinfo=timezone.utc)
+    assert orders.apply(b["order_id"], s, now=later)["reasons"] == ["plan_held"]      # Monday never lifts it
+    # Your undo of the Hold lifts it wherever it went.
+    assert orders.undo(h["order_id"], s, by="user", now=NOW)["ok"]
+    assert "held" not in orders.load(b["order_id"], s)
+
+
+def test_a_revision_botsy_makes_keeps_your_hold(tmp_path):
+    s = ctx(tmp_path)
+    p, h = _held_plan(s)
+    rev = submit(s, order("plan_revision", {**plan(), "replaces": p["order_id"]}, by="botsy"),
+                 context={"approved_plans": 5})
+    assert rev["ok"] and orders.load(rev["order_id"], s)["held"]["order_id"] == h["order_id"]
+    refused(submit(s, order("plan_start_now", {"plan_week": NEXT_WEEK})), "switches", "held_by_user")
+
+
+def test_hermes_cannot_approve_a_waiting_plan_you_hold(tmp_path, posts):
+    s = ctx(tmp_path)
+    p, h = _held_plan(s, approved_plans=0)
+    assert orders.load(p["order_id"], s)["status"] == "waiting_approval"
+    res = orders.approve(p["order_id"], s, by="hermes", now=NOW)
+    assert not res["ok"] and res["reasons"] == ["held_by_user"]
+    assert orders.load(p["order_id"], s)["status"] == "waiting_approval"
+    assert orders.counts(s, now=NOW)["level3_last_24h"] == 0
+    assert orders.approve(p["order_id"], s, by="user", now=NOW)["ok"]                 # you may
+
+
+def test_hermes_hold_never_replaces_yours(tmp_path):
+    s = ctx(tmp_path)
+    p, h = _held_plan(s)
+    hh = submit(s, order("plan_hold", {"plan_week": NEXT_WEEK}))
+    assert hh["ok"] and orders.load(p["order_id"], s)["held"]["order_id"] == h["order_id"]
+    assert orders.undo(hh["order_id"], s, by="hermes", now=NOW)["ok"]                # its own: a no-op
+    assert orders.load(p["order_id"], s)["held"]["by"] == "user"
+    # Your Hold over Hermes's: yours wins, and Hermes cannot lift it.
+    s2 = ctx(tmp_path / "b")
+    p2, h2 = _held_plan(s2, by="hermes")
+    u = submit(s2, order("plan_hold", {"plan_week": NEXT_WEEK}, by="user"))
+    assert orders.load(p2["order_id"], s2)["held"]["order_id"] == u["order_id"]
+    refused(submit(s2, order("plan_start_now", {"plan_week": NEXT_WEEK})), "switches", "held_by_user")
+    assert orders.may_lift({"by": "hermes"}, "user") and orders.may_lift({"by": "botsy"}, "hermes")
+    assert not orders.may_lift({"by": "user"}, "hermes") and not orders.may_lift({"by": "user"}, "botsy")
+
+
+# ---------------------------------------------------------------- D2: a review order for a named queue
+
+def test_a_review_order_of_yours_may_name_its_queue(tmp_path, posts):
+    s = ctx(tmp_path)
+    other = tmp_path / "elsewhere"
+    d = other / ITEM_A
+    (d / "mockups").mkdir(parents=True)
+    (d / "qa_report.json").write_text(json.dumps({"passed": True}))
+    queue = other / "queue"
+    queue.mkdir()
+    (queue / f"{ITEM_A}.json").write_text(json.dumps({"item_id": ITEM_A, "status": "pending",
+                                                      "content_digest": "d9", "reasons": []}))
+    target = {"out": str(other), "review_dir": str(queue)}
+    with pytest.raises(ValueError):
+        submit(s, order("review_approve", {"item_ids": [ITEM_A]}), target=target)    # never for Hermes
+    refused(submit(s, order("review_approve", {"item_ids": [ITEM_A]}, by="user")), "switches", "item_unknown")
+    res = submit(s, order("review_approve", {"item_ids": [ITEM_A]}, by="user"), target=target)
+    assert res["status"] == "applied" and res["applied"]["announced"] and posts[-1][1] is True
+    assert review.read_entry(ITEM_A, queue)["status"] == "approved"
+    assert orders.load(res["order_id"], s)["target"]["review_dir"] == str(queue.resolve())
+    assert orders.undo(res["order_id"], s, now=NOW)["ok"]                            # undone in that queue
+    assert review.read_entry(ITEM_A, queue)["status"] == "pending"
+    assert orders.review_dir(s) == root(s) / "review"                                # nothing leaks out
+
+
+# ---------------------------------------------------------------- D4.7: fixes are rate-limited orders
+
+def test_fix_orders_are_rate_limited(tmp_path, posts, monkeypatch):
+    from service import fixes
+
+    s = ctx(tmp_path, limits_doc="fixes_per_day: 1\nrun_now_per_day: 0\n")
+    monkeypatch.setattr(fixes, "check", lambda kind, payload, settings, now=None: ([], {"ok_fact": 1}))
+    res = submit(s, order("fix_retry_run"))
+    refused(res, "limits", "run_now_limit")
+    monkeypatch.setattr(fixes, "perform", lambda o, settings, now=None: ({"cleared": "service"}, {"ok_fact": 1}))
+    assert submit(s, order("fix_clear_stale_lock", {"lock": "service"}))["status"] == "applied"
+    refused(submit(s, order("fix_clear_stale_lock", {"lock": "service"})), "limits", "fixes_limit")
+    assert submit(s, order("fix_clear_stale_lock", {"lock": "service"}, by="user"))["ok"]      # yours are not
+    assert orders.counts(s, now=NOW)["fixes_today"] == 1 and orders.counts(s, now=NOW)["level3_last_24h"] == 0

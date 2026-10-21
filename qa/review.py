@@ -17,6 +17,13 @@ Every read-modify-write of an entry runs under queue_lock(review_dir) (an flock 
 order (service/orders.py, which holds only data/orders/.lock) and a tick rewriting the entry
 (which holds data/.service.lock) never overwrite each other. decide(expected=...) is a
 compare-and-set: it raises StateChanged when the fresh entry no longer matches.
+
+Approvals are orders (user, 2026-10-21, D2). A person's approval goes through
+request_approval(), which sends a review_approve order (created_by "user") to
+service/orders.py: checked (QA passed, pending, not drafted, content as QA saw it), posted at
+once to the main Discord channel with how to undo it, journaled and counted against limits
+level3_per_day. approve() / decide() below are the low-level writes that service/orders.py
+itself performs; nothing else calls approve().
 """
 from __future__ import annotations
 
@@ -174,7 +181,23 @@ def decide(item_id: str, status: str, review_dir: str | Path, note: str = "", *,
 
 
 def approve(item_id: str, review_dir: str | Path, note: str = "", *, expected: dict | None = None) -> dict:
+    """Low level: write an approval. Only service/orders.py calls this (after its checks); a
+    person's approval goes through request_approval()."""
     return decide(item_id, "approved", review_dir, note, expected=expected)
+
+
+def request_approval(item_ids, settings: dict, *, out: str | Path, review_dir: str | Path,
+                     batch: str | None = None, now=None) -> dict:
+    """Your approval of review items, as an order (D2): service.orders.submit of a
+    review_approve with created_by "user" for this output root and queue. Returns the orders
+    result (ok, stage, reasons, order_id, applied: {ok, result: {approved}, announced})."""
+    from service import orders
+
+    payload: dict = {"item_ids": list(dict.fromkeys(item_ids))}
+    if batch:
+        payload["batch"] = batch
+    order = {"schema": orders.SCHEMA, "kind": "review_approve", "created_by": "user", "payload": payload}
+    return orders.submit(order, settings, now=now, target={"out": str(out), "review_dir": str(review_dir)})
 
 
 def reject(item_id: str, review_dir: str | Path, reason: str, *, expected: dict | None = None) -> dict:

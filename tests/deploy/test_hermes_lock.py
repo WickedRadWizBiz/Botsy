@@ -97,11 +97,66 @@ def test_template_renders_and_keeps_the_lock(lock, good_cfg, values):
     # No codes (2026-10-21): Hermes itself holds every action for your click; reads need none.
     assert good_cfg["mcp_servers"]["botsy-act"]["trust"] == "untrusted"
     assert good_cfg["mcp_servers"]["botsy-read"]["trust"] == "full"
-    for forbidden in ("terminal", "file", "web", "browser", "delegation", "cronjob",
-                      "code_execution", "discord_admin"):
+    for forbidden in ("terminal", "file", "web", "search", "browser", "delegation", "code_execution",
+                      "computer_use", "image_gen", "video", "video_gen", "tts", "discord_admin"):
         assert forbidden in good_cfg["agent"]["disabled_toolsets"]
     assert good_cfg["discord"]["allow_from"] == [USER_ID]
     assert good_cfg["discord"]["ignored_channels"] == []     # no codes channel (2026-10-21)
+    # Decided 2026-10-21 (D4 items 1-6): what each place gets, exactly.
+    for platform, want in lock.PLATFORM_TOOLSETS.items():
+        assert set(good_cfg["platform_toolsets"][platform]) == want, platform
+    assert set(good_cfg["toolsets"]) == lock.ALLOWED_TOOLSETS
+    assert good_cfg["cron"]["model"] == "claude-haiku-5-5" and good_cfg["cron"]["model_provider"] == "anthropic"
+    assert good_cfg["cron"]["provider"] == ""                  # the built-in scheduler
+    assert good_cfg["skills"]["write_approval"] is True and good_cfg["memory"]["write_approval"] is True
+    assert good_cfg["security"]["website_blocklist"] == {"enabled": True, "domains": ["*.*"], "shared_files": []}
+
+
+# D4 (user, 2026-10-21): the toolsets Hermes now gets, and the ones that stay off.
+D4_DISCORD = {"botsy-read", "botsy-act", "memory", "vision", "cronjob", "session_search", "todo", "kanban",
+              "skills", "discord"}
+STILL_OFF = ("terminal", "file", "code_execution", "browser", "computer_use", "image_gen", "video",
+             "video_gen", "tts", "delegation", "web", "search", "discord_admin", "x_search", "connections",
+             "catalog", "project", "desktop_ui", "yuanbao", "feishu_doc", "feishu_drive")
+BUNDLES = ("safe", "coding", "debugging", "hermes-cli", "hermes-discord", "hermes-gateway")
+
+
+def test_allowed_sets_match_the_decision(lock):
+    assert lock.PLATFORM_TOOLSETS["discord"] == D4_DISCORD
+    assert lock.PLATFORM_TOOLSETS["cron"] == D4_DISCORD - {"cronjob", "kanban", "discord"}
+    assert lock.ALLOWED_TOOLSETS == D4_DISCORD
+    assert lock.ALLOWED_MODELS == {"claude-haiku-5-5", "claude-sonnet-5-5"}
+    assert lock.DEFAULT_MODEL == "claude-haiku-5-5"
+    assert set(STILL_OFF) <= set(lock.FORBIDDEN_TOOLSETS)
+    assert not set(lock.FORBIDDEN_TOOLSETS) & lock.ALLOWED_TOOLSETS
+    assert not set(BUNDLES) & set(lock.FORBIDDEN_TOOLSETS)    # a bundle there would strip vision/skills
+    assert {"bg", "loop", "goal", "skills"} <= lock.SAFE_SLASH_COMMANDS
+    assert {"model", "yolo", "tools", "heartbeat", "moa"} <= set(lock.RISKY_SLASH_COMMANDS)
+    assert not lock.SAFE_SLASH_COMMANDS & set(lock.RISKY_SLASH_COMMANDS)
+
+
+@pytest.mark.parametrize("name", STILL_OFF + BUNDLES)
+def test_every_still_forbidden_toolset_is_rejected(lock, good_cfg, values, name):
+    for where, mutate in (("toolsets", lambda c: c["toolsets"].append(name)),
+                          ("platform_toolsets.discord", lambda c: c["platform_toolsets"]["discord"].append(name)),
+                          ("platform_toolsets.cron", lambda c: c["platform_toolsets"]["cron"].append(name))):
+        cfg = copy.deepcopy(good_cfg)
+        mutate(cfg)
+        problems = lock.check_config(cfg, values, "socket")
+        assert any(f"{where} turns on {name}" in p for p in problems), (where, problems)
+    if name in lock.FORBIDDEN_TOOLSETS:
+        cfg = copy.deepcopy(good_cfg)
+        cfg["agent"]["disabled_toolsets"].remove(name)
+        assert any(f"does not turn off {name}" in p for p in lock.check_config(cfg, values, "socket"))
+
+
+@pytest.mark.parametrize("platform,name", [("cron", "cronjob"), ("cron", "kanban"), ("cron", "discord"),
+                                           ("cli", "kanban"), ("webhook", "vision"), ("api_server", "skills")])
+def test_a_toolset_allowed_elsewhere_is_rejected_where_it_is_not(lock, good_cfg, values, platform, name):
+    cfg = copy.deepcopy(good_cfg)
+    cfg["platform_toolsets"][platform].append(name)
+    problems = lock.check_config(cfg, values, "socket")
+    assert any(f"platform_toolsets.{platform} turns on {name}" in p for p in problems), problems
 
 
 def test_no_codes_anywhere_in_the_hermes_files(lock):
@@ -199,7 +254,9 @@ def _mutations():
         "delegation not disabled": (undisable("delegation"), "does not turn off delegation"),
         "discord_admin not disabled": (undisable("discord_admin"), "does not turn off discord_admin"),
         "code_execution not disabled": (undisable("code_execution"), "does not turn off code_execution"),
-        "cronjob not disabled": (undisable("cronjob"), "does not turn off cronjob"),
+        "computer_use not disabled": (undisable("computer_use"), "does not turn off computer_use"),
+        "an unknown place": (set_("platform_toolsets.telegram", ["botsy-read", "botsy-act"]), "platform_toolsets.telegram is not one of"),
+        "Botsy tools dropped": (set_("platform_toolsets.cron", ["memory"]), "platform_toolsets.cron does not name Botsy's two tool servers"),
         "extra MCP server": (extra_mcp, "MCP servers other than Botsy's: filesystem"),
         "Botsy MCP missing": (drop("mcp_servers.botsy-act"), "Botsy's MCP server missing: botsy-act"),
         "MCP over http": (http_mcp, "mcp_servers.botsy-read has url"),
@@ -224,6 +281,24 @@ def _mutations():
         "roles unlock": (set_("discord.allowed_roles", "999999999999999999"), "allowed_roles is set"),
         "agent makes cron jobs": (set_("cron.allow_agent_scheduling", True), "cron.allow_agent_scheduling is not off"),
         "cron on another model": (set_("cron.model", "claude-opus-5-5"), "scheduled jobs are not fixed"),
+        "cron on sonnet by default": (set_("cron.model", "claude-sonnet-5-5"), "scheduled jobs are not fixed"),
+        "cron model provider": (set_("cron.model_provider", "openrouter"), "scheduled jobs are not fixed"),
+        "cron outside scheduler": (set_("cron.provider", "chronos"), "cron.provider is set"),
+        "chat on sonnet": (set_("model.default", "claude-sonnet-5-5"), "model.default is not one of"),
+        "kanban workers": (set_("kanban.dispatch_in_gateway", True), "may start worker agents"),
+        "kanban any profile": (drop("kanban.dispatch_profiles"), "may start worker agents"),
+        "kanban decomposer": (set_("kanban.auto_decompose", True), "kanban.auto_decompose"),
+        "kanban review workers": (set_("kanban.review_dispatch", True), "kanban.review_dispatch"),
+        "vision on the web": (set_("security.website_blocklist.enabled", False), "website_blocklist does not block"),
+        "blocklist emptied": (set_("security.website_blocklist.domains", ["etsy.com"]), "website_blocklist does not block"),
+        "private urls": (set_("security.allow_private_urls", True), "allow_private_urls is not off"),
+        "every discord action": (set_("discord.server_actions", ""), "discord.server_actions is not a list"),
+        "discord pins": (set_("discord.server_actions", ["fetch_messages", "pin_message"]), "discord.server_actions"),
+        "discord member search": (set_("discord.server_actions", ["search_members"]), "discord.server_actions"),
+        "curator on": (set_("curator.enabled", True), "curator is on"),
+        "skill scan off": (set_("skills.guard_agent_created", False), "guard_agent_created is not on"),
+        "/heartbeat opened": (set_("discord.user_allowed_commands", ["heartbeat"]), "opens the slash commands heartbeat"),
+        "/tools opened in groups": (set_("discord.group_user_allowed_commands", ["tools"]), "opens the slash commands tools"),
         "cron approvals open": (set_("approvals.cron_mode", "approve"), "approvals.cron_mode is not deny"),
         "other model": (set_("model.default", "claude-opus-5-5"), "model.default is not one of"),
         "other provider": (set_("model.provider", "openrouter"), "model.provider is not anthropic"),
@@ -390,9 +465,26 @@ def test_firewall_flag_installs_its_units(installed):
     assert (root / "etc" / "systemd" / "system" / "hermes-gateway.service.d" / "firewall.conf").exists()
     assert "FIREWALL=1" in (root / "etc" / "hermes" / "install.conf").read_text(encoding="utf-8")
     assert mod.check(_ctx(mod, root)) == []
+    # Required since 2026-10-21: --no-firewall is refused, and an old FIREWALL=0 is turned on.
     r = _install(root, "--no-firewall")
-    assert r.returncode == 0
-    assert not (root / "etc" / "systemd" / "system" / "hermes-gateway.service.d" / "firewall.conf").exists()
+    assert r.returncode != 0 and "firewall is required" in r.stdout + r.stderr
+    conf = root / "etc" / "hermes" / "install.conf"
+    conf.write_text("BRIDGE=socket\nFIREWALL=0\n", encoding="utf-8")
+    assert any("the firewall is off" in p for p in mod.check(_ctx(mod, root)))
+    r = _install(root)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "FIREWALL=1" in conf.read_text(encoding="utf-8")
+    assert mod.check(_ctx(mod, root)) == []
+
+
+def test_default_install_has_the_firewall_and_the_jobs_timer(installed):
+    root, mod = installed
+    units = root / "etc" / "systemd" / "system"
+    assert "FIREWALL=1" in (root / "etc" / "hermes" / "install.conf").read_text(encoding="utf-8")
+    for name in ("botsy-hermes-firewall.service", "botsy-hermes-jobs.service", "botsy-hermes-jobs.timer"):
+        assert (units / name).exists(), name
+    scripts = root / "home" / "hermes" / ".hermes" / "scripts"
+    assert scripts.is_dir() and not any(scripts.iterdir())
 
 
 def _problems(mod, root):
@@ -542,15 +634,39 @@ def test_check_without_a_hermes_user_is_a_problem(installed):
 
 # ---------------------------------------------------------------------------- the probe's judgement
 
+# Recorded 2026-10-21 from the real pinned Hermes v0.21.7 (commit 71d34bad), installed in a
+# throwaway venv and given this template: the toolsets and built-in tools it really gives each place.
+_JOB_PLACE = {"toolsets": ["botsy-act", "botsy-read", "memory", "session_search", "skills", "todo", "vision"],
+              "tools": ["memory", "session_search", "skill_manage", "skill_view", "skills_list", "todo_list",
+                        "vision_analyze"]}
+RECORDED_PLATFORMS = {
+    "discord": {"toolsets": ["botsy-act", "botsy-read", "cronjob", "discord", "kanban", "memory", "session_search",
+                             "skills", "todo", "vision"],
+                "tools": ["cronjob_manage", "discord", "kanban_attach", "kanban_attach_url", "kanban_attachments",
+                          "kanban_block", "kanban_comment", "kanban_complete", "kanban_create", "kanban_heartbeat",
+                          "kanban_link", "kanban_list", "kanban_request_changes", "kanban_request_review",
+                          "kanban_schedule", "kanban_show", "kanban_unblock", "memory", "session_search",
+                          "skill_manage", "skill_view", "skills_list", "todo_list", "vision_analyze"]},
+    "cron": _JOB_PLACE, "cli": _JOB_PLACE,
+    "webhook": {"toolsets": ["botsy-act", "botsy-read", "memory"], "tools": ["memory"]},
+    "api_server": {"toolsets": ["botsy-act", "botsy-read", "memory"], "tools": ["memory"]},
+}
+
+
 def _good_probe(lock):
     pin = lock.load_pin()
-    plat = {"toolsets": ["botsy-act", "botsy-read", "memory"], "tools": ["memory"]}
     mcp = {n: {"command": c, "args": a, "env": {}, "url": None, "enabled": True,
                "sampling": False, "elicitation": False, "trust": lock.MCP_TRUST[n]}
            for n, (c, a) in lock.MCP_COMMANDS["socket"].items()}
     env = lock.expected_managed_env({"DISCORD_ALLOWED_USER_ID": USER_ID})
     env["DISCORD_ALLOW_ALL_USERS"] = "false"
-    return {"platforms": {p: dict(plat) for p in lock.PLATFORMS}, "mcp": mcp,
+    return {"platforms": copy.deepcopy(RECORDED_PLATFORMS), "mcp": mcp,
+            "cron": {"model": "claude-haiku-5-5", "model_provider": "anthropic", "provider": ""},
+            "kanban": {"auto_decompose": False, "dispatch_in_gateway": False, "dispatch_profiles": []},
+            "background": {"curator": False, "review": False},
+            "web_blocked": {"https://cdn.discordapp.com/x.png": True, "https://example.com/x.png": True,
+                            "https://i.etsystatic.com/x.jpg": True, "https://www.etsy.com/x.jpg": True},
+            "discord_actions": ["fetch_messages", "create_thread"],
             "memory_write_approval": True, "skills_write_approval": True, "memory_provider": "",
             "agent_scheduling": False, "model": "claude-haiku-5-5", "provider": "anthropic",
             "allow_from": [USER_ID], "env": env, "version": pin["HERMES_VERSION"], "commit": pin["HERMES_COMMIT"],
@@ -569,7 +685,19 @@ def test_probe_judgement(lock, values):
         (lambda d: d["mcp"]["botsy-act"].update(trust="full"), "without your approval click"),
         (lambda d: d["mcp"]["botsy-act"].pop("trust"), "botsy-act as trust None"),
         (lambda d: d.update(memory_write_approval=False), "without your approval"),
-        (lambda d: d.update(agent_scheduling=True), "its own scheduled jobs"),
+        (lambda d: d.update(agent_scheduling=True), "running scheduled job make more jobs"),
+        (lambda d: d["platforms"]["cron"]["toolsets"].append("kanban"), "gives cron the toolsets kanban"),
+        (lambda d: d["platforms"]["cron"]["tools"].append("cronjob_manage"), "built-in tools cronjob_manage"),
+        (lambda d: d["platforms"]["discord"]["tools"].append("discord_admin"), "built-in tools discord_admin"),
+        (lambda d: d["platforms"]["discord"]["tools"].append("web_search"), "built-in tools web_search"),
+        (lambda d: d.update(model="claude-sonnet-5-5"), "not the pinned Anthropic model"),
+        (lambda d: d["cron"].update(model="claude-sonnet-5-5"), "scheduled jobs are not fixed"),
+        (lambda d: d["kanban"].update(dispatch_in_gateway=True), "worker agents"),
+        (lambda d: d["background"].update(review=True), "background review or curator is on"),
+        (lambda d: d["web_blocked"].update({"https://www.etsy.com/x.jpg": False}), "does not block every web address"),
+        (lambda d: d.pop("web_blocked"), "does not block every web address"),
+        (lambda d: d.update(discord_actions=None), "Discord tool allows actions beyond"),
+        (lambda d: d.update(discord_actions=["fetch_messages", "add_role"]), "Discord tool allows actions beyond"),
         (lambda d: d.update(allow_from=[]), "allowlist"),
         (lambda d: d["env"].update(GATEWAY_ALLOW_ALL_USERS="true"), "GATEWAY_ALLOW_ALL_USERS"),
         (lambda d: d.update(version="0.22.3"), "not the pinned"),
@@ -775,3 +903,139 @@ def test_secrets_example_has_only_the_allowed_keys(lock):
 def test_install_script_parses():
     r = subprocess.run(["bash", "-n", str(INSTALL)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+# ---------------------------------------------------------------------------- Hermes's own scheduled jobs
+
+def _job(**kw):
+    """A job record as Hermes v0.21.7 stores it in ~/.hermes/cron/jobs.json (cron/jobs.py create_job)."""
+    job = {"id": "a1b2c3", "name": "morning check-in", "prompt": "Read Botsy's status and tell me.",
+           "skills": [], "skill": None, "model": None, "provider": None, "base_url": None, "script": None,
+           "no_agent": False, "monitor_script": None, "monitor_url": None, "context_from": None,
+           "schedule": {"kind": "cron", "expr": "17 8 * * *", "display": "17 8 * * *"},
+           "enabled": True, "state": "scheduled", "deliver": "origin", "enabled_toolsets": None, "workdir": None}
+    job.update(kw)
+    return job
+
+
+SONNET_PLAN = dict(name="botsy-weekly-plan", model="claude-sonnet-5-5", provider="anthropic",
+                   schedule={"kind": "cron", "expr": "23 7 * * 0"})
+SONNET_CD = dict(name="botsy-creative-director", model="claude-sonnet-5-5", provider="anthropic",
+                 schedule={"kind": "cron", "expr": "23 10 * * wed"})
+
+
+def test_good_jobs_pass(lock):
+    jobs = [_job(), _job(name="hourly", schedule={"kind": "interval", "minutes": 60}),
+            _job(name="once", schedule={"kind": "once", "run_at": "2026-10-22T09:00:00-04:00"}),
+            _job(name="pinned haiku", model="claude-haiku-5-5", provider="anthropic"),
+            _job(name="few tools", enabled_toolsets=["botsy-read", "memory"]),
+            _job(name="no tools", enabled_toolsets=[]),
+            _job(name="paused often", enabled=False, schedule={"kind": "interval", "minutes": 1}),
+            _job(**SONNET_PLAN), _job(**SONNET_CD),
+            _job(name="monthly sonnet", model=None, schedule={"kind": "cron", "expr": "5 6 1 * *"})]
+    assert lock.job_problems(jobs) == []
+    assert lock.job_problems([]) == []
+
+
+JOB_CASES = {
+    "script": (dict(script="x.sh"), "runs a script"),
+    "script only": (dict(no_agent=True), "script-only job"),
+    "monitor script": (dict(monitor_script="m.sh"), "runs a monitor script"),
+    "url monitor": (dict(monitor_url="https://www.etsy.com/search?q=planner"), "fetches a web address"),
+    "endpoint": (dict(base_url="https://proxy.example"), "sends to another endpoint"),
+    "work folder": (dict(workdir="/home/hermes"), "has a work folder"),
+    "other provider": (dict(provider="openrouter"), "uses the provider 'openrouter'"),
+    "other model": (dict(model="claude-opus-5-5"), "uses the model 'claude-opus-5-5'"),
+    "sonnet elsewhere": (dict(model="claude-sonnet-5-5", schedule={"kind": "cron", "expr": "1 1 * * 1"}),
+                         "runs on Sonnet (only"),
+    "terminal": (dict(enabled_toolsets=["botsy-read", "terminal"]), "turns on terminal"),
+    "kanban in a job": (dict(enabled_toolsets=["kanban"]), "turns on kanban"),
+    "cronjob in a job": (dict(enabled_toolsets=["cronjob"]), "turns on cronjob"),
+    "every 30 minutes": (dict(schedule={"kind": "interval", "minutes": 30}), "runs every 30 minutes"),
+    "every minute cron": (dict(schedule={"kind": "cron", "expr": "* * * * *"}), "more often than hourly"),
+    "every 15 minutes cron": (dict(schedule={"kind": "cron", "expr": "*/15 * * * *"}), "more often than hourly"),
+    "two minutes an hour": (dict(schedule={"kind": "cron", "expr": "0,30 * * * *"}), "more often than hourly"),
+    "six fields": (dict(schedule={"kind": "cron", "expr": "0 0 * * * *"}), "not 5 plain fields"),
+    "odd kind": (dict(schedule={"kind": "every"}), "unknown schedule kind"),
+    "no schedule": (dict(schedule=None), "no readable schedule"),
+    "sonnet daily": (dict(SONNET_PLAN, schedule={"kind": "cron", "expr": "23 7 * * *"}), "once a week on Sonnet"),
+    "sonnet twice a week": (dict(SONNET_PLAN, schedule={"kind": "cron", "expr": "23 7 * * 0,3"}), "once a week on Sonnet"),
+    "sonnet hourly": (dict(SONNET_PLAN, schedule={"kind": "cron", "expr": "23 * * * 0"}), "once a week on Sonnet"),
+    "sonnet interval": (dict(SONNET_PLAN, schedule={"kind": "interval", "minutes": 1440}), "runs every 1440 minutes"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(JOB_CASES))
+def test_each_bad_job_is_refused(lock, name):
+    kw, expected = JOB_CASES[name]
+    problems = lock.job_problems([_job(**kw)])
+    assert any(expected in p for p in problems), problems
+
+
+def test_job_count_and_duplicate_sonnet_jobs(lock):
+    jobs = [_job(name=f"job {i}") for i in range(lock.MAX_CRON_JOBS)]
+    assert lock.job_problems(jobs) == []
+    assert any("11 scheduled jobs are on" in p for p in lock.job_problems(jobs + [_job(name="one more")]))
+    assert lock.job_problems(jobs + [_job(name="paused", enabled=False)]) == []
+    assert any("2 scheduled jobs named 'botsy-weekly-plan'" in p
+               for p in lock.job_problems([_job(**SONNET_PLAN), _job(**SONNET_PLAN)]))
+    assert lock.job_problems("nope") and lock.job_problems([1])
+
+
+def _write_jobs(root: Path, jobs) -> Path:
+    path = root / "home" / "hermes" / ".hermes" / "cron" / "jobs.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"jobs": jobs, "updated_at": "2026-10-21T09:00:00-04:00"}), encoding="utf-8")
+    return path
+
+
+def test_full_check_and_jobs_command_judge_the_jobs_file(installed, capsys):
+    root, mod = installed
+    path = _write_jobs(root, [_job(), _job(**SONNET_PLAN)])
+    assert mod.check(_ctx(mod, root)) == []
+    assert mod.main(["jobs", "--root", str(root)]) == 0
+    assert "Hermes jobs: OK" in capsys.readouterr().out
+    _write_jobs(root, [_job(monitor_url="https://www.amazon.com/s?k=planner")])
+    assert any("fetches a web address" in p for p in mod.check(_ctx(mod, root)))
+    assert mod.main(["jobs", "--root", str(root)]) == 1
+    out = capsys.readouterr().out
+    assert "PROBLEM: scheduled job 'morning check-in' fetches a web address" in out
+    assert "amazon" not in out                            # the job's own text is never echoed
+    path.write_text("{not json", encoding="utf-8")
+    assert any("not readable JSON" in p for p in mod.check(_ctx(mod, root)))
+    path.unlink()
+    path.symlink_to(root / "etc" / "hermes" / "hermes.env")
+    assert any("not a plain file" in p for p in mod.check(_ctx(mod, root)))
+
+
+def test_check_fails_when_a_script_can_be_scheduled(installed):
+    root, mod = installed
+    (root / "home" / "hermes" / ".hermes" / "scripts" / "x.sh").write_text("id\n", encoding="utf-8")
+    assert any("/home/hermes/.hermes/scripts is not empty" in p for p in mod.check(_ctx(mod, root)))
+
+
+def test_jobs_timer_is_hourly_and_stops_hermes():
+    assert _unit("botsy-hermes-jobs.timer")["OnCalendar"] == ["*-*-* *:17:00"]
+    svc = _unit("botsy-hermes-jobs.service")
+    assert "check_lock.py jobs --stop hermes-gateway.service" in svc["ExecStart"][0]
+    post = svc["ExecStopPost"][0]
+    assert '"$$SERVICE_RESULT" = success' in post and "hermes-gateway.service" in post
+
+
+def test_gateway_hides_other_programs_data_from_vision():
+    inaccessible = " ".join(_unit("hermes-gateway.service")["InaccessiblePaths"]).split()
+    for path in ("-/var/lib", "-/var/log", "-/srv", "-/mnt", "-/media", "-/opt/botsy", "-/home/botsy"):
+        assert path in inaccessible
+
+
+def test_soul_names_the_new_limits():
+    text = (HERMES / "SOUL.md").read_text(encoding="utf-8")
+    for phrase in ("/skills approve", "botsy-weekly-plan", "our own", "hourly"):
+        assert phrase in text, phrase
+
+
+def test_secrets_example_and_readme_say_ten_dollars():
+    for path in (HERMES / "hermes.env.example", HERMES / "README.md", HERMES / "config.yaml.template"):
+        text = path.read_text(encoding="utf-8")
+        assert "$10" in text, path.name
+        assert "$5 monthly" not in text, path.name

@@ -16,14 +16,16 @@ schema: limits/v1
 # --- Hermes's small changes (Level 2) ---
 changes_per_hour: 20          # Level 2 changes Hermes may make in any 60 minutes
 page_redos_per_week: 10       # pages Hermes may send back for a redo per ISO week
-run_now_per_day: 3            # extra checks Hermes may start per day
+run_now_per_day: 3            # extra checks per day (a watchdog retry of a failed check counts as one)
+fixes_per_day: 6              # fixed watchdog fixes Hermes may ask for in any 24 hours (service/fixes.py)
 
 # --- Money ---
 cap_ceiling_usd: 100          # the monthly spending cap can never be raised above this (whoever asks)
 
 # --- Level 3 approvals (no codes, decided 2026-10-21) and batches ---
-level3_per_day: 10            # approvals that used to need a code (review approvals, raise_cap, resume after a
-                              # budget stop, approving a waiting weekly plan, switching plans to automatic), in 24 hours
+level3_per_day: 10            # approvals in any 24 hours (user, 2026-10-21): every approval Hermes makes counts;
+                              # yours count only when they lead to posting on Etsy or KDP (review approvals,
+                              # KDP kit approvals). Your pause, cap, resume and plan commands are not counted.
 approve_batch_max: 20         # review items one batch approval may approve
 search_ideas_per_week: 5      # search ideas Hermes may add per ISO week (marked "exploratory")
 

@@ -58,14 +58,18 @@ MemoryHigh=1200M
 MemoryMax=1536M
 TasksMax=256
 
-# Hardening. The file system is read-only except the hermes home; Botsy's folders do not exist
-# for this service; no capabilities, no setuid, no new namespaces, a system-call allowlist.
+# Hardening. The file system is read-only except the hermes home; Botsy's folders (and other
+# programs' data) do not exist for this service; no capabilities, no setuid, no new namespaces, a system-call allowlist.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=tmpfs
 BindPaths=/home/hermes
 ReadWritePaths=/home/hermes
 InaccessiblePaths=-/opt/botsy -/etc/botsy -/srv/botsy-inbox -/home/botsy -/usr/local/lib/botsy -/usr/local/lib/botsy-hermes -/root
+# Vision (decided 2026-10-21) opens any image file the service can see, so the places other
+# programs keep data are hidden too. What is left: the system's own read-only files and
+# /home/hermes, where Hermes caches the images botsy-read hands it and what you attach.
+InaccessiblePaths=-/var/lib -/var/log -/var/backups -/var/mail -/var/spool -/var/opt -/var/www -/srv -/mnt -/media
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

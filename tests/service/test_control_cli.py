@@ -98,3 +98,15 @@ def test_control_never_waits_for_the_service_lock():
     assert "control" in cli.NO_LOCK
     with pytest.raises(SystemExit):
         cli.main(["control", "approve", "--code", "123456"])                    # there are no codes
+
+
+def test_only_your_review_approvals_count_toward_the_daily_limit(tmp_path, capsys, posts):
+    """D1 (user, 2026-10-21): pause, cap and resume from the server are posted and journaled
+    but never counted; the review approval (items become Etsy drafts) is."""
+    s, cfg = setup(tmp_path)
+    item(s)
+    for argv in (["pause"], ["resume"], ["lower-cap", "20"], ["raise-cap", "40"]):
+        assert cli.main(["control", *argv, "--settings", cfg]) == 0, argv
+    assert orders.counts(s)["level3_last_24h"] == 0 and posts                    # the raise was posted
+    assert cli.main(["control", "approve", ITEM, "--settings", cfg]) == 0
+    assert orders.counts(s)["level3_last_24h"] == 1

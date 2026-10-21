@@ -1,5 +1,7 @@
 """Review-queue safety on reruns, cleanup of failed items, and the CLI's review folder."""
 import copy
+import json
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -10,6 +12,26 @@ from qa import mockups, review
 from qa.__main__ import main
 
 from .conftest import by_name, coloring_item
+
+
+def with_orders(settings, tmp_path, monkeypatch):
+    """D2: `qa review approve` is an order. Its order files, control state and journal go into
+    tmp_path, and Discord posts are captured: returns (settings, posts)."""
+    from service import notify
+
+    s = copy.deepcopy(settings)
+    s["control"] = {**(s.get("control") or {}), "orders_dir": str(tmp_path / "data" / "orders"),
+                    "state_file": str(tmp_path / "data" / "control" / "state.json"),
+                    "limits_path": str(tmp_path / "limits.yaml"), "limits_require_root": False}
+    s["service"] = {**(s.get("service") or {}), "events_file": str(tmp_path / "data" / "events.jsonl")}
+    posts = []
+    monkeypatch.setattr(notify, "send", lambda text, **kw: posts.append((text, kw.get("urgent"))) or True)
+    return s, posts
+
+
+def journal(s):
+    p = Path(s["service"]["events_file"])
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
 
 
 def rerun(d, settings, rdir, **manifest_changes):
@@ -123,7 +145,7 @@ def test_recheck_of_a_listed_item_keeps_its_status(tmp_path, settings):
 def test_cli_review_commands_find_the_entries_qa_wrote(tmp_path, settings, monkeypatch, capsys):
     """With --out pointing at the configured output dir, `qa` queues into settings
     paths.review_dir, so `qa review` must look there too (not in <out>/review)."""
-    s = copy.deepcopy(settings)
+    s, posts = with_orders(settings, tmp_path, monkeypatch)
     out, queue = tmp_path / "out", tmp_path / "queue"
     s["paths"] = {"output_dir": str(out), "review_dir": str(queue)}
     monkeypatch.setattr("qa.__main__.load_settings", lambda path=None: s)
@@ -194,3 +216,35 @@ def test_cli_exits_1_when_an_item_fails(tmp_path, settings, monkeypatch, capsys)
     assert main(["--out", str(out), "--item", bad.name, "--no-mockups"]) == 1
     assert main(["--out", str(out), "--no-mockups"]) == 1  # run_all
     assert "FAIL  item-b" in capsys.readouterr().out
+
+
+def test_cli_approve_is_an_order_that_refuses_what_qa_did_not_pass(tmp_path, settings, monkeypatch, capsys):
+    """D2: `qa review approve` goes through service/orders.py, so an item that failed QA, one
+    regenerated since QA (new content digest) and one already decided are refused, and nothing
+    is posted for a refusal. Dry runs keep working (--dry-run uses the dry-run output)."""
+    s, posts = with_orders(settings, tmp_path, monkeypatch)
+    dry = tmp_path / "dry"
+    s["pipeline"] = {**(s.get("pipeline") or {}), "dry_run_output_dir": str(dry)}
+    monkeypatch.setattr("qa.__main__.load_settings", lambda path=None: s)
+    ok = coloring_item(dry, "2026-10-15-coloring_pages-owls-0001")
+    bad = coloring_item(dry, "2026-10-15-coloring_pages-foxes-0002")
+    assert main(["--dry-run", "--item", ok.name, "--no-mockups"]) == 0
+    assert main(["--dry-run", "--item", bad.name, "--no-mockups"]) == 0
+    from core.items import review_dir_for_root
+
+    rdir = review_dir_for_root(dry, s)
+    # A failed QA report on the second item: approval refused even though its entry is pending.
+    rep = json.loads((bad / "qa_report.json").read_text())
+    (bad / "qa_report.json").write_text(json.dumps({**rep, "passed": False}))
+    assert main(["review", "approve", bad.name, "--dry-run"]) == 1
+    assert "item_failed_qa" in capsys.readouterr().err and not posts
+    # A regenerated item (the entry's digest no longer matches what the order checked) is refused.
+    entry = review.read_entry(ok.name, rdir)
+    review.entry_path(ok.name, rdir).write_text(json.dumps({**entry, "content_digest": None}))
+    assert main(["review", "approve", ok.name, "--dry-run"]) == 1
+    assert "item_not_ready" in capsys.readouterr().err and not posts
+    review.entry_path(ok.name, rdir).write_text(json.dumps(entry))
+    assert main(["review", "approve", ok.name, "--dry-run"]) == 0
+    assert review.read_entry(ok.name, rdir)["status"] == "approved" and len(posts) == 1
+    assert main(["review", "approve", ok.name, "--dry-run"]) == 1             # already approved
+    assert main(["review", "approve", "../etc", "--dry-run"]) == 2           # a bad id: usage error

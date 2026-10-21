@@ -2,17 +2,26 @@
 # "Hermes setup"). Written for the pinned Hermes Agent v0.21.7 (deploy/hermes/hermes-pin.env,
 # config schema 50). Every key name was read in that version's own code
 # (hermes_cli/config_defaults.py, hermes_cli/tools_config.py, hermes_cli/managed_scope.py,
-# tools/mcp_tool_server_run.py, plugins/platforms/discord/adapter.py, gateway/config_loader.py),
-# and check_lock.py --probe asks the installed Hermes itself what this file turns on.
+# tools/mcp_tool_server_run.py, plugins/platforms/discord/adapter.py, gateway/config_loader.py,
+# toolsets.py, tools/vision_tools.py, tools/image_source.py, tools/website_policy.py,
+# tools/cronjob_tools.py, cron/scheduler.py, tools/kanban_tools.py, tools/discord_tool.py,
+# tools/write_approval.py, gateway/slash_access.py), and check_lock.py --probe asks the installed
+# Hermes itself what this file turns on.
+#
+# Decided 2026-10-21 ("too cautious; I want Hermes pulling its weight"): Hermes now also gets
+# vision (our own product images only), its own scheduled check-ins, past-chat search, a to-do
+# list, a task board, skills (each change waits for your approval) and the non-admin Discord
+# tool. Still off: terminal, files, code, browser, computer use, image/video/speech generation,
+# sub-agents, Hermes's own web search, Discord administration and any other MCP server.
 #
 # install_hermes.sh renders this file twice, root-owned, with the same content:
 #   /etc/hermes/config.yaml           Hermes's "managed scope": it wins, key by key, over the
 #                                     hermes user's own config, its .env and its environment.
 #   /home/hermes/.hermes/config.yaml  the hermes user's config, read-only to it.
-# check_lock.py refuses a copy that differs from this template, a forbidden toolset, an extra MCP
-# server, sampling or elicitation on, memory or skill approval off, an empty allowlist, a file the
-# hermes user can write, or a version other than the pin. Do not edit the rendered files by hand:
-# edit this template, then run  sudo bash install_hermes.sh  again.
+# check_lock.py refuses a copy that differs from this template, a toolset outside the list for its
+# place, an extra MCP server, sampling or elicitation on, memory or skill approval off, an empty
+# allowlist, a file the hermes user can write, or a version other than the pin. Do not edit the
+# rendered files by hand: edit this template, then run  sudo bash install_hermes.sh  again.
 #
 # Placeholders (filled from /etc/hermes/hermes.env by check_lock.py render; a rendered file that
 # still has one is refused):
@@ -25,9 +34,19 @@ timezone: America/New_York
 
 # ------------------------------------------------------------------ model and money
 # Hermes's own Anthropic key (ANTHROPIC_API_KEY in /etc/hermes/hermes.env) belongs to a SEPARATE
-# Anthropic workspace with a $5 monthly spend limit, set in the Anthropic Console. That limit is the
-# real money guard: nothing in this file can stop a model switch inside a chat (/model) from
-# costing more. No fallback providers, so a failed call never moves to another paid provider.
+# Anthropic workspace with a $10 monthly spend limit (raised from $5 on 2026-10-21), set in the
+# Anthropic Console. That limit is the real money guard. No fallback providers, so a failed call
+# never moves to another paid provider.
+#
+# Haiku 5.5 runs every chat and every routine job. Sonnet 5.5 runs only in the scheduled jobs you
+# pin to it yourself: v0.21.7 has no per-task model routing inside a chat, and its cronjob tool
+# cannot set a model ("models don't pick models", tools/cronjob_tools.py), so a job Hermes makes
+# always runs on cron.model below. You create the two Sonnet jobs once, from the server
+# (deploy/hermes/README.md "Sonnet jobs"):
+#   botsy-weekly-plan        Sunday, the weekly plan
+#   botsy-creative-director  Wednesday, creative-director review of briefs and our own previews
+# check_lock.py jobs (hourly) refuses Sonnet on any other job and either job scheduled more than
+# once a week. Hermes may still "run now" either job when you ask; the $10 limit caps that.
 model:
   provider: anthropic
   default: claude-haiku-5-5
@@ -39,32 +58,41 @@ compression:
   enabled: true
   threshold_tokens: 60000
 
-# Background extras that each cost a model call: off.
+# Background extras that each cost a model call. Off: the post-turn "self-improvement" fork
+# (background_review) and the curator. In v0.21.7 a skill change the fork stages is not named in
+# the summary it posts (agent/background_review.py _action_lines), and the curator archives skills
+# without the approval gate, so neither meets "every change is posted to you". Skills still
+# improve in the chat itself: each change Hermes proposes waits for your /skills approve.
 auxiliary:
   background_review:
-    enabled: false          # the post-turn "self-improvement" fork that replays the whole chat
+    enabled: false
   title_generation:
     enabled: false
     model_upgrade_enabled: false
 curator:
-  enabled: false            # background skill maintenance
+  enabled: false
 
-# ------------------------------------------------------------------ tools: Botsy's only
-# Every place Hermes runs the model (Discord chat, scheduled jobs, the command line, webhooks,
-# the API server) gets exactly the two Botsy tool servers plus the memory tool. Naming the MCP
-# servers in the list makes it an allowlist: any other MCP server would stay off.
-toolsets: [botsy-read, botsy-act, memory]
+# ------------------------------------------------------------------ tools
+# Each place Hermes runs the model gets exactly its list below (an allowlist: any toolset or MCP
+# server not named stays off). Discord chat gets the most; scheduled jobs get no Discord, task
+# board or job tools (Hermes's own scheduler also denies cronjob there, so a job never makes jobs).
+toolsets: [botsy-read, botsy-act, memory, vision, cronjob, session_search, todo, kanban, skills, discord]
 platform_toolsets:
-  discord: [botsy-read, botsy-act, memory]
-  cron: [botsy-read, botsy-act, memory]
-  cli: [botsy-read, botsy-act, memory]
+  discord: [botsy-read, botsy-act, memory, vision, cronjob, session_search, todo, kanban, skills, discord]
+  cron: [botsy-read, botsy-act, memory, vision, session_search, todo, skills]
+  cli: [botsy-read, botsy-act, memory, vision, session_search, todo, skills]
   webhook: [botsy-read, botsy-act, memory]
   api_server: [botsy-read, botsy-act, memory]
 
 agent:
+  # How images reach the model: "native" attaches them to Haiku itself (no extra call). Images
+  # come from botsy-read's review_preview tool (our own previews, re-encoded by Botsy, returned as
+  # MCP image content) and from what you attach in Discord.
+  image_input_mode: native
   # Applied LAST, after every list above, by Hermes's own resolver: these stay off whatever any
-  # other setting, adapter or update says. Everything that touches the machine, the web, other
-  # agents, schedules, Discord administration or paid media.
+  # other setting, adapter, scheduled job or update says. Everything that touches the machine, the
+  # open web, other agents, Discord administration or paid media. Only single toolsets are listed:
+  # a bundle such as "safe" or "coding" here would also strip vision, skills and todo.
   disabled_toolsets:
     - terminal
     - file
@@ -72,28 +100,43 @@ agent:
     - search
     - browser
     - delegation
-    - cronjob
     - code_execution
-    - discord
     - discord_admin
     - computer_use
-    - vision
     - video
     - image_gen
     - video_gen
     - tts
     - x_search
-    - kanban
     - connections
     - catalog
     - project
     - desktop_ui
-    - session_search
-    - skills
-    - todo
+    - start_chat
+    - setup
+    - bot_room
+    - context_engine
     - yuanbao
     - feishu_doc
     - feishu_drive
+
+# Vision: vision_analyze reads a data: URL, an http(s) URL or a file path (tools/image_source.py).
+#  - The web: every host with a dot is on the blocklist below, which vision checks BEFORE any
+#    download; the firewall (required) also lets the hermes user reach only Anthropic and Discord.
+#  - Files: systemd hides Botsy's folders and /var, /srv, /mnt, /media from Hermes
+#    (hermes-gateway.service), so the only images it can open are the ones botsy-read handed it
+#    (cached under ~/.hermes/cache) and what you attach in Discord.
+# Same pixels at most 3 times per chat (each embed is re-sent with every later message).
+vision:
+  max_calls_per_image: 3
+security:
+  allow_lazy_installs: false
+  allow_private_urls: false
+  redact_secrets: true
+  website_blocklist:
+    enabled: true
+    domains: ["*.*"]
+    shared_files: []
 
 # The two Botsy tool servers. botsy-control-connect links Hermes's stdio to Botsy's socket in
 # /run/botsy-control/; systemd starts botsy-control there as the botsy user, so the hermes user
@@ -139,8 +182,11 @@ mcp_servers:
 
 # ------------------------------------------------------------------ memory and skills
 # Hermes's own memory (about 3,600 characters) saves only after you approve each write in chat.
-# Skills are off (see disabled_toolsets); if you ever turn them on, every change still waits for
-# your approval.
+# Skills: Hermes may write and improve its own skills, but every new or changed skill is only
+# staged (~/.hermes/pending/skills/) until you look at it and approve it in Discord:
+#   /skills pending   /skills diff <id>   /skills approve <id>   /skills reject <id>
+# No outside skill folders, no project skills, no shell snippets inside skills, and each skill
+# Hermes writes is security-scanned first.
 memory:
   memory_enabled: true
   user_profile_enabled: true
@@ -156,13 +202,30 @@ skills:
   guard_agent_created: true
 
 # ------------------------------------------------------------------ scheduled jobs
-# Only you create scheduled jobs, from the server (sudo -u hermes ...), never Hermes itself, and
-# each one runs on this model.
+# Hermes may create its own check-ins with its cronjob tool. They run on Haiku (cron.model; the
+# tool cannot pick a model), get the "cron" toolsets above, and every Botsy action in them is
+# declined (approvals.cron_mode: deny), so a job can read and report but never approve.
+# allow_agent_scheduling stays off: a running job may not make more jobs.
+# v0.21.7 has no job-count or interval setting, so check_lock.py jobs (hourly) enforces them
+# and stops Hermes if one is broken: at most 10 jobs, none more often than hourly, no scripts,
+# no URL monitors, no other model, provider or work folder, only the cron toolsets.
 cron:
   allow_agent_scheduling: false
   catch_up_missed: false
-  provider: anthropic
+  provider: ""
   model: claude-haiku-5-5
+  model_provider: anthropic
+  max_parallel_jobs: 1
+
+# Task board (kanban): Hermes keeps its own to-do cards. No worker agents: the dispatcher that
+# would start other Hermes processes for cards is off and may claim no profile, and the Triage
+# auto-decomposer (an extra model call) is off.
+kanban:
+  dispatch_in_gateway: false
+  dispatch_profiles: []
+  review_dispatch: false
+  auto_decompose: false
+  max_in_progress: 1
 
 approvals:
   mode: manual
@@ -183,18 +246,26 @@ discord:
   ignored_channels: []
   require_mention: true
   # Slash commands. Without an admin list Hermes lets every allowed user run every slash command,
-  # including /model (a pricier model for the session), /yolo, /cron, /loop, /heartbeat, /goal,
-  # /bg, /moa and /tools (checked in v0.21.7 gateway/slash_access.py). "0" is no Discord account,
-  # so nobody is an admin and you keep only the commands listed below, plus /help and /whoami.
-  # /memory is there so you can approve or reject Hermes's pending memory writes.
+  # including /model (a pricier model for the session), /yolo and /tools (checked in v0.21.7
+  # gateway/slash_access.py). "0" is no Discord account, so nobody is an admin (which also keeps
+  # "/goal gate add", a shell command, refused) and you keep only the commands listed below, plus
+  # /help and /whoami. Hermes gates these per user, and you are the only allowed user:
+  #   /memory and /skills  approve or reject Hermes's pending memory and skill writes
+  #   /bg /loop /goal      a background chat, a repeating prompt, a standing goal (all on Haiku)
+  # /cron is not a Discord command in v0.21.7 (command-line only); ask Hermes in chat instead.
   allow_admin_from: ["0"]
   group_allow_admin_from: ["0"]
-  user_allowed_commands: [new, retry, status, stop, compress, memory]
-  group_user_allowed_commands: [new, retry, status, stop, compress, memory]
+  user_allowed_commands: [new, retry, status, stop, compress, memory, skills, bg, loop, goal]
+  group_user_allowed_commands: [new, retry, status, stop, compress, memory, skills, bg, loop, goal]
   history_backfill: false
   missed_message_backfill:
     enabled: false
+  # The status reactions Hermes adds to your messages while it works.
   reactions: true
+  # The non-admin Discord tool: read recent messages and start threads. Member search is left
+  # out (other people's details). Pins, deleting messages and roles are discord_admin in v0.21.7
+  # and stay off.
+  server_actions: [fetch_messages, create_thread]
 gateway:
   allow_all_users: false
   unauthorized_dm_behavior: ignore
@@ -213,7 +284,3 @@ telemetry:
   shared_metrics:
     enabled: false
     send: false
-security:
-  allow_lazy_installs: false
-  allow_private_urls: false
-  redact_secrets: true
