@@ -1,10 +1,11 @@
 # Task State
-_Last updated: 2026-10-17 16:00 UTC_
+_Last updated: 2026-10-21_
 
 ## Current objective
 Run Botsy 24/7 on Lightsail. Done and pushed: server service, weekly search list, Windows helper, deploy kit (phase 1); refined research stage, evidence window, spend tracker, events + Discord + daily log, theme cooldown, settings.local.yaml, disk cleanup (phase 2, 1451 tests). Phase 3 themed packs + stationery + TTRPG niches + opportunity scoring (docs/PACKS.md) DONE and pushed 2026-10-17 (2116 tests, 5-niche CI dry run ~70 s). Next: round-2 build steps below.
 
 ## Next immediate action
+- 2026-10-21: build step 1 RUNNING: workflow `wf_71e337cf-864` (script botsy-plan-and-hermes-foundation-wf_71e337cf-864.js): orders/codes/capacity/limits core, Sunday plan service + plan mode, botsy-control MCP servers, locked-down Hermes install files; reviews; integrate. If cut off by a session limit: Workflow(scriptPath, resumeFromRunId) after the reset.
 - Packs build landed (commits d519dd1..b66b783). Round-2 designs written from the user's answers: docs/RESEARCH_COSTS.md, docs/SNN.md (rewritten: adjacency role), docs/OVERSEER.md "Scale-ups and the Sunday plan", docs/HEALTH_TERMS.md; open choices + repo changes + sources in docs/PROPOSAL_2026-10-16.md "Round 2". config/platform_policies.yaml updated (bookbeam, google_trends, amazon/everbee/erank sources; the user's accepted risk recorded; BookBeam background fetch still open). Fixed: 'Search Results' column read as search demand (research/columns.py).
 - Build step A DONE 2026-10-17 (integrated and pushed: b8200db..d4bc272; 2472 tests; 5-niche dry run ok; awareness stickers -> review, doctor/nurse/stethoscope stickers clean per user). Left, in order: (1) plan mode (Sunday plan service + botsy-plan.timer/.service, code approvals for the first 4 plans, then Monday 8 am auto-start with Hold; plans over $10 still need a code; settings `schedule:` already merged) + Hermes foundation (botsy-control safe menu / MCP server, docs/OVERSEER.md); (2) KDP reader (kdp_manual template + BookBeam files already routed to data/research_inputs/kdp/; TinyFish KDP reader per CLAUDE.md exception, design `wf_d2dc453b-b1c`); (3) embedded fonts + watchdog + hourly record; (4) POD (one-sticker Printify test); (5) SNN package (inputs: own-shop data + Botsy's own yes/no theme facts only, docs/SNN.md). TinyFish/market-signals design `wf_d2dc453b-b1c` still to finish (skeptic step).
 
