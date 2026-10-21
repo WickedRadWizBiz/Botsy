@@ -59,3 +59,6 @@ data/briefs/kdp/
 data/performance/
 data/orders/
 data/plans/
+# The pause / cap / budget-stop state and botsy-control logs.
+data/control/
+data/logs/

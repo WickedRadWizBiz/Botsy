@@ -1,6 +1,6 @@
 # Hermes: active director and helper for Botsy
 
-> **Status: proposed 2026-10-16, not built yet.** Decisions still open are listed in [PROPOSAL_2026-10-16.md](PROPOSAL_2026-10-16.md); build order is there too.
+> **Status: proposed 2026-10-16. Built 2026-10-21: the foundation (orders, limits, capacity, botsy-control, the Hermes install files) and the Sunday plan (Part B); Hermes itself is not installed yet. No codes (decided 2026-10-21, below).** Decisions still open are listed in [PROPOSAL_2026-10-16.md](PROPOSAL_2026-10-16.md); build order is there too.
 
 In short: Hermes plans the week, looks at our own products, and walks you through chores in Discord. It still can't run anything itself. It writes "orders", and Botsy's own code checks each order before anything happens.
 
@@ -17,7 +17,7 @@ In short: Hermes plans the week, looks at our own products, and walks you throug
   - drafts only;
   - a spending ceiling only the server admin can change;
   - no shell, no web, no research files;
-  - a code for every review approval, as you approved. New: one code may approve a batch of named items.
+  - your approval for every review approval (no codes since 2026-10-21: a plain approve, posted at once). One approval may cover a batch of named items.
 - **If Hermes is down,** or its plan is more than 8 days old, Botsy runs exactly as it does today.
 
 ### How Botsy and Hermes talk
@@ -31,23 +31,25 @@ In short: Hermes plans the week, looks at our own products, and walks you throug
 - Tools can hand Hermes images (verified), so it can look at our own previews without file access.
 
 ### Four permission levels
+> **Decided 2026-10-21: no codes** (user: "I don't want the codes"). There are no 6-digit codes, no #botsy-codes channel and no codes webhook. The actions below that needed a code are accepted straight from you: through Hermes (your allowlisted Discord user only; each act call also waits for your Allow click on Hermes's approval button) or the server CLI (`botsy service plan approve`, `botsy service control ...`). Guards that stay: hard-blocked items are never approved; raise_cap never goes above `cap_ceiling_usd` in the root-only limits file; at most limits `level3_per_day` (10) such approvals in 24 hours (`approve_batch_max` 20 items in one batch); each one is posted at once to the main Discord channel (urgent, quiet hours never hold it) with what changed, who asked (hermes | user) and how to undo it; all are journaled with fixed fields. The first 4 plans and plans over 40% of the cap still wait for your plain approval.
+
 - **Level 0, read:** status, spending, briefs (aggregated numbers and terms only), our own previews, our own shop's stats.
 - **Level 1, suggest:** notes, recommendations, search ideas, preferences. Nothing changes until Botsy's normal rules act on them.
 - **Level 2, small changes:**
   - covers the weekly plan, page redos, listing edits on not-yet-approved items, and a few safe settings;
   - Botsy checks every value and enforces limits from an admin-only file, for example 20 changes an hour, 10 page redos a week and 3 "run now" a day;
   - Hermes may ask you with buttons first, but that is a convenience, not a safeguard. Botsy cannot tell whether you pressed anything, so every Level 2 change is capped and can be undone even if Hermes acts without asking.
-- **Level 3, code required:**
-  - approving any held item (a batch code is fine);
-  - raising the cap;
-  - restarting paid work after a budget stop.
+- **Level 3, your approval (no codes):**
+  - approving any held item (a named batch is fine);
+  - raising the cap (never above the admin's ceiling);
+  - restarting paid work after a budget stop, or after Botsy's own stop;
+  - approving a weekly plan that waits for you, or switching plans to automatic.
 
-  How codes work:
-  - Botsy, not Hermes, posts a 6-digit code to a private #botsy-codes channel, with Botsy's own facts: the rule that fired, the term, the item and a thumbnail;
-  - you read it there and type the code to Hermes;
-  - a code works once, only for that exact action and those exact items, and expires after 10 minutes.
+  How approvals work (2026-10-21): you ask Hermes in plain words, or type the CLI command on the server. Botsy checks the order in full again, applies it, counts it (at most 10 in 24 hours), and posts at once to the main channel what changed, who asked and how to undo it.
 
 ### Lock-down: three layers (must do before any role)
+> **Decided 2026-10-21: no codes.** There is no #botsy-codes channel to hide from the bot; your Discord account is now the key, so keep two-factor login on and read the approval posts.
+
 **1. Hermes settings.** Verified defaults (2026-10-16):
 - Discord chats get every tool, including the terminal, files, web, browser, subagents, scheduled jobs, code running and discord_admin (bans, role changes, channel management).
 - Scheduled jobs get the same set.
@@ -70,9 +72,9 @@ The exact setting name for the tool lock is not confirmed, so test that it holds
 **3. Discord:**
 - invite the Hermes bot with Discord's minimum permissions only: view channels, send messages, embed links, attach files, read message history; optionally threads and reactions;
 - never Administrator, Manage Channels, Manage Roles or Manage Webhooks;
-- deny the bot View Channel on #botsy-codes, and list that channel in DISCORD_IGNORED_CHANNELS;
+- botsy-act is `trust: untrusted` in Hermes's config, so every Botsy action waits for your Allow click on Hermes's Discord approval button; scheduled Hermes jobs can never act;
 - allow only your Discord user ID (DISCORD_ALLOWED_USERS), never a role;
-- turn on two-factor login. Codes don't protect you if your Discord account is stolen.
+- turn on two-factor login. With no codes, a stolen Discord account could approve; the daily limit, the ceiling and the at-once posts are what limit the damage.
 
 **Dashboard:**
 - the Botsy tab is read-only, plus Pause and Lower cap;
@@ -89,13 +91,14 @@ The exact setting name for the tool lock is not confirmed, so test that it holds
 - change compliance rules, the blocklist, the AI disclosure, the research minimums, the ceiling or the limits file;
 - read research exports, research history or raw logs, or see other sellers' data;
 - write image prompts or free-text instructions for Botsy's models (fixed options and approved style phrases only);
-- create scheduled jobs, install add-ons, or change Discord channels or roles.
+- create scheduled jobs, install add-ons, or change Discord channels or roles;
+- act without your Allow click: botsy-act is `trust: untrusted`, so scheduled Hermes jobs can never act.
 
 ### Roles
 **First wave**
 
 **1. Foundation**
-- botsy-control "read" and "act" tool servers, order files Botsy checks again, signed fixed-field events, the admin-only limits file and ceiling, codes, the three-layer lock, and a one-line log of every Hermes action in Botsy's own channel.
+- botsy-control "read" and "act" tool servers, order files Botsy checks again, signed fixed-field events, the admin-only limits file and ceiling, the daily approval limit with at-once posts (no codes), the three-layer lock, and a one-line log of every Hermes action in Botsy's own channel.
 - Cost about $0. Effort: high.
 
 **2. Production director (with the season calendar, budget split and preference memory)**
@@ -120,7 +123,7 @@ The exact setting name for the tool lock is not confirmed, so test that it holds
 **3. Review-queue triage**
 - Reads held items' reasons and previews, recommends approve, reject or redo, and sends a morning list.
 - Rejecting and adding a hold happen at once.
-- Every approval needs a code, with Botsy's facts in #botsy-codes. Batch codes are fine.
+- Every approval is yours: you say so in plain words (Hermes asks "yes?" first) and Botsy posts it at once with how to undo it. Batches are fine.
 - Never approves alone, removes reasons, approves hard-blocked items, or treats its own look as legal clearance.
 - Cost about $0.40 a month.
 
@@ -185,7 +188,7 @@ The exact setting name for the tool lock is not confirmed, so test that it holds
 
 ### Untested; test before relying on them
 - The Botsy-only tool lock, including after `hermes update`.
-- That the Hermes bot cannot read #botsy-codes and that codes cannot be reused.
+- That Hermes's Allow button really blocks botsy-act calls until you click it, and that scheduled jobs are declined.
 - Whether Hermes's Discord buttons work for our tools (only a convenience now).
 - How well Haiku 5.5 spots print defects and look-alikes.
 - Memory use on the 4 GB server.
@@ -195,9 +198,9 @@ The exact setting name for the tool lock is not confirmed, so test that it holds
 
 ## Scale-ups ("more of this") and the Sunday plan
 
-> **Status: design, written 2026-10-17 after the user's answers of 2026-10-16; not built yet.** Open choices and build order: [PROPOSAL_2026-10-16.md](PROPOSAL_2026-10-16.md) section "Round 2".
+> **Status: Part B (the Sunday plan) built 2026-10-21 (service/plan.py, Botsy's own draft plan, botsy-plan.timer and botsy-plan-check.timer); Part A (scale-ups) not active until winners exist: only the `scale_up` order type and its refusal (`no_winners_yet`) are built.** **Decided 2026-10-21: no codes:** wherever this part says "code", read "your plain approval" (CLI or Hermes), counted against limits `level3_per_day`, posted at once with who asked and how to undo it. Open choices and build order: [PROPOSAL_2026-10-16.md](PROPOSAL_2026-10-16.md) section "Round 2".
 
-> **Status: design, 2026-10-16. Not built.** It answers your points 4 and 5 and builds on [OVERSEER.md](OVERSEER.md). All limits and winner rules are starting guesses, not measurements.
+> **First design note, 2026-10-16.** It answers your points 4 and 5 and builds on [OVERSEER.md](OVERSEER.md). All limits and winner rules are starting guesses, not measurements.
 
 ### In short
 - **Botsy, not Hermes, decides what is selling.** Only our own numbers count.
@@ -217,7 +220,7 @@ The exact setting name for the tool lock is not confirmed, so test that it holds
   - Scale-ups get at most $6 a month, and only while the month stays under the 80% warning line.
   - Most will be cheap kinds: planner, RPG and activity packs, or packs cut from pages we already have.
 - **The weekly plan posts every Sunday at 8 pm New York time.**
-  - Your first 4 plans wait for your OK, given with a code.
+  - Your first 4 plans wait for your OK (a plain approve; no codes since 2026-10-21).
   - From plan 5, a plan starts by itself Monday at 8 am unless you press Hold.
 - **Three things need fixing first:**
   - The server runs on UTC, so quiet hours start at 6 pm your time.
@@ -500,7 +503,7 @@ scale_up:
 #### A5. The `scale_up` order (Level 2)
 - Hermes sends it together with the weekly plan, or with a revision of the plan before the plan starts.
 - Version 1 has no mid-week scale-ups. They can be added later if a week turns out too slow.
-- In the first month, the plan and its scale-ups need your code anyway (B3).
+- In the first month, the plan and its scale-ups wait for your approval anyway (B3).
 
 Example:
 
@@ -581,7 +584,7 @@ In this example, the newer coloring brief lists 10 pages as the size top sellers
 **Pausing and resuming:**
 - `scale_up_pause` (Level 2) stops all scale-ups.
 - Resuming after a pause is Level 2.
-- Resuming after Botsy's automatic stop needs a code (Level 3), like restarting paid work after a budget stop.
+- Resuming after Botsy's automatic stop needs your approval (Level 3), like restarting paid work after a budget stop.
 
 **Judging results and the auto-stop:**
 - Botsy judges each order 30 days after its items went live.
@@ -592,7 +595,7 @@ In this example, the newer coloring brief lists 10 pages as the size top sellers
   - 25-75%: **neutral.** One more scale-up of the theme is allowed;
   - above 75%: **good.**
 - If nothing from the order is live after 45 days (for example, you didn't publish the drafts), the order closes as **no result.** It counts neither way.
-- **2 failed orders within 60 days stop all scale-ups.** Botsy posts that, and resuming needs your code.
+- **2 failed orders within 60 days stop all scale-ups.** Botsy posts that, and resuming needs your approval.
 - If the parent stops selling (no order in 30 days), the order's packs not made yet are cancelled.
 - If you reject a scaled item for a rule reason, its order is cancelled. The theme is then blocked until you say otherwise.
 
@@ -653,16 +656,13 @@ WantedBy=timers.target
   - It takes the main lock only to start a plan's first check.
 
 #### B3. The first month: you approve each plan
+> **Decided 2026-10-21: no codes.** You approve with a plain `botsy service plan approve` on the server, or by telling Hermes (it calls botsy-control `approve_order`; you also click Allow on its button). Botsy posts the approval at once (urgent) with who asked and the undo (`plan hold`), and counts it against limits `level3_per_day`. The steps with a code below are replaced by that.
+
 - **"First month" means the first 4 plans you approve,** not calendar weeks.
   - Expired or held plans don't count.
   - Each plan says "plan 2 of 4 that need your OK".
   - The count is kept in `data/plans/state.json`.
-- **Approval with a code (Level 3).** Botsy can't tell whether you pressed a Hermes button, so:
-  1. you say "approve";
-  2. Botsy posts a 6-digit code in #botsy-codes, with its own facts (packs, cost, KDP slots, scale-ups);
-  3. you type the code to Hermes.
-
-  That is 4 codes in total. Codes are urgent, so they ignore quiet hours.
+- **Approval (Level 3, no code).** You say "approve" (Hermes) or type `botsy service plan approve` (server). Botsy checks the plan again (deadline, hold, money, the daily limit), starts it, and posts at once in the main channel what was approved, who asked and how to undo it. That post is urgent, so quiet hours never hold it.
 - **When you approve,** Botsy starts one check right away, so work begins that night. It does not count toward "run now".
 - **If you don't answer:**
   - Mon 8:00 am: reminder 1.
@@ -672,25 +672,27 @@ WantedBy=timers.target
     - at most 10 items a run;
     - no scale-ups;
     - no KDP slots assigned by a plan.
-  - You can then ask Hermes for a new plan. It goes through the same checks and needs the same code. It counts toward the 4 if you approve it.
+  - You can then ask Hermes for a new plan. It goes through the same checks and waits for your approval the same way. It counts toward the 4 if you approve it.
 - **While a plan waits,** Botsy only finishes last week's plan lines (B5).
-- **Hold** is always allowed, with no code. The plan keeps waiting, and the Tuesday deadline still applies.
+- **Hold** is always allowed. The plan keeps waiting, and the Tuesday deadline still applies.
 - **Change:** Hermes revises the plan, and Botsy checks it again.
-  - The revision still needs your code.
+  - The revision still waits for your approval.
   - The deadline stays Tuesday 8 pm.
-  - Any change after you approved needs a new code.
+  - Any change after you approved waits for a new approval.
 
 #### B4. From plan 5: automatic, with Hold
+> **Decided 2026-10-21: no codes.** Approving a big plan and going automatic early are plain approvals (`plan approve`, `plan auto`), each posted at once and counted against `level3_per_day`.
+
 - The plan posts Sunday at 8 pm with [Hold] [Change] [Start now].
 - It starts by itself Monday at 8:00 am New York time. Botsy's 8:05 check starts it and runs one check.
-- **No code needed** for Hold, Start now, or approving a held plan (all Level 2).
+- **Level 2, no approval post:** Hold, Start now, or approving a held plan.
 - **A held plan** waits until you approve or change it, or until next Sunday's plan replaces it. Botsy finishes last week's lines meanwhile.
 - **A revised plan** starts at least 2 hours after the revision is posted, and never before Monday 8:00 am. So a revision can't skip your Hold window.
 - **Hermes may revise a plan up to 3 times.** If no version passes, there is no plan that week.
-- **Big plans still wait for you:** a plan over 40% of the cap ($10 of $25) needs your code, as in the first month (decision 10).
+- **Big plans still wait for you:** a plan over 40% of the cap ($10 of $25) waits for your approval, as in the first month (decision 10).
 - **Going back:**
   - "approve plans again" is allowed any time, because it is stricter;
-  - switching back to automatic, or going automatic before 4 approved plans, needs a code.
+  - switching back to automatic, or going automatic before 4 approved plans, is a Level 3 approval (`plan auto`: posted at once, undone with `plan again`).
 - **Unchanged:** if Hermes is down, or a plan is more than 8 days old, Botsy runs exactly as it does today.
 - **If no valid plan exists at 9:00 pm Sunday,** Botsy posts: "No plan this week. Botsy keeps running on its normal rules."
 
@@ -767,7 +769,7 @@ New timer lines (all checked with `systemd-analyze calendar`):
 - **A long check is running at 8 pm:** `plan prepare` doesn't wait. It uses the last finished briefs.
 - **Upload arrives after about 7 pm Sunday:** it counts for next week's plan.
 - **Brief turns 7 days old mid-week:** that plan line is dropped, with the reason.
-- **A code expires (10 minutes) or #botsy-codes fails:** ask again. The failure is posted as an error, and the deadline still applies.
+- **Too many approvals in 24 hours (`level3_daily_limit`):** wait, or approve once the 24 hours have passed; the deadline still applies. **The approval post fails:** the approval stands, the journal and the daily log record it (`announced: false`).
 - **Hermes submits two plans in one week:** one plan per week. Later ones are revisions, with the Hold-window rules.
 
 ### Cost (estimates)
@@ -787,15 +789,15 @@ New timer lines (all checked with `systemd-analyze calendar`):
 ~~~markdown
 #### Weekly plan schedule (user, 2026-10-16)
 - **When:** every Sunday at 8 pm New York time (EDT in summer, EST in winter). Botsy's timer is the clock: `OnCalendar=Sun *-*-* 20:00:00 America/New_York` in `botsy-plan.timer`. Botsy sends Hermes the week's facts, and Hermes posts the plan. If there is no valid plan by 9 pm, Botsy says so and runs on its normal rules.
-- **First 4 approved plans:** each needs your OK with a code, because Botsy can't tell whether you pressed a button. The plan says "plan N of 4".
+- **First 4 approved plans:** each needs your OK (a plain approve since 2026-10-21; no codes). The plan says "plan N of 4".
   - Reminders: Monday 8 am and 7 pm.
   - If it is not approved by Tuesday 8 pm, it expires, and Botsy runs on its normal rules that week.
   - While a plan waits, Botsy only finishes last week's plan lines.
 - **From plan 5:** the plan starts by itself Monday at 8 am (12 hours after posting) unless you press Hold.
-  - Hold, Start now and approving a held plan need no code.
-  - A plan over $10 still needs your code.
+  - Hold, Start now and approving a held plan need no approval post.
+  - A plan over $10 still waits for your approval.
   - A revised plan starts no sooner than 2 hours after the revision, and never before Monday 8 am.
-  - You can say "approve plans again" any time. Going back to automatic needs a code.
+  - You can say "approve plans again" any time. Going back to automatic is a Level 3 approval (posted at once).
 - **While plans are on:** every check makes only the plan's lines. Uploads still run research right away, and the new briefs wait for the next plan.
 - **The week, New York time:** search list Saturday 9:07 am; exports over the weekend (by about 7 pm Sunday); plan Sunday 8 pm; daily check 6:17 am; daily log 7:07 am; quiet hours 10 pm-7 am.
 - **Stays UTC:** money months (the cap resets on the 1st at 00:00 UTC) and KDP weeks. KDP's 2 slots reset Sunday 00:00 UTC, which is Saturday 8 pm EDT / 7 pm EST, so upload KDP books Monday to Saturday before about 7 pm.
@@ -839,15 +841,237 @@ New timer lines (all checked with `systemd-analyze calendar`):
   - drafts are listed for you to delete. Botsy never deletes on a cancel.
 - **Auto-stop:** each order is judged 30 days after its items go live.
   - Below a quarter of the parent's rate, it counts as failed, and the theme waits 90 days.
-  - Two failures in 60 days stop all scale-ups, until you resume them with a code.
+  - Two failures in 60 days stop all scale-ups, until you approve resuming them.
 ~~~
 
 **Other edits to OVERSEER.md:**
 - **Level 2 list:** add "scale-up orders, with the weekly plan only (at most 3 packs a week, inside the limits file)".
-- **Level 3 list:** add four code-only actions:
+- **Level 3 list:** add four approval-only actions (no codes since 2026-10-21):
   - approving one of the first 4 weekly plans;
   - approving a plan over $10 after that;
   - switching plans to automatic early, or back to automatic;
   - resuming scale-ups after Botsy's auto-stop.
 - **Production director:** change "Every Monday it proposes" to "Every Sunday at 8 pm New York time it proposes". Add "More of what sells" as a plan line.
 - **Performance analyst (Later):** note that the daily own-listing snapshot starts with the plan build, so history exists when the analyst and scale-ups arrive.
+
+---
+
+## botsy-control reference
+
+**Decided 2026-10-21: no codes.** There are no 6-digit codes, no #botsy-codes channel, no `BOTSY_CODES_WEBHOOK_URL` and no `request_code` / `confirm_code` tools. The actions that needed a code (review approvals, also in a named batch; raising the cap; restarting paid work after a budget stop or the user's pause; approving one of the first 4 weekly plans or a plan over the cost share) are taken directly from you: through Hermes (Discord, your allowlisted user ID only) or the server CLI. Botsy's guards stay in `service/orders.py` and `service/plan.py`: a hard-blocked item is never approvable, a cap raise never goes above `limits.cap_ceiling_usd` (root-only file), at most `level3_per_day` (default 10) such actions a day and `approve_batch_max` (20) items a batch, and each one is posted at once to the main Discord channel (urgent, ignores quiet hours) with what changed, who asked (hermes, user or botsy) and how to undo it. Botsy still never activates a listing: you approve in Etsy.
+
+> **Status: built 2026-10-21** (`control/`, tests in `tests/control/`). Not yet run against a real Hermes install; Hermes itself is not installed yet. Everything here also works without Hermes: the same orders go through the server CLI (`python -m service plan approve`, `python -m qa approve ...`).
+
+botsy-control is the only way Hermes reaches Botsy. It is two MCP servers over stdio, made with the official MCP Python SDK (`mcp==2.3.0`, MIT, released 2026-10-02; in mcp 2.x FastMCP is called `MCPServer`):
+
+| Server | Wrapper (runs as botsy) | Runs | Level |
+|---|---|---|---|
+| botsy-read | `/usr/local/bin/botsy-control-read` | `python -m control read` | 0, read only |
+| botsy-act | `/usr/local/bin/botsy-control-act` | `python -m control act` | 1-3, orders |
+
+How Hermes reaches the wrappers (deploy/hermes, the Hermes install): by default `botsy-control-connect read|act` links Hermes's stdio to a systemd socket (`/run/botsy-control/read.sock`, `act.sock`, root:hermes 0660), and systemd starts a fresh wrapper as botsy for each connection, so the hermes user needs no sudo. With the sudo bridge, Hermes runs `sudo -n -u botsy /usr/local/bin/botsy-control-read` (or `-act`) under the sudoers rule below.
+
+**How it is locked:**
+- The servers are plain glue. Each tool hands its raw JSON arguments to `control/tools.py`, which checks every argument (enums, patterns, lengths, ranges; unknown arguments refused) before anything runs. There is no free-text argument at all. Hermes's values never reach an event, a log line, a model prompt or a file name; a refusal names the argument, never its value.
+- Every act tool is an order and goes through `service/orders.py` (`submit`, `validate`, `approve`, `undo`), which checks it again in full. Weekly plans go through `service/plan.py` `submit_order` (Botsy's brief checks, cost estimate and approval count), then `orders.submit`; approving a waiting plan goes through `plan.approve(by="hermes", order_id=..., first_check=False)` (its deadline, daily limit, hold and Discord post). Without the plan service, plans are refused (`plan_service_missing`); a plan service whose `approve` cannot be bound to one order id, or would run a check inside the act server, is never called (`approval_unavailable`). botsy-control never changes anything itself, and `created_by` / `by` is always `hermes`.
+- Level 3 is guarded by Botsy, not by Hermes's manners: Hermes is told to act only when you asked in your own words, but Botsy cannot tell whether you did, so the daily limit, the batch size, the ceiling, the hard blocks and the instant main-channel post (with undo) are what protect you.
+- The servers offer tools only: no resources and no prompts. They never ask Hermes for sampling or elicitation.
+- Every string in a result passes a last scrub: secret values from the environment and `.env`, Discord webhook links, any URL, paths and data-file names are replaced. Only real time-zone names (`America/New_York`) and a few fixed words (`image/jpeg`, `and/or`) keep a slash; any other `word/word` is treated as a path.
+- Logs go to Botsy's own files next to `control.log_file`, one per server (`data/logs/botsy-control-read.log`, `botsy-control-act.log`; rotated at 1 MB, 3 kept), never to stdout or to Hermes. Each call logs one line: the tool name, ok, and reason codes, never an argument. Lines from the MCP SDK and other libraries keep only their logger name, level and exception type (their messages can quote a raw request); Python warnings go to the same file, and a crash prints one line with the error type, never a traceback (under the sudo bridge, stderr reaches Hermes).
+- Act calls run one at a time in a server process; across processes and against the hourly check, `service/orders.py` and `service/plan.py` hold their own file locks. A call refused before it became an order is journaled as `control_refused` with the tool and its reason codes only. If the journal cannot be written, the refusal still goes back unchanged.
+- Preview images: only files inside the item's folder, at most 8 MB and 40 megapixels (larger is "no preview", never decoded), re-encoded as JPEG without metadata.
+- OS layer (`deploy/lightsail/sudoers.d/botsy-control`, root:root 0440, sudo bridge only): the hermes user may run exactly the two wrapper commands, as botsy, with no arguments (`""`), no password (`NOPASSWD`), no terminal needed (`!requiretty`), a reset environment it cannot add to (`env_reset`, `NOSETENV`, `!setenv`) and no I/O logging. It passes `visudo -cf`. The wrappers (root-owned 0755 in `/usr/local/bin`) refuse any argument (exit 64) and any user but botsy (exit 77). They `cd /opt/botsy` and start Python with an empty environment (`env -i`) and `-E -s -B`.
+
+**Read tools (botsy-read, Level 0).** They only read, and write nothing.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `status` | none | `outbox/status.json` as fixed fields: the week's totals (ticks, exports, briefs, items, drafts, errors), the last check's counts, the pause and budget stop, the cap override, whether the limits file is in force, and Hermes's own limits and their use (changes this hour, search ideas this week, `approve_batch_max`, `level3_per_day`). No file names and no error text. |
+| `spend` | none | month (UTC), spent, cap in force, money left, warning line, share used, cap reached, where the cap comes from (settings or an order), budget stop. US dollars, estimates. |
+| `daily_log` | none | The newest daily log, scrubbed again: export file lists and held messages become counts, review reasons are dropped (see `review_list`), error lines keep only where the problem was ("A problem in research[coloring_pages]"). At most 8,000 characters. |
+| `review_list` | `status` (pending, approved, rejected, all), `limit` (1-50) | Per item: id, niche, theme, status, needs_review, reasons as fixed codes (never the text, which can hold the flagged term), queued date, thumbnail (its place inside the item), number of previews, qa_passed, drafted, and `approvable` (a `review_approve` order could pass now). |
+| `review_preview` | `item_id`, `index` (0-9) | One of our own preview images as an image, at most 768 px, re-encoded as JPEG (no metadata). |
+| `plan_status` | none | For this week and next (ISO weeks on New York time): the plan in force (order id, kind, status, who, lines, packs, cost, `needs_approval` and `approval_reason`, plan number, revision, held, start now, `start_at` in UTC and `start_at_local` on New York time with its DST offset, e.g. `2026-11-02T08:00:00-05:00`, applied), the number of versions, Botsy's own draft, and the plan service's state. |
+| `plan_facts` | `week` (YYYY-Www, default next week) | Money, the capacity check, the newest briefs per niche, approvals so far, and the plan service's facts file for that week (aggregated fields only). |
+| `briefs_summary` | `niche`, `limit` (1-20) | The newest brief file per niche: date, age in days, stage, and per brief: id, niche, theme, pack sizes, opportunity, needs_review. Never evidence rows, keywords, sources or file names. |
+| `capacity` | none | The capacity check (capacity/v1): ok, reason codes, numeric facts and thresholds. |
+| `orders_recent` | `days` (1-60), `kind`, `status` (waiting_approval, accepted, applied, undone, cancelled, failed), `limit` (1-100) | Stored orders, newest first: id, kind, level, who, created, week, status, needs_approval, applied, and the checked payload fields. |
+| `events_recent` | `hours` (1-168), `kinds` (a list; "plan" = the plan service's kinds), `limit` (1-200) | Journal events as fixed fields only, each signed with `BOTSY_EVENT_KEY` (`"sig": "v1=<hex>"`) over exactly the fields returned; `signed: false` until the key is set. Never error text, titles, listing ids, file names or export rows. |
+
+**Act tools (botsy-act).**
+
+| Tool | Level | Arguments | What happens |
+|---|---|---|---|
+| `submit_order` | 1-3, by kind | `kind`, `payload`, `client_ref` | Any order/v1 kind (docs/CONTRACTS.md order/v1). Returns ok, the kind Botsy stored (a `weekly_plan` for a week that holds Botsy's own draft becomes a `plan_revision` of it, `converted_to_revision`), order id, status, `needs_approval`, stage and reason codes with plain words (`explain`), and `applied` or `plan` (with `undo` where Botsy saved one). A plan that waits for you carries `next`: ask, then `approve_order`. `review_approve`, `raise_cap` and `resume_after_budget_stop` are Level 3 (guards above). `scale_up` is refused with `no_winners_yet` until Botsy has winners. |
+| `approve_order` | 3 | `order_id` | Approves exactly that stored order when it waits for you (`waiting_approval`, not replaced by a revision): a plan through the plan service (no check runs in the act server; the next hourly plan check makes the first items), anything else through `orders.approve(by="hermes")`. Refuses `not_found`, `not_waiting`, `approval_unavailable`, `plan_service_missing`, plus the plan's and orders' own reasons (`plan_expired`, `level3_daily_limit`, ...). |
+| `pause` | 2 | `reason_code` | A `pause` order; always allowed. |
+| `resume` | 2 or 3 | none | A `resume` order. Lifting Hermes's own pause is Level 2; lifting your pause or Botsy's own stop is Level 3. |
+| `lower_cap` | 2 | `cap_usd` | A `lower_cap` order (only lower). |
+| `search_ideas` | 1 | `ideas`: 1-5 of {niche, query} | A `search_ideas` order (5 a week; blocklist and health checks; marked exploratory). |
+| `undo_order` | 2 | `order_id` | `orders.undo(..., by="hermes")`. |
+
+**Not on the menu:** a shell, files, the web, raw research data, the compliance lists, settings writes beyond orders, live listings, listing edits (second wave), deleting anything on Etsy, `plan auto` and `plan again` (server CLI only).
+
+**Refusal codes of this layer:** `unknown_tool`, `not_an_object`, `unknown_argument`, `missing_argument`, `bad_argument`, `too_large`, `settings_unreadable`, `internal_error`, `not_found`, `no_preview`, `money_unknown`, `not_waiting`, `approval_unavailable`, `plan_service_missing`. Orders, plans and capacity add their own (docs/CONTRACTS.md).
+
+**Installing (root, after Hermes's user exists),** always from root's own copy of the code, never from /opt/botsy:
+```
+SRC=/usr/local/lib/botsy/src
+install -m 0755 -o root -g root "$SRC/deploy/lightsail/botsy-control-read" "$SRC/deploy/lightsail/botsy-control-act" /usr/local/bin/
+# only with the sudo bridge:
+visudo -cf "$SRC/deploy/lightsail/sudoers.d/botsy-control" && \
+  install -m 0440 -o root -g root "$SRC/deploy/lightsail/sudoers.d/botsy-control" /etc/sudoers.d/botsy-control
+sudo -l -U hermes        # shows exactly the two commands, (botsy) NOPASSWD
+```
+
+**Tested (offline):** an in-process MCP client calls every tool against a temp Botsy data dir, over the 2026 discovery mode and the legacy initialize handshake; a real stdio round trip in a child process; that read tools never return research-input paths, export names, shop names, listing links, review terms or secrets from the environment or `.env`; that read tools write nothing; that act tools reach `orders.validate` with `created_by: hermes` (a spy) and that bad input never does; that no result mentions a code; that `approve_order` binds the plan service to the named order with `first_check=False` and refuses a plan service that cannot; that a hard-blocked item is refused; `visudo -c` and `cvtsudoers` on the sudoers rule. **Not tested yet:** Hermes's own MCP client, the socket and sudo bridges on the Lightsail server, and whether Hermes passes tool images on to the model.
+
+## Hermes setup
+
+**Decided 2026-10-21: no codes.** Hermes has no code tools, there is no `#botsy-codes` channel
+and no codes channel ID in its secrets; `discord.ignored_channels` is empty. Approvals come from
+you directly: Hermes asks "yes?" first (`SOUL.md`), and then Hermes itself holds every
+`botsy-act` call until you click Allow on its Discord approval button (`botsy-act` is
+`trust: untrusted`; scheduled jobs are always declined). Botsy's own guards (blocked items, the cap
+ceiling, the daily limit, the instant main-channel post with undo) stay on Botsy's side. An old
+`DISCORD_CODES_CHANNEL_ID` line in `/etc/hermes/hermes.env` is reported by the lock check as
+"no longer used; delete the line".
+
+Files: `deploy/hermes/` (step by step for you in `deploy/hermes/README.md`). Tests:
+`tests/deploy/test_hermes_lock.py` (offline). Nothing here is installed yet; Botsy works without
+Hermes (the server CLI, for example `python -m service plan approve` and
+`python -m qa review approve ID`, covers everything Hermes would do).
+
+**The pin.** Hermes Agent **v0.21.7**, published 2026-10-12, tag commit
+`71d34bad1045610252eda02ee79549436896e784`,
+https://github.com/NousResearch/hermes-agent/releases/tag/v0.21.7 (MIT). Rule: the newest
+release at least 7 days old with no hotfix after it, checked 2026-10-21. v0.22.3 (2026-10-21)
+is too new; v0.22.2 (2026-10-15) is a 6-day-old hotfix for v0.22.1, which was "built from the
+wrong commit"; v0.22.0 (2026-10-14) was followed within two days by both. v0.22.4 (tag seen later on 2026-10-21) is too new as well. The pin lives in
+`deploy/hermes/hermes-pin.env`; the tag's commit was rechecked with `git ls-remote` on
+2026-10-21 (twice). Install method: git tag (commit checked) into `/opt/hermes/src`, then Hermes's own
+pinned `uv` and Python 3.14 from its `pm/lock.json` (sha256 checked) and `uv sync --frozen` with
+only the `anthropic`, `discord` and `mcp` extras into `/opt/hermes/venv`, all root-owned. The
+install stamp says `updateMechanism: external`, so `hermes update` refuses to replace the code.
+
+**Where the settings live.** Hermes reads `~/.hermes/config.yaml` (here
+`/home/hermes/.hermes/config.yaml`) and, on top of it, a "managed scope" in `/etc/hermes/`
+(`config.yaml` and `.env`) that wins key by key over the user's config, its `.env` and the
+environment. Both files are rendered from `deploy/hermes/config.yaml.template` by
+`check_lock.py render`, root-owned, read-only to the `hermes` user, so Hermes cannot change its
+own locks. Secrets are only in `/etc/hermes/hermes.env` (root:hermes 0640): a key from a
+separate Anthropic workspace with a $5 monthly limit, the bot token and your user ID.
+
+**The keys used (config schema 50).** `model.provider: anthropic`, `model.default:
+claude-haiku-5-5`, no `fallback_providers`; `toolsets` and `platform_toolsets.<discord, cron,
+cli, webhook, api_server>` = `[botsy-read, botsy-act, memory]`; `agent.disabled_toolsets`
+(applied last) turns off terminal, file, web, search, browser, delegation, cronjob,
+code_execution, discord, discord_admin, computer_use, vision, video, image_gen, video_gen, tts,
+x_search, kanban, connections, catalog, project, desktop_ui, session_search, skills, todo,
+yuanbao, feishu_doc, feishu_drive;
+`mcp_servers` has only `botsy-read` and `botsy-act`, each with `env: {}`, `tools.resources` and
+`tools.prompts` false, `sampling.enabled: false` and `elicitation.enabled: false` (Hermes turns
+both on when the key is missing), `botsy-read` `trust: full` and `botsy-act` `trust: untrusted`; `memory.write_approval: true`, `skills.write_approval: true`,
+no memory provider; `cron.allow_agent_scheduling: false` and `approvals.cron_mode: deny` (only
+you create jobs); `discord.allow_from: [your ID]`, `allow_all_users: false`, no
+`allowed_roles`, `ignored_channels: []`, `require_mention: true`;
+`gateway.unauthorized_dm_behavior: ignore`; slash commands gated with
+`discord.allow_admin_from` and `group_allow_admin_from` = `["0"]` (no real account, so nobody
+is admin) and `user_allowed_commands` / `group_user_allowed_commands` = `new, retry, status,
+stop, compress, memory` (plus `/help` and `/whoami`, always allowed); plugins, hooks, quick commands, lazy installs,
+update checks, telemetry, the background review and the curator off; chat history compressed at
+60,000 tokens (Haiku 5.5 costs 5x above 100,000). The managed `.env` also pins
+`GATEWAY_ALLOW_ALL_USERS=false`, `DISCORD_ALLOWED_USERS` and an empty `DISCORD_IGNORED_CHANNELS`.
+
+**How Hermes reaches botsy-control (the sudo question).** `NoNewPrivileges=yes` blocks sudo,
+so the default bridge needs no sudo at all: systemd owns two sockets,
+`/run/botsy-control/read.sock` and `act.sock` (root:hermes 0660, `Accept=yes`), and starts a
+fresh `/usr/local/bin/botsy-control-read` or `-act` as the botsy user in its own sandbox for
+each connection. Hermes's MCP command is `/usr/local/bin/botsy-control-connect read|act`, a
+root-owned stdio-to-socket copier with no other logic. So the Hermes service keeps
+`NoNewPrivileges=yes`, no capabilities, `ProtectSystem=strict`, a seccomp filter and Botsy's
+folders made inaccessible. The fallback `--bridge sudo` uses exactly the approved command
+`sudo -n -u botsy /usr/local/bin/botsy-control-read` (and `-act`) with the sudoers rule from
+`deploy/lightsail/sudoers.d/botsy-control`, and a drop-in that relaxes only what sudo needs
+(`NoNewPrivileges=no`, the setuid capabilities, no seccomp filter); it is weaker and not the
+default.
+
+**The lock check.** `check_lock.py check` (exit 1 with one `PROBLEM:` line each) runs at the end
+of every install, before every Hermes start (`--quick`) and daily at 5:41 am New York time
+(`botsy-hermes-lock.timer`, `--probe --stop hermes-gateway.service`). It refuses: a forbidden
+toolset on anywhere, an MCP server other than the two (or one started differently), sampling or
+elicitation on, `botsy-act` not `trust: untrusted`, memory or skill approval off, an empty or open allowlist or a role allowlist,
+agent-made jobs, another model or provider, a rendered file that differs from the template, any
+config, secret, unit, code file or folder the hermes user can write or replace, a foreign
+systemd drop-in, a version or commit other than the pin, sudo beyond the botsy-control rule,
+Botsy's folders open to hermes, and a missing firewall table when it is on. `--probe` also asks
+the installed Hermes itself, as the hermes user, which toolsets and built-in tools each place
+gets and what its merged settings and environment say.
+
+**Firewall (optional, `--firewall`).** One nftables table, `inet botsy_hermes`, for the hermes
+user's traffic only: loopback, HTTPS to Anthropic's published ranges (160.79.104.0/23,
+2607:6bc0::/48) and to the addresses of a fixed list of Discord and Anthropic host names,
+refreshed every 10 minutes; everything else is refused and logged. Other users are not affected.
+
+**Verified** (on 2026-10-21, against the pinned v0.21.7 source and a throwaway install of it in
+the scratchpad, never on this machine's system): every key name above in its code
+(`hermes_cli/config_defaults.py`, `tools_config.py`, `managed_scope.py`,
+`tools/mcp_tool_server_run.py`, `plugins/platforms/discord/adapter.py`,
+`gateway/config_loader.py`, `cron/scheduler.py`); that the managed scope in `/etc/hermes` wins;
+the default of sampling and elicitation (on when missing); the `pm/lock.json` and
+`scripts/write_install_stamp.py` the installer uses; and the probe run against that install with
+the rendered config: every place gets only `botsy-read`, `botsy-act` and `memory`, the only
+built-in tool is `memory`, both MCP servers have sampling and elicitation off, the allowlist is
+your ID, and turning on `terminal` and `web` in the managed config is reported as
+`terminal, web` and the tools `process_manage, terminal, web_extract`. The test suite runs
+`install_hermes.sh` in its test mode (`--root DIR --test-owner`) and checks good and broken
+layouts and configs.
+
+**Not verified yet (test on the server before relying on it):** the full install on Ubuntu 24.04
+(download, `uv sync`, systemd units, socket activation, the nftables table); Hermes's Discord
+gateway with a real bot, including that `require_mention` and the allowlist behave as the code
+reads; Hermes's MCP client against botsy-control over the socket bridge; that
+memory approval prompts and the `botsy-act` Allow/Deny button work in Discord; RAM use on the 4 GB Lightsail server (measure, add a
+2 GB swapfile first); whether the Anthropic workspace limit stops calls at exactly $5. Scheduled
+Hermes jobs are only ever created by you on the server (`sudo -u hermes ...` with the managed
+config); Hermes itself cannot create them.
+
+**Review fixes (2026-10-21).** Found by reading the pinned source and checked against the
+throwaway install with the probe:
+- *Slash commands were open.* Without an admin list, v0.21.7 (`gateway/slash_access.py`) lets
+  every allowed user run every slash command: `/model` (session-scoped, no file write needed),
+  `/yolo`, `/cron`, `/loop`, `/heartbeat`, `/goal`, `/bg`, `/moa`, `/tools`, `/skills`,
+  `/import` and more. The template now gates them as above; the managed scope carries the gate
+  into the gateway config (verified: with the gate only in `/etc/hermes/config.yaml` the user's
+  `/model` and `/yolo` are refused). `check_lock.py` refuses another admin list or any command
+  outside the safe set, and the probe now asks Hermes's own slash-access policy for DM, group and
+  unknown chats and reports every risky command still open. This also answers "should `/model`
+  be blocked": it is. The $5 workspace limit stays the money guard behind it.
+- *Profiles.* Hermes's scheduled-job ticker visits every profile under `~/.hermes/profiles/`
+  whatever the config says, so `profiles/` is now root-owned and empty, like `hooks/` and
+  `plugins/`, and the check refuses anything in it.
+- *Fail closed.* A lock check that crashes is now a problem (exit 1), and
+  `botsy-hermes-lock.service` stops Hermes in `ExecStopPost` whenever the check did not end in
+  success (crash, kill, timeout), not only when it printed problems.
+- *What systemd really loads.* On the server the check also reads `systemctl show
+  hermes-gateway.service`: the unit must come from `/etc/systemd/system`, run as `hermes`, keep
+  `NoNewPrivileges=yes` (socket bridge) and have no drop-in but the ones the installer writes
+  (this also catches `service.d/` and `hermes-.service.d/` drop-ins and `/run` copies).
+- The Discord invite now also ticks Embed Links and Attach Files, as layer 3 above says.
+- *No codes (2026-10-21).* Removed the codes channel ID from the secrets, the template and the
+  managed `.env`; `SOUL.md` now tells Hermes to send an approval only when you ask plainly and
+  after a clear "yes". Rechecked with the probe against the throwaway v0.21.7 install: with
+  `ignored_channels: []` every place still gets only `botsy-read`, `botsy-act` and `memory`,
+  slash commands stay gated, and the managed environment reads back as written.
+- *A check outside the model (2026-10-21, reviewer).* With no codes, only the model's own
+  "yes?" stood between a misread message or a tool result and an approval. `botsy-act` is now
+  `trust: untrusted`: v0.21.7 (`tools/mcp_tool_handlers.py` `_trust_gate_check`) then asks for
+  an Allow click on every tool without `readOnlyHint=true` (all act tools; botsy-control marks
+  only read tools read-only) before it even connects, routes the button to Discord where only
+  allowlisted users may click, and declines outright in scheduled jobs and other sessions
+  nobody can answer (fail-closed). The button names the tool, not its arguments, so Hermes's
+  one-line summary still matters. `check_lock.py` and the probe (which asks Hermes's own trust
+  parser) refuse any other value; rechecked against the throwaway v0.21.7 install: no problems.
+- *botsy-control sandboxes (reviewer).* `botsy-control-read@` and `-act@` now use
+  `ProtectSystem=strict` with write access only to `/opt/botsy` (and, for act, the status
+  outbox) instead of `ProtectSystem=full`, which had left `/opt`, `/srv` and `/var` writable.

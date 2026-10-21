@@ -205,8 +205,17 @@ On the server, type `botsy service <command>`; that runs it as the `botsy` accou
 | `spend [--month YYYY-MM]` | this month's estimated API spending |
 | `notify-test` | send a test message to Discord and say whether it worked |
 | `cleanup` | remove old rejected uploads, old exports and old practice items now (every tick does this too) |
+| `plan ACTION` | the weekly plan: `prepare`, `check`, `status`, `approve`, `hold`, `start-now`, `again`, `auto` (below) |
+| `control ACTION` | your orders: `pause`, `resume`, `lower-cap USD`, `raise-cap USD`, `resume-budget`, `approve ITEM... [--batch NAME]`, `reject` / `hold ITEM --reason R`, `cancel` / `undo ORDER`, `orders`, `limits`, `capacity` |
 
-The server runs these by itself: `tick` when an upload arrives, `tick --force --own-stats` every day at 06:17 (our own shop's stats, snapshot, sales and reviews; the fake shop in test mode), `digest` every day at 07:07, and `searchlist` every Saturday at 09:07; all times New York time (America/New_York), see docs/SERVER.md section 6. Exit codes: 0 ok, 1 something failed (see `status.txt`), 2 setup problem, 3 another command was still running after 30 minutes.
+The server runs these by itself: `tick` when an upload arrives, `tick --force --own-stats` every day at 06:17 (our own shop's stats, snapshot, sales and reviews; the fake shop in test mode), `digest` every day at 07:07, `searchlist` every Saturday at 09:07, `plan prepare` every Sunday at 20:00 and `plan check` every hour at :05; all times New York time (America/New_York), see docs/SERVER.md section 6. Exit codes: 0 ok, 1 something failed (see `status.txt`), 2 setup problem, 3 another command was still running after 30 minutes.
+
+### The Sunday plan and approving (no codes)
+Every Sunday at 20:00 New York time Botsy writes its own weekly plan from the current briefs: which themes and pack sizes it makes that week, within the money left this month (`docs/OVERSEER.md` Part B). While a plan runs, every check makes only the plan's lines.
+- **Your first 4 plans wait for your OK.** Until Hermes is installed, approve on the server: `botsy service plan status` shows the plan, `botsy service plan approve` starts it at once, `botsy service plan hold` holds it. Reminders come Monday 08:00 and 19:00; a plan not approved by Tuesday 20:00 expires and Botsy runs on its normal rules that week.
+- **From plan 5** a plan starts by itself on Monday 08:00 unless you hold it. A plan over 40% of the cap ($10 of $25) still waits for you. `plan again` makes every plan wait for you; `plan auto` goes back to automatic.
+- **No codes** (decided 2026-10-21). Approvals, cap raises (`control raise-cap`, never above the admin's ceiling in `/etc/botsy/limits.yaml`) and restarting paid work (`control resume-budget`) are taken straight from you, at most 10 a day (`level3_per_day`), and each is posted at once to your Discord channel with how to undo it. Hard-blocked items can never be approved, and the publisher still only makes drafts: you publish in Etsy.
+- **Hermes (later):** once installed (`deploy/hermes/README.md`), Hermes talks to Botsy only through **botsy-control**, two locked tool servers (`python -m control read|act`): it reads fixed facts and sends the same checked orders, with your Allow click on every action.
 
 ## Layout
 | Folder | Role |
@@ -217,8 +226,10 @@ The server runs these by itself: `tick` when an upload arrives, `tick --force --
 | `listing/` | Title, 13 tags, description, alt text, AI disclosure |
 | `publisher/` | Etsy Open API v3, own shop, drafts only |
 | `pipeline/` | Runs the stages in order; `python -m pipeline` |
-| `service/` | The 24/7 server: inbox, ticks, status files, weekly search list, daily log, Discord, cleanup; `python -m service` |
+| `service/` | The 24/7 server: inbox, ticks, status files, weekly search list, daily log, Discord, cleanup, the weekly plan, orders and the admin-only limits; `python -m service` |
+| `control/` | botsy-control: Hermes's two locked MCP tool servers (read, act); `python -m control read\|act` |
 | `deploy/lightsail/` | Server setup (`setup.sh`, installed as `botsy-setup`), SSH rules and systemd units |
+| `deploy/hermes/` | The locked-down Hermes install (not installed yet) |
 | `windows/` | The Botsy helper for your PC (`botsy_helper.py`) and its installer |
 | `core/` | Shared settings, compliance (blocklist, AI disclosure, brief checks), Etsy limits, item helpers, the spending tracker and the event journal |
 | `config/` | `settings.yaml`, trademark blocklist, AI disclosure, game-system registry (`ttrpg_systems.yaml`) |
