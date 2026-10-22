@@ -1,0 +1,84 @@
+# The Hermes web dashboard with the Botsy tab (docs/OVERSEER.md "Botsy dashboard tab").
+# Installed by install_hermes.sh as /etc/systemd/system/hermes-dashboard.service, next to
+# hermes-gateway.service and with the same sandbox. It listens on 127.0.0.1:9119 ONLY: the
+# dashboard has no login of its own on a loopback bind (Hermes v0.21.7 writes a per-start session
+# token into the page for whoever can open it), so reach it from your computer through an SSH
+# tunnel:
+#     ssh -N -L 9119:127.0.0.1:9119 <you>@<server>     then open http://127.0.0.1:9119/botsy
+# Never add --host 0.0.0.0, a reverse proxy or dashboard.public_url: Hermes would then demand a
+# login provider, and the Botsy tab refuses to load or answer (botsy_tab.bind_refusal).
+[Unit]
+Description=Hermes dashboard for Botsy (127.0.0.1 only; SSH tunnel)
+Documentation=file:/usr/local/lib/botsy-hermes/README.md
+After=network-online.target botsy-control-read.socket botsy-control-act.socket hermes-gateway.service
+Wants=botsy-control-read.socket botsy-control-act.socket
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/opt/hermes/work
+# No EnvironmentFile: the dashboard and the Botsy tab need no secret (the tab talks to Botsy's
+# sockets), so Hermes's Keys page has no Anthropic key or Discord token to show.
+Environment=HOME=/home/hermes
+Environment=HERMES_HOME=/home/hermes/.hermes
+Environment=HERMES_MANAGED_DIR=/etc/hermes
+# The web UI is built once by root at install time (npm ci from the pinned lock file); the
+# dashboard never runs npm itself, and the firewall would stop it anyway.
+Environment=HERMES_WEB_DIST=/opt/hermes/web_dist
+Environment=PATH=/opt/hermes/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=+/usr/bin/python3 -I /usr/local/lib/botsy-hermes/check_lock.py check --quick
+ExecStart=/opt/hermes/venv/bin/hermes dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=78
+KillMode=mixed
+TimeoutStopSec=60
+RuntimeDirectory=hermes-dashboard
+RuntimeDirectoryMode=0700
+UMask=0077
+MemoryHigh=600M
+MemoryMax=900M
+TasksMax=128
+
+# The same sandbox as hermes-gateway.service: Botsy's folders and other programs' data do not
+# exist here; the botsy-control sockets in /run/botsy-control/ stay reachable (root:hermes 0660).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/hermes
+ReadWritePaths=/home/hermes
+InaccessiblePaths=-/opt/botsy -/etc/botsy -/srv/botsy-inbox -/home/botsy -/usr/local/lib/botsy -/usr/local/lib/botsy-hermes -/root
+InaccessiblePaths=-/var/lib -/var/log -/var/backups -/var/mail -/var/spool -/var/opt -/var/www -/srv -/mnt -/media
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Loopback only, both ways: nobody off the server reaches it even if the command line changed,
+# and the dashboard itself reaches nothing on the internet (its own Chat page cannot answer; chat
+# with Hermes in Discord). No RemoveIPC: hermes-gateway.service runs as the same user.
+IPAddressDeny=any
+IPAddressAllow=localhost
+KeyringMode=private
+
+[Install]
+WantedBy=multi-user.target

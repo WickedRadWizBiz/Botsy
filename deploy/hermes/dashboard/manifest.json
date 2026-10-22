@@ -1,0 +1,14 @@
+{
+  "name": "botsy",
+  "label": "Botsy",
+  "description": "Botsy's status, money, weekly plan, review queue, orders, fixes, daily log and KDP slots (read-only), plus Pause and Lower cap.",
+  "icon": "Package",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/botsy",
+    "position": "end"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
