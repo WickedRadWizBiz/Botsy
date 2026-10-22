@@ -1632,8 +1632,12 @@ def _announce_fix(o: dict, settings: dict, result: dict, facts: dict, now: datet
     from service import fixes, notify
 
     try:
-        return bool(notify.send(fixes.post_text(o, result, facts), settings=settings, kinds=["fix_applied"],
-                                now=now))
+        if notify.send(fixes.post_text(o, result, facts), settings=settings, kinds=["fix_applied"], now=now):
+            return True
+        # Held for the morning log in quiet hours (notification_held): the daily log posts it, so
+        # retry_notify_outbox must not post it again (urgently, at night).
+        return notify.problem(settings) is None and not notify.is_urgent(["fix_applied"], settings) \
+            and notify.in_quiet_hours(settings, now)
     except Exception as e:  # noqa: BLE001
         log.warning("fix notice for %s not sent: %s", o.get("id"), type(e).__name__)
         return False

@@ -66,6 +66,7 @@ DEFAULTS: dict = {
     "page_redos_per_week": 10,
     "run_now_per_day": 3,            # extra checks a day (a watchdog retry counts as one)
     "fixes_per_day": 6,              # Hermes's watchdog fixes (service/fixes.py) in any 24 hours
+    "trend_searches_per_day": 30,    # Hermes's trend_search calls in any 24 hours (control/trend.py)
     "cap_ceiling_usd": 100,          # spend cap ceiling; only root changes it (raise_cap never goes above)
     "level3_per_day": 10,            # approvals in any 24 hours: every approval Hermes makes, and yours only
                                      # when they lead to posting on Etsy or KDP (review / KDP kit approvals; D1)
@@ -99,6 +100,7 @@ SPEC: dict = {
     "page_redos_per_week": ("int", 0, 1000),
     "run_now_per_day": ("int", 0, 100),
     "fixes_per_day": ("int", 0, 100),
+    "trend_searches_per_day": ("int", 0, 1000),
     "cap_ceiling_usd": ("number", 1, 10000),
     "level3_per_day": ("int", 0, 1000),
     "approve_batch_max": ("int", 1, 200),

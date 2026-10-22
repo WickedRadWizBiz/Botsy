@@ -250,22 +250,41 @@ def _hint(err: pytest.ExceptionInfo) -> list[str]:
     return shlex.split(cmd)
 
 
-def test_approve_hint_reaches_the_review_entry(tmp_path, out_root, settings, review_dir):
+def _qa_orders(settings, tmp_path, monkeypatch):
+    """qa approvals are orders (D2, user 2026-10-21): keep the order storage, control state,
+    limits and journal in tmp_path, and catch the Discord posts."""
+    from service import notify
+
+    s = copy.deepcopy(settings)
+    s["control"] = {**(s.get("control") or {}), "orders_dir": str(tmp_path / "data" / "orders"),
+                    "state_file": str(tmp_path / "data" / "control" / "state.json"),
+                    "limits_path": str(tmp_path / "limits.yaml"), "limits_require_root": False}
+    s["service"] = {**(s.get("service") or {}), "events_file": str(tmp_path / "data" / "events.jsonl")}
+    posts = []
+    monkeypatch.setattr(notify, "send", lambda text, **kw: posts.append(text) or True)
+    monkeypatch.setattr("qa.__main__.load_settings", lambda path=None: s)
+    return posts
+
+
+def test_approve_hint_reaches_the_review_entry(tmp_path, out_root, settings, review_dir, monkeypatch):
     """The printed command must work as printed, also for --out and dry-run folders."""
+    posts = _qa_orders(settings, tmp_path, monkeypatch)
     d = make_item(out_root, settings, manifest={"needs_review": True})
-    write_json(review_dir / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "pending"})
+    write_json(review_dir / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "pending",
+                                                "content_digest": "test-digest"})
     with pytest.raises(PublishGateError, match="needs review") as err:
         check_ready(d, settings=settings)  # default queue: <out>/review
     assert "--out" in _hint(err)
     assert qa_cli.main(_hint(err)) == 0
+    assert len(posts) == 1                 # every approval is posted at once (D2)
     assert read_json(review_dir / f"{ITEM_ID}.json")["status"] == "approved"
     assert check_ready(d, settings=settings).item_id == ITEM_ID
 
     other = tmp_path / "elsewhere"  # a queue passed explicitly is named explicitly
-    write_json(other / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "pending"})
+    write_json(other / f"{ITEM_ID}.json", {"item_id": ITEM_ID, "status": "pending", "content_digest": "test-digest"})
     with pytest.raises(PublishGateError, match="needs review") as err:
         check_ready(d, settings=settings, review_dir=other)
-    assert "--review-dir" in _hint(err) and qa_cli.main(_hint(err)) == 0
+    assert "--review-dir" in _hint(err) and "--out" in _hint(err) and qa_cli.main(_hint(err)) == 0
     assert read_json(other / f"{ITEM_ID}.json")["status"] == "approved"
 
 

@@ -18,6 +18,7 @@ changes_per_hour: 20          # Level 2 changes Hermes may make in any 60 minute
 page_redos_per_week: 10       # pages Hermes may send back for a redo per ISO week
 run_now_per_day: 3            # extra checks per day (a watchdog retry of a failed check counts as one)
 fixes_per_day: 6              # fixed watchdog fixes Hermes may ask for in any 24 hours (service/fixes.py)
+trend_searches_per_day: 30    # Hermes's filtered trend searches (botsy-read trend_search, control/trend.py) in any 24 hours
 
 # --- Money ---
 cap_ceiling_usd: 100          # the monthly spending cap can never be raised above this (whoever asks)
