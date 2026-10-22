@@ -2,9 +2,11 @@
 
     build(settings=None, clock=None) -> MCPServer ; main() -> int
 
-Tools: status, spend, daily_log, review_list, review_preview, plan_status, plan_facts,
-briefs_summary, capacity, orders_recent, events_recent (control/tools.py has what each
-returns). They only read Botsy's own records and change nothing. Started by
+Tools: status, spend, daily_log, review_list, review_preview, view_item_images, plan_status,
+plan_facts, briefs_summary, capacity, orders_recent, events_recent, trend_search
+(control/tools.py has what each returns). They only read Botsy's own records and change
+nothing; trend_search (control/trend.py) asks TinyFish Search, filters out every marketplace
+result and writes only its own usage counter. Started by
 `python -m control read` (deploy/lightsail/botsy-control-read, run by the hermes user as botsy
 through sudo).
 """

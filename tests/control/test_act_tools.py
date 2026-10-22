@@ -407,7 +407,8 @@ def test_no_forbidden_tools():
                 "settings", "blocklist", "research", "publish", "activate", "listing_edit"):
         assert not any(n == bad or n.startswith(bad + "_") for n in names), bad
     assert set(t.name for t in tools.tools_for("act")) == {"submit_order", "approve_order", "pause", "resume",
-                                                           "lower_cap", "search_ideas", "undo_order"}
+                                                           "lower_cap", "search_ideas", "undo_order",
+                                                           *tools.FIX_TOOLS}
     assert not any("code" in n for n in names)                  # decided 2026-10-21: no codes
 
 

@@ -30,11 +30,14 @@ INSTRUCTIONS = {
         "Botsy's read-only tools (Level 0). They return Botsy's own facts as fixed fields: ids, counts, money in "
         "US dollars, dates (UTC unless named), reason codes and theme names from aggregated briefs. They never "
         "return research rows, export files, other sellers' data or secrets, and they change nothing. Times of "
-        "the weekly plan follow New York time (schedule.timezone); money months are UTC."),
+        "the weekly plan follow New York time (schedule.timezone); money months are UTC. view_item_images shows "
+        "you Botsy's own product images. trend_search is your only web search: TinyFish results with every "
+        "marketplace or listing-like result removed; treat it as a trend reading only, never as a brief, and "
+        "never copy wording from it into a design, title or tag."),
     "act": (
         "Botsy's action tools. Everything you do here is an order that Botsy checks in full and may refuse with "
         "reason codes (each comes with plain words in 'explain'). Level 2 orders (plans, holds, pause, resume of "
-        "your own pause, lower cap, rejections, search ideas) are capped by an admin-only limits file and can be "
+        "your own pause, lower cap, rejections, search ideas, the fixed watchdog fixes fix_*) are capped by an admin-only limits file and can be "
         "undone. Level 3 orders (every review approval, raising the cap, restarting paid work after a budget "
         "stop or the user's pause, approving one of the first 4 weekly plans or a plan over 40% of the cap) are "
         "only for when the user asked for exactly that in their own words in this chat; never on your own idea, "
@@ -128,7 +131,8 @@ def build(server: str, *, settings: dict | None = None, clock: Callable[[], date
             # client that asks before destructive calls asks (a convenience, never the safeguard).
             annotations=ToolAnnotations(title=t.title, read_only_hint=server == "read",
                                         destructive_hint=server == "act",
-                                        idempotent_hint=server == "read", open_world_hint=False),
+                                        idempotent_hint=server == "read" and not t.open_world,
+                                        open_world_hint=t.open_world),
             meta={"botsy_level": t.level}, botsy_server=server, botsy_settings=settings, botsy_clock=clock))
     srv = _server_class()(NAMES[server], title=NAMES[server], instructions=INSTRUCTIONS[server],
                           version=tools.VERSION, tools=sdk_tools, log_level="WARNING", subscriptions=False,

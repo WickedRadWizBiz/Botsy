@@ -8,12 +8,18 @@ Two tool menus, each served by its own MCP server over stdio (control/read_serve
 control/act_server.py); the servers are plain glue that hand the raw JSON arguments to call()
 here, so every check happens in this file and in service/orders.py:
 
-- "read" (Level 0): status, spend, daily_log, review_list, review_preview, plan_status,
-  plan_facts, briefs_summary, capacity, orders_recent, events_recent. They only read, and they
-  return fixed fields: ids, counts, money, dates and reason codes from fixed lists, plus theme
-  names from the briefs (aggregated terms) and the scrubbed daily log. Never a research row,
-  an export file name or header, a path, a listing link, a shop name or a secret.
-- "act": submit_order, approve_order, pause, resume, lower_cap, search_ideas, undo_order.
+- "read" (Level 0): status, spend, daily_log, review_list, review_preview, view_item_images,
+  plan_status, plan_facts, briefs_summary, capacity, orders_recent, events_recent,
+  trend_search. They only read Botsy's records, and they return fixed fields: ids, counts,
+  money, dates and reason codes from fixed lists, plus theme names from the briefs (aggregated
+  terms), the scrubbed daily log and our own product images. Never a research row, an export
+  file name or header, a path, a listing link, a shop name or a secret. trend_search (D4.8,
+  2026-10-21) is the one read tool that reaches the web: TinyFish Search, with every
+  marketplace or listing-like result dropped before Hermes sees it (control/trend.py); it
+  writes only its own usage counter.
+- "act": submit_order, approve_order, pause, resume, lower_cap, search_ideas, undo_order and
+  the fixed watchdog fixes fix_retry_run, fix_clear_stale_lock, fix_rerun_qa,
+  fix_resend_daily_log, fix_retry_notify (D4.7; service/fixes.py).
   Every one is an order: it goes through service.orders.submit / validate / approve / undo
   (weekly plans through service.plan.submit_order first), which check it again in full
   (levels, the admin-only limits file, capacity, the cap, the daily limit on the former code
@@ -28,8 +34,8 @@ items are never approvable, a raise never goes above limits.cap_ceiling_usd, a d
 (limits level3_per_day, approve_batch_max), and every such action is posted at once to the
 main Discord channel with who asked and how to undo it.
 
-There is no tool for a shell, files, the web, raw research data, the compliance lists,
-settings, live listings or deleting anything on Etsy.
+There is no tool for a shell, files, fetching web pages, raw research data, the compliance
+lists, settings, live listings or deleting anything on Etsy.
 
 Input: every argument has a strict schema (enums, patterns, lengths, ranges), checked here
 before anything runs; unknown arguments are refused. There is no free-text argument at all:
@@ -69,7 +75,9 @@ CREATED_BY = "hermes"              # every order from botsy-control; never taken
 # Reason codes of this layer (service/orders.py, service/plan.py and service/capacity.py have theirs).
 REASONS = ("unknown_tool", "not_an_object", "unknown_argument", "missing_argument", "bad_argument",
            "too_large", "settings_unreadable", "internal_error", "not_found", "no_preview", "money_unknown",
-           "not_waiting", "approval_unavailable", "plan_service_missing")
+           "not_waiting", "approval_unavailable", "plan_service_missing", "not_configured", "trend_search_off",
+           "trend_search_limit", "query_blocked", "query_needs_review", "query_marketplace", "search_failed",
+           "search_rate_limited", "search_auth_failed", "search_allowance_used", "usage_unreadable")
 DESCRIBE = {
     "plan_expired": "The plan expired at its deadline (Tuesday 8 pm); Botsy runs on its normal rules this week.",
     "unknown_tool": "There is no such tool on this server.",
@@ -88,6 +96,17 @@ DESCRIBE = {
                            "The user can approve it on the server.",
     "plan_service_missing": "Botsy's plan service (service/plan.py) is not installed or did not load, so plans "
                             "cannot be checked; nothing was changed.",
+    "not_configured": "Trend search is not set up (no TINYFISH_API_KEY in Botsy's .env).",
+    "trend_search_off": "Trend search is switched off in Botsy's settings (trend_search.enabled).",
+    "trend_search_limit": "The daily trend search limit is used up (limits trend_searches_per_day, any 24 hours).",
+    "query_blocked": "The query has a trademarked, licensed, game-system or medical term; it was not sent.",
+    "query_needs_review": "The query has a term on the review list; it was not sent.",
+    "query_marketplace": "The query names a marketplace; trend search reads off-marketplace sources only.",
+    "search_failed": "TinyFish Search did not answer usefully; nothing was retried. Try later.",
+    "search_rate_limited": "TinyFish Search said too many requests; nothing was retried. Try later.",
+    "search_auth_failed": "TinyFish refused Botsy's API key; the user should check TINYFISH_API_KEY.",
+    "search_allowance_used": "TinyFish's free daily Search allowance is used; Botsy does not pay for searches.",
+    "usage_unreadable": "Botsy could not read its trend search counter, so no search was sent.",
 }
 
 # Size limits.
@@ -102,6 +121,10 @@ MAX_LOG_LINE = 300
 PREVIEW_MAX_BYTES = 8_000_000       # source image
 PREVIEW_PX = 768                    # longest side of the preview sent to Hermes
 PREVIEW_MAX_PIXELS = 40_000_000     # a source image larger than this is "no preview" (memory)
+VIEW_PX = 1024                      # view_item_images: longest side
+VIEW_MAX_IMAGES = 6
+VIEW_MAX_TOTAL_BYTES = 3_000_000    # all images of one view_item_images call together
+VIEW_KINDS = {"pages": "previews", "mockups": "mockups"}     # kind -> the item's own folder
 
 # Value patterns.
 ITEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")      # core.items.ITEM_ID_RE, capped (orders.ITEM_MAX)
@@ -343,6 +366,7 @@ class Tool:
     description: str
     args: tuple
     fn: Callable
+    open_world: bool = False          # reaches outside Botsy (trend_search); MCP open_world_hint
 
 
 @dataclass
@@ -359,9 +383,10 @@ class _Ctx:
 TOOLS: dict[str, Tool] = {}
 
 
-def _tool(name: str, server: str, level: int, title: str, description: str, **args: Arg):
+def _tool(name: str, server: str, level: int, title: str, description: str, *, open_world: bool = False,
+          **args: Arg):
     def deco(fn: Callable) -> Callable:
-        TOOLS[name] = Tool(name, server, level, title, description, tuple(args.items()), fn)
+        TOOLS[name] = Tool(name, server, level, title, description, tuple(args.items()), fn, open_world)
         return fn
     return deco
 
@@ -503,19 +528,32 @@ class _Scrubber:
             log.warning("botsy-control: .env not read for scrubbing (%s)", type(e).__name__)
         self._values = sorted(values, key=len, reverse=True)
 
-    def text(self, s: str) -> str:
+    def secrets(self, s: str) -> str:
         for v in self._values:
             s = s.replace(v, "[secret]")
+        return s
+
+    def text(self, s: str) -> str:
+        s = self.secrets(s)
         s = self._redact(s)
         s = _URL_RE.sub("[link]", s)
         s = _PATH_RE.sub(lambda m: m.group(0) if _not_a_path(m.group(0)) else "[path]", s)
         return _DATA_FILE_RE.sub(lambda m: m.group(0) if m.group(0).lower() in _OWN_FILES else "[file]", s)
 
 
+def _trend():
+    from control import trend
+
+    return trend
+
+
 def _scrub_tree(obj, scrub: _Scrubber, key: str | None = None):
     if isinstance(obj, str):
         if key == "thumbnail" and THUMB_RE.fullmatch(obj) and ".." not in obj:
             return obj                  # checked against a strict pattern when it was read
+        if key in ("site", "page") and len(obj) <= _trend().PAGE_MAX and _trend().PAGE_RE.fullmatch(obj) \
+                and ".." not in obj:
+            return scrub.secrets(obj)   # a trend result's domain + path (control/trend.py strip_url)
         return scrub.text(obj)
     if isinstance(obj, dict):
         return {k: _scrub_tree(v, scrub, k) for k, v in obj.items()}
@@ -999,8 +1037,8 @@ def _review_preview(c: _Ctx) -> Outcome:
                     "bytes": len(img)}, [("image/jpeg", img)])
 
 
-def _jpeg_preview(data: bytes) -> bytes | None:
-    """Our own preview, decoded and re-encoded (no metadata), at most PREVIEW_PX on its longest side."""
+def _jpeg_preview(data: bytes, px: int = PREVIEW_PX) -> bytes | None:
+    """Our own preview, decoded and re-encoded (no metadata), at most `px` on its longest side."""
     try:
         from PIL import Image
 
@@ -1009,7 +1047,7 @@ def _jpeg_preview(data: bytes) -> bytes | None:
                 return None
             if im.width * im.height > PREVIEW_MAX_PIXELS:
                 return None             # read only the header so far: never decode a huge image
-            im.thumbnail((PREVIEW_PX, PREVIEW_PX))
+            im.thumbnail((px, px))
             if im.mode in ("RGBA", "LA", "P"):
                 rgba = im.convert("RGBA")
                 bg = Image.new("RGB", rgba.size, (255, 255, 255))
@@ -1023,6 +1061,112 @@ def _jpeg_preview(data: bytes) -> bytes | None:
     except Exception as e:  # noqa: BLE001 - a broken image is "no preview"
         log.info("botsy-control: preview not readable (%s)", type(e).__name__)
         return None
+
+
+ITEM_FILE_RE = re.compile(r"(?P<dir>previews|mockups)/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.(?:png|jpe?g|webp)", re.I)
+
+
+def _botsy_item_dir(settings: dict, item_id: str) -> Path | None:
+    """The item's folder when `item_id` names a Botsy item: a real folder (not a link) directly in
+    Botsy's output root with a manifest that names the same item. Else None."""
+    root = _work_root(settings)
+    d = root / item_id
+    try:
+        if d.is_symlink() or not d.is_dir() or not _inside(root, d) or d.resolve().parent != root.resolve():
+            return None
+    except OSError:
+        return None
+    m = _read_json(d / "manifest.json", 1_000_000)
+    if not isinstance(m, dict) or m.get("item_id") != item_id:
+        return None
+    return d
+
+
+def _item_images(settings: dict, item_id: str, item_dir: Path, kind: str) -> list[tuple[str, int | None]]:
+    """[(relative path, page or None)] of the item's own images of `kind`, in order: pages from the
+    manifest's previews (else the previews/ folder), mockups from the review entry (else the
+    mockups/ folder). Only names that match ITEM_FILE_RE in that kind's folder."""
+    want = VIEW_KINDS[kind]
+    out: list[tuple[str, int | None]] = []
+
+    def ok(rel) -> bool:
+        m = ITEM_FILE_RE.fullmatch(rel) if isinstance(rel, str) else None
+        return bool(m) and m.group("dir") == want and ".." not in rel
+
+    if kind == "pages":
+        m = _read_json(item_dir / "manifest.json", 1_000_000)
+        entries = m.get("previews") if isinstance(m, dict) and isinstance(m.get("previews"), list) else []
+        rows = [(e.get("path"), _int(e.get("page"), 0, 10_000)) for e in entries if isinstance(e, dict)]
+        out = [(rel, page) for rel, page in rows if ok(rel)]
+        out.sort(key=lambda x: (x[1] is None, x[1] or 0))
+    else:
+        from qa.review import read_entry
+        from service import orders
+
+        try:
+            e = read_entry(item_id, orders.review_dir(settings))
+        except (OSError, ValueError):
+            e = None
+        listed = e.get("mockups") if isinstance(e, dict) and isinstance(e.get("mockups"), list) else []
+        out = [(rel, None) for rel in listed if ok(rel)]
+    if not out:
+        folder = item_dir / want
+        try:
+            names = sorted(p.name for p in folder.iterdir()) if folder.is_dir() and not folder.is_symlink() else []
+        except OSError:
+            names = []
+        out = [(f"{want}/{n}", None) for n in names if ok(f"{want}/{n}")][:200]
+    return list(dict.fromkeys(out))
+
+
+@_tool("view_item_images", "read", 0, "Look at our own product images",
+       "Up to 6 of OUR OWN product images of one Botsy item, as images for your vision: `pages` are the page "
+       "renders the generator made (previews), `mockups` are the listing photos QA made. Downscaled to at most "
+       "1024 px and re-encoded as JPEG without metadata; about 3 MB in all per call (`truncated` says when fewer "
+       "fit). Only items in Botsy's output folder; never research files or anyone else's images.",
+       item_id=Arg("string", required=True, pattern=ITEM_RE, max_length=160,
+                   description="A Botsy item id (review_list, events_recent, orders_recent)."),
+       kind=Arg("string", enum=("pages", "mockups"), default="pages", max_length=10, description="Which images."),
+       start=Arg("integer", minimum=0, maximum=199, default=0, description="First image (0 = the first)."),
+       max=Arg("integer", minimum=1, maximum=VIEW_MAX_IMAGES, default=VIEW_MAX_IMAGES,
+               description="Most images returned."))
+def _view_item_images(c: _Ctx) -> Outcome:
+    s = c.settings
+    item_id = _item(c.args["item_id"])
+    if item_id is None:
+        return _refusal(["bad_argument"], ["item_id"])
+    item_dir = _botsy_item_dir(s, item_id)
+    if item_dir is None:
+        return _refusal(["not_found"])
+    kind = c.args.get("kind", "pages")
+    start, most = c.args.get("start", 0), c.args.get("max", VIEW_MAX_IMAGES)
+    found = _item_images(s, item_id, item_dir, kind)
+    folder = item_dir / VIEW_KINDS[kind]
+    images, shown, total, truncated = [], [], 0, False
+    for i, (rel, page) in enumerate(found[start:start + most], start):
+        p = item_dir / rel
+        if not (_inside(folder, p) and _inside(item_dir, p)):
+            continue
+        data = _read_bytes(p, PREVIEW_MAX_BYTES)
+        img = _jpeg_preview(data, VIEW_PX) if data else None
+        if img is None:
+            continue
+        if total + len(img) > VIEW_MAX_TOTAL_BYTES:
+            truncated = True
+            break
+        total += len(img)
+        images.append(("image/jpeg", img))
+        row = {"index": i, "bytes": len(img)}
+        if page is not None:
+            row["page"] = page
+        shown.append(row)
+    if not images:
+        return _refusal(["no_preview"], item_id=item_id, kind=kind, available=len(found))
+    last = shown[-1]["index"]
+    return Outcome({"ok": True, "item_id": item_id, "kind": kind, "available": len(found), "start": start,
+                    "shown": len(images), "images": shown, "bytes": total, "truncated": truncated,
+                    "more": last + 1 < len(found), "mime": "image/jpeg",
+                    "note": "our own product images, made by Botsy"}, images)
 
 
 @_tool("plan_status", "read", 0, "Weekly plan status",
@@ -1085,6 +1229,7 @@ def _plan_view(o: dict, settings: dict) -> dict:
             "approval_reason": _code(checks.get("approval_reason")), "plan_number": _int(o.get("plan_number")),
             "revision": _int(o.get("revision")), "replaces": _order_id(p.get("replaces")),
             "superseded_by": _order_id(o.get("superseded_by")), "held": isinstance(o.get("held"), dict),
+            "held_by": (lambda h: h.get("by") if h.get("by") in orders.CREATORS else None)(orders.hold_of(o) or {}),
             "start_now": isinstance(o.get("start_now"), dict),
             "start_at": start.astimezone(timezone.utc).isoformat(timespec="seconds") if isinstance(start, datetime)
             else None,
@@ -1179,7 +1324,9 @@ def _capacity_view(res: dict) -> dict:
        kind=Arg("string", enum=tuple(sorted(("weekly_plan", "plan_revision", "plan_hold", "plan_start_now",
                                              "scale_up", "order_cancel", "pause", "resume", "lower_cap",
                                              "review_reject", "review_hold", "review_approve", "raise_cap",
-                                             "resume_after_budget_stop", "search_ideas"))),
+                                             "resume_after_budget_stop", "search_ideas", "fix_retry_run",
+                                             "fix_clear_stale_lock", "fix_rerun_qa", "fix_resend_daily_log",
+                                             "fix_retry_notify", "kdp_kit_approve"))),
                 description="Only this kind."),
        status=Arg("string", enum=("waiting_approval", "accepted", "applied", "undone", "cancelled", "failed"),
                   description="Only this status."),
@@ -1269,6 +1416,11 @@ _EVENT_FIELDS: dict[str, dict[str, str]] = {
     "order_undone": {"order_id": "order", "order_kind": "code", "by": "code"},
     "order_failed": {"order_id": "order", "order_kind": "code", "stage": "code", "reasons": "codes"},
     "control_refused": {"tool": "code", "reasons": "codes"},
+    # Watchdog fixes (service/fixes.py, D4.7): the precondition facts are fixed fields only.
+    "fix_applied": {"order_id": "order", "fix": "code", "recipe": "code", "created_by": "code", "facts": "safe",
+                    "result": "safe"},
+    "fix_run": {"order_id": "order", "fix": "code", "ran": "bool", "exit_code": "count", "reasons": "codes",
+                "facts": "safe"},
 }
 EVENT_KINDS = tuple(sorted(_EVENT_FIELDS))
 
@@ -1314,6 +1466,9 @@ def _event_view(e: dict, settings: dict) -> dict | None:
             out[key] = _week(v)
         elif how == "ts":
             out[key] = _ts(v)
+        elif how == "safe":
+            v = _safe(v) if isinstance(v, dict) else None
+            out[key] = v if isinstance(v, dict) else {}
         elif how == "fields":
             out[key] = [x for x in (v if isinstance(v, list) else []) if isinstance(x, str)
                         and FIELD_PATH_RE.fullmatch(x)][:30]
@@ -1355,15 +1510,58 @@ def _events_recent(c: _Ctx) -> dict:
             "events": signed}
 
 
+TREND_QUERY_RE = re.compile(r"[a-z0-9](?:[a-z0-9 '&-]{0,78}[a-z0-9])?")
+
+
+@_tool("trend_search", "read", 0, "Trend web search (filtered)",
+       "Search the web for off-marketplace trend signals (blogs, news, magazines) through TinyFish Search. Botsy "
+       "drops every result from a marketplace or listing site (Etsy, Amazon incl. Goodreads/AbeBooks/Audible, "
+       "Pinterest, eBay, Redbubble, Teepublic, Zazzle, Creative Market, Gumroad, Society6, Spreadshirt, Walmart, "
+       "Temu, AliExpress, Shein, TikTok Shop, digital-product shops such as Teachers Pay Teachers or Creative "
+       "Fabrica, archived or proxied copies of them), every result that names one or reads like a product listing "
+       "(price + add to cart / sold / in stock / free shipping), and every result with a blocklisted term; links "
+       "come back as domain + path only and snippets are short. A trend reading only, never a brief by itself: "
+       "briefs still need the user's exports (10 listings, 3 shops). The query is checked against the trademark "
+       "blocklist and health terms first and may not name a marketplace. At most limits trend_searches_per_day "
+       "(default 30) in any 24 hours.",
+       open_world=True,
+       query=Arg("string", required=True, pattern=TREND_QUERY_RE, max_length=80,
+                 description="Short lowercase query: letters, digits, spaces, ' & -."),
+       recency=Arg("string", enum=("week", "month", "year"), default="month", max_length=5,
+                   description="How recent the pages are."),
+       max=Arg("integer", minimum=1, maximum=10, default=10, description="Most results returned."))
+def _trend_search(c: _Ctx) -> Outcome:
+    from control import trend
+
+    q = " ".join(c.args["query"].split())
+    res = trend.search(q, c.args.get("recency", "month"), c.args.get("max", 10), c.settings, now=c.now)
+    if not res.get("ok"):
+        reasons = _codes(res.get("reasons")) or ["search_failed"]
+        extra = {k: _int(res.get(k), 0, 10**6) for k in ("searches_24h", "limit") if k in res}
+        return _refusal(reasons, **extra)
+    results = []
+    for r in res.get("results") or []:
+        row = {"site": r.get("site"), "page": r.get("page"), "title": r.get("title"), "snippet": r.get("snippet")}
+        if r.get("date"):
+            row["date"] = r["date"]
+        results.append(row)
+    dropped = {k: _int(v, 0, 1000) for k, v in (res.get("dropped") or {}).items() if _code(k)}
+    return Outcome({"ok": True, "label": trend.LABEL, "recency": res.get("recency"), "count": len(results),
+                    "results": results, "received": _int(res.get("received"), 0, 1000), "dropped": dropped,
+                    "searches_24h": _int(res.get("searches_24h"), 0, 10**6), "limit": _int(res.get("limit"), 0, 10**6),
+                    "left": _int(res.get("left"), 0, 10**6)})
+
+
 # ---------------------------------------------------------------- act tools (orders)
 
 ORDER_KINDS = ("weekly_plan", "plan_revision", "plan_hold", "plan_start_now", "scale_up", "order_cancel", "pause",
                "resume", "lower_cap", "review_reject", "review_hold", "review_approve", "raise_cap",
-               "resume_after_budget_stop", "search_ideas")
+               "resume_after_budget_stop", "search_ideas", "fix_retry_run", "fix_clear_stale_lock", "fix_rerun_qa",
+               "fix_resend_daily_log", "fix_retry_notify", "kdp_kit_approve")
 # The former code actions (decided 2026-10-21: no codes). Only when the user asked for it in
 # their own words; Botsy caps them a day, never approves a hard-blocked item, never raises the
 # cap above the admin ceiling, and posts each at once to the main channel with who asked.
-LEVEL3_KINDS = ("review_approve", "raise_cap", "resume_after_budget_stop")
+LEVEL3_KINDS = ("review_approve", "raise_cap", "resume_after_budget_stop", "kdp_kit_approve")
 LEVEL3_NOTE = ("only when the user asked for it in their own words; Botsy allows a few a day and posts each at "
                "once to the main channel, with how to undo it")
 PAYLOAD_HELP = (
@@ -1377,7 +1575,10 @@ PAYLOAD_HELP = (
     'medical_wording|duplicate|wrong_size|user_dislike|other_rule}; review_hold {"item_id", "reason_code": '
     'needs_a_look|possible_lookalike|possible_trademark|possible_medical|print_check|user_request|undo_approval}; '
     'review_approve {"item_ids": [...], "batch"?: "short-name"} (Level 3); search_ideas {"ideas": '
-    '[{"niche", "query"}]} (at most 5 a week). Level 3 orders: ' + LEVEL3_NOTE + '.')
+    '[{"niche", "query"}]} (at most 5 a week); fix_retry_run {"tick_started"?: ISO time}, fix_clear_stale_lock '
+    '{"lock": service|plans}, fix_rerun_qa {"item_id"}, fix_resend_daily_log {}, fix_retry_notify {} (Level 2, at '
+    'most 6 a day; Botsy checks every precondition; the fix_* tools do the same); kdp_kit_approve {"kit_id"} '
+    '(Level 3, refused with kdp_not_built until the KDP build exists). Level 3 orders: ' + LEVEL3_NOTE + '.')
 _TERMINAL = ("applied", "undone", "cancelled", "failed")
 
 
@@ -1593,7 +1794,63 @@ def _undo_order(c: _Ctx) -> Outcome:
     return Outcome(_apply_view(orders.undo(c.args["order_id"], c.settings, by=CREATED_BY, now=c.now)))
 
 
+# ---------------------------------------------------------------- act tools (watchdog fixes, D4.7)
+
+FIX_NOTE = ("A fixed Botsy recipe (service/fixes.py, Level 2): Botsy checks its own preconditions first and again "
+            "when it runs, refuses with reason codes when they do not hold, allows a few a day (limits "
+            "fixes_per_day), and posts each fix to Discord. You never name a file, a process or a command.")
+ISO_TIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?")   # orders.ISO_RE
+
+
+@_tool("fix_retry_run", "act", 2, "Retry the last failed check",
+       "Queue one retry of the last hourly check when it failed only for a passing reason (a network timeout, a "
+       "dropped connection, a busy lock, an API overload), no check ran since and paid work is not stopped. It "
+       "counts toward run_now_per_day; the next hourly plan check runs it. " + FIX_NOTE,
+       tick_started=Arg("string", pattern=ISO_TIME_RE, max_length=40,
+                        description="Optional: the failed check's start time (status), so the retry is for that one."))
+def _fix_retry_run(c: _Ctx) -> Outcome:
+    payload = {"tick_started": c.args["tick_started"]} if c.args.get("tick_started") else {}
+    return _submit(c, "fix_retry_run", payload)
+
+
+@_tool("fix_clear_stale_lock", "act", 2, "Clear a stale lock note",
+       "Clear the note of a lock whose process is dead, that is older than the longest allowed run and that nobody "
+       "holds. A held lock is never touched. " + FIX_NOTE,
+       lock=Arg("string", required=True, enum=("service", "plans"), max_length=10, description="Which lock."))
+def _fix_clear_stale_lock(c: _Ctx) -> Outcome:
+    return _submit(c, "fix_clear_stale_lock", {"lock": c.args["lock"]})
+
+
+@_tool("fix_rerun_qa", "act", 2, "Run QA again for one item",
+       "Run QA again for an item whose QA crashed (never one that failed real checks, a drafted or a rejected "
+       "item). Local, no money. " + FIX_NOTE,
+       item_id=Arg("string", required=True, pattern=ITEM_RE, max_length=160, description="The item id."))
+def _fix_rerun_qa(c: _Ctx) -> Outcome:
+    item_id = _item(c.args["item_id"])
+    if item_id is None:
+        return _journal_refusal(TOOLS["fix_rerun_qa"], c.settings, _refusal(["bad_argument"], ["item_id"]))
+    return _submit(c, "fix_rerun_qa", {"item_id": item_id})
+
+
+@_tool("fix_resend_daily_log", "act", 2, "Post the daily log again",
+       "Post the newest daily log to Discord again when it is at most 36 hours old and was not resent already. "
+       + FIX_NOTE)
+def _fix_resend_daily_log(c: _Ctx) -> Outcome:
+    return _submit(c, "fix_resend_daily_log", {})
+
+
+@_tool("fix_retry_notify", "act", 2, "Retry Discord notices",
+       "Post again the approval and fix notices Discord did not take (the last 48 hours, a few at a time). "
+       + FIX_NOTE)
+def _fix_retry_notify(c: _Ctx) -> Outcome:
+    return _submit(c, "fix_retry_notify", {})
+
+
+FIX_TOOLS = ("fix_retry_run", "fix_clear_stale_lock", "fix_rerun_qa", "fix_resend_daily_log", "fix_retry_notify")
+
+
 __all__ = [
+    "FIX_TOOLS",
     "LEVEL3_KINDS",
     "CREATED_BY",
     "EVENT_KINDS",

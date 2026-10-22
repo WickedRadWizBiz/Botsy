@@ -116,6 +116,11 @@ def test_daily_log_is_scrubbed(s, monkeypatch, tmp_path):
     env = tmp_path / "dotenv"
     env.write_text(f"ETSY_KEYSTRING={ENV_SECRET}\n")
     monkeypatch.setattr(tools, "ENV_FILE", env)
+    from control import trend
+
+    monkeypatch.setattr(trend, "ENV_FILE", env)          # no TINYFISH_API_KEY: trend_search is not configured
+    monkeypatch.delenv(trend.KEY_ENV, raising=False)
+    monkeypatch.setattr(trend, "_http_get", lambda *a, **kw: pytest.fail("no network in tests"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", API_SECRET)
     outbox(s).mkdir(parents=True, exist_ok=True)
     (outbox(s) / "daily-log.txt").write_text(DAILY_LOG)
@@ -335,12 +340,19 @@ def test_events_recent_without_key_is_marked_unsigned(s, monkeypatch):
     assert d["ok"] and d["count"] == 1 and d["signed"] is False and "sig" not in d["events"][0]
 
 
-def test_read_tools_write_nothing(s, tmp_path):
+def test_read_tools_write_nothing(s, tmp_path, monkeypatch):
+    from control import trend
+
+    monkeypatch.delenv(trend.KEY_ENV, raising=False)
+    monkeypatch.setattr(trend, "ENV_FILE", tmp_path.parent / "no-dotenv")
+    monkeypatch.setattr(trend, "_http_get", lambda *a, **kw: pytest.fail("no network in tests"))
     item(s, ITEM_A)
     brief_file(s)
     before = sorted(str(p) for p in tmp_path.rglob("*"))
     for t in tools.tools_for("read"):
-        args = {"item_id": ITEM_A} if t.name == "review_preview" else {}
+        args = {"item_id": ITEM_A} if t.name in ("review_preview", "view_item_images") else {}
+        if t.name == "trend_search":
+            args = {"query": "cozy mushrooms"}           # no TINYFISH_API_KEY: not_configured, nothing counted
         call(s, t.name, args)
     after = sorted(str(p) for p in tmp_path.rglob("*"))
     assert after == before
@@ -355,6 +367,11 @@ def test_read_tools_never_leak(s, monkeypatch, tmp_path):
     env = tmp_path / "dotenv"
     env.write_text(f"ETSY_KEYSTRING={ENV_SECRET}\nANTHROPIC_API_KEY={API_SECRET}\n")
     monkeypatch.setattr(tools, "ENV_FILE", env)
+    from control import trend
+
+    monkeypatch.setattr(trend, "ENV_FILE", env)          # no TINYFISH_API_KEY: trend_search is not configured
+    monkeypatch.delenv(trend.KEY_ENV, raising=False)
+    monkeypatch.setattr(trend, "_http_get", lambda *a, **kw: pytest.fail("no network in tests"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", API_SECRET)
     monkeypatch.setenv(events.KEY_ENV, EVENT_KEY)
     inputs = Path(s["research"]["inputs_dir"])
@@ -386,6 +403,8 @@ def test_read_tools_never_leak(s, monkeypatch, tmp_path):
         variants = [{}]
         if t.name == "review_preview":
             variants = [{"item_id": ITEM_A}]
+        if t.name == "view_item_images":
+            variants = [{"item_id": ITEM_A}, {"item_id": ITEM_A, "kind": "mockups"}]
         if t.name == "review_list":
             variants = [{"status": "all"}]
         for args in variants:

@@ -19,9 +19,10 @@ from control import tools
 from core.config import ROOT
 from tests.control._support import ctx, mcp_call, mcp_list
 
-READ = {"status", "spend", "daily_log", "review_list", "review_preview", "plan_status", "plan_facts",
-        "briefs_summary", "capacity", "orders_recent", "events_recent"}
-ACT = {"submit_order", "approve_order", "pause", "resume", "lower_cap", "search_ideas", "undo_order"}
+READ = {"status", "spend", "daily_log", "review_list", "review_preview", "view_item_images", "plan_status",
+        "plan_facts", "briefs_summary", "capacity", "orders_recent", "events_recent", "trend_search"}
+ACT = {"submit_order", "approve_order", "pause", "resume", "lower_cap", "search_ideas", "undo_order",
+       "fix_retry_run", "fix_clear_stale_lock", "fix_rerun_qa", "fix_resend_daily_log", "fix_retry_notify"}
 
 
 @pytest.fixture
@@ -44,7 +45,8 @@ def test_each_server_lists_exactly_its_tools(s, server, names):
     assert resources.resources == [] and prompts.prompts == []
     for t in listed.tools:
         assert t.description and t.annotations is not None
-        assert t.annotations.read_only_hint is (server == "read") and t.annotations.open_world_hint is False
+        assert t.annotations.read_only_hint is (server == "read")
+        assert t.annotations.open_world_hint is (t.name == "trend_search")     # the one tool that reaches the web
         assert t.annotations.destructive_hint is (server == "act")
         schema = t.input_schema
         for node in _walk(schema):

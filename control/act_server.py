@@ -2,8 +2,9 @@
 
     build(settings=None, clock=None) -> MCPServer ; main() -> int
 
-Tools: submit_order, approve_order, pause, resume, lower_cap, search_ideas, undo_order
-(orders, checked by service.orders.submit / validate / approve / undo; plans through
+Tools: submit_order, approve_order, pause, resume, lower_cap, search_ideas, undo_order and
+the watchdog fixes fix_retry_run, fix_clear_stale_lock, fix_rerun_qa, fix_resend_daily_log,
+fix_retry_notify (orders, checked by service.orders.submit / validate / approve / undo; plans through
 service.plan). No codes (decided 2026-10-21). The server applies nothing itself; created_by
 is always "hermes". Started by
 `python -m control act` (deploy/lightsail/botsy-control-act, run by the hermes user as botsy

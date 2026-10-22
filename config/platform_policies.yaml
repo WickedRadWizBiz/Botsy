@@ -107,10 +107,34 @@ platforms:
     checked: "2026-10-16"
   tinyfish:
     scraping: forbidden   # TinyFish is the service Botsy calls, not a site Botsy scrapes; entry records its terms and cost
-    official_api: TinyFish Agent / Fetch / Search APIs (api.fetch.tinyfish.ai, agent.tinyfish.ai). Botsy may call them under the Amazon exception in CLAUDE.md (user, 2026-10-17).
+    official_api: TinyFish Agent / Fetch / Search APIs (api.fetch.tinyfish.ai, agent.tinyfish.ai, api.search.tinyfish.ai). Botsy may call them under the Amazon exception in CLAUDE.md (user, 2026-10-17); Search also for Hermes's filtered trend search (user, 2026-10-21, D4.8; search_api below).
     sources:
       - url: https://www.tinyfish.ai/pricing
         note: "Read 2026-10-17: Search and Fetch free (Fetch 150 urls/min, 1,000 urls/day); Agent $0.016 per step (2 concurrent runs); Browser $0.002 per minute; Monitor $0.005 per check; prepaid Wallet, $10 minimum top-up, no plan. The page says runs use 'residential proxies' and 'anti-bot handling ... at the infrastructure layer', i.e. the service itself works around site blocks; Botsy's own rule is still to stop when a page comes back blocked."
       - url: https://docs.tinyfish.ai/
         note: "API surfaces and endpoints (read 2026-10-17). TinyFish's API terms of service were not found at tinyfish.ai/terms-of-service (404 on 2026-10-17); current.tinyfish.ai/terms covers a different product. UNVERIFIED: ask TinyFish or find the API terms before relying on retention or use limits."
-    checked: "2026-10-17"
+      - url: https://www.tinyfish.ai/terms
+        note: "Read 2026-10-21: Terms of Service, effective August 17, 2026 (Tiny Fish, Inc.), one set for all products (Search, Fetch, Agent, Browser share one API key). Use the Services only through the programmatic interfaces TinyFish provides (no scraping of the Services themselves); comply with all applicable laws; do not resell or compile 'Site Content' into a database; do not use the Services or Outputs to build a competing product or train a competing model. Customer Data (queries, inputs, outputs) is licensed to TinyFish to provide and improve the Services and to 'train, fine-tune, evaluate, and improve Tiny Fish's artificial intelligence and machine learning models' (the training risk the user accepted on 2026-10-17); Outputs are assigned to the customer. Nothing in them forbids searching for public web pages. This closes the 2026-10-17 'terms not found' gap; retention periods are still not stated."
+      - url: https://docs.tinyfish.ai/search-api/reference
+        note: "Read 2026-10-21: GET https://api.search.tinyfish.ai with header X-API-Key; params query (required), location, language, include_domains, exclude_domains, recency_minutes (1-5256000; not with after_date/before_date), after_date, before_date, domain_type (web|news|research_paper), page (0-10). Response {query, results[{position, site_name, title, snippet, url, date?, publisher?}], total_results, page}."
+      - url: https://docs.tinyfish.ai/search-api/index
+        note: "Read 2026-10-21: 'Search is free up to 12,000 requests per day. Beyond that, requests need a positive wallet balance.' Error codes page (docs.tinyfish.ai/error-codes, same day): Search is limited per API key to 30 requests a minute (HTTP 429), the free allowance resets 00:00 UTC, and past it a request either draws on the wallet or is refused. Botsy's cap (limits trend_searches_per_day, default 30) keeps it far inside the free allowance."
+    checked: "2026-10-21"
+    search_api:
+      # Hermes's trend search (user, 2026-10-21, decision D4.8; control/trend.py, botsy-read trend_search).
+      use: "Off-marketplace trend signals only (blogs, news, magazines): a trend reading, never a brief by itself. Briefs still come only from the user's licensed exports with the 10-listing / 3-shop floor."
+      allowed: true
+      endpoint: https://api.search.tinyfish.ai
+      cost: "free (Botsy sends at most 30 searches in any 24 hours; limits trend_searches_per_day)"
+      sends: "the query (checked first: no trademarked, licensed, game-system or medical term, no review-list term, no marketplace name), location US, language en, recency_minutes, exclude_domains (the main marketplaces). Only public search; no login, no personal data, no Fetch, no Agent."
+      no_retry: "A refused, rate-limited (429) or failed search is counted and not retried or escalated."
+    search_result_filter:
+      # The rule control/trend.py applies to every result before Hermes (the model) sees it, so no
+      # competitor listing's title, description or image reaches a model (CLAUDE.md).
+      drop_domains: "any host label, or part of a label split at . - _ ~ % +, equal to etsy, etsystatic, amazon, amzn, goodreads, abebooks, audible, pinterest, pinimg, ebay, ebayimg, redbubble, teepublic, zazzle, creativemarket, gumroad, society6, spreadshirt, walmart, temu, aliexpress, shein, teacherspayteachers, creativefabrica, designbundles, thehungryjpeg, payhip, sellfy, bigcartel, myshopify, cafepress, spoonflower, threadless, displate, mercari, poshmark, depop, alibaba, barnesandnoble, thriftbooks, bookdepository, kobo (so etsy.com, shop.etsy.com, etsy.me, amazon.co.uk, smile.amazon.com, aws.amazon.com, m.media-amazon.com, ebay.de, pinterest.ca, x.gumroad.com); the same test on every path segment (an archived or proxied marketplace page such as web.archive.org/web/2020/https://www.etsy.com/listing/...); the hosts and their subdomains pin.it, a.co, tpt.com, shop.tiktok.com, shopping.google.com, archive.org, archive.ph/.today/.is/.li/.md, ghostarchive.org, cachedview.nl, translate.goog, googleusercontent.com; the paths tiktok.com/shop, google.com/shopping, facebook.com/marketplace, ko-fi.com/s; plus settings trend_search.blocked_domains (suffix match). Review 2026-10-22."
+      drop_text: "a title, snippet or site name (NFKC-normalized, zero-width characters removed) that names a marketplace (etsy, amazon, kdp, goodreads, abebooks, audible, pinterest, ebay, redbubble, teepublic, zazzle, creative market, gumroad, society6, spreadshirt, walmart, temu, aliexpress, shein, tiktok shop, teachers pay teachers, tpt, creative fabrica, design bundles, hungry jpeg, payhip, sellfy, big cartel, shopify, cafepress, spoonflower, threadless, displate, mercari, poshmark, depop, alibaba): e.g. a blog quoting an Etsy price"
+      drop_listing_like: "a price together with a shop cue (add to cart, buy now, in stock, sold, free shipping, instant download, reviews count, % off, ...), or two shop cues"
+      drop_blocklist: "any hard, game-system or review term of config/trademark_blocklist.txt or config/health_terms.txt in the title, snippet, site name or page path"
+      drop_other: "non-http(s) links, IP addresses, duplicates"
+      keep_only: "site (domain), page (domain + path: no scheme, user, port, query or fragment; @handles become @; at most 160 characters), title (120 characters), snippet (280 characters; HTML, e-mail addresses and links removed), date; never an image"
+      label: "trend reading only, never a brief by itself"
