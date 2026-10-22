@@ -1,0 +1,12 @@
+# Hourly, at 17 minutes past: are Hermes's own scheduled jobs inside Botsy's limits?
+[Unit]
+Description=Botsy: hourly check of Hermes's scheduled jobs
+
+[Timer]
+OnCalendar=*-*-* *:17:00
+OnBootSec=15min
+Persistent=true
+Unit=botsy-hermes-jobs.service
+
+[Install]
+WantedBy=timers.target

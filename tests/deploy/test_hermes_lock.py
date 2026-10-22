@@ -13,6 +13,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -78,7 +79,11 @@ def test_pin_is_complete_and_at_least_seven_days_old(lock):
     assert pin["HERMES_RELEASE_URL"].endswith("/releases/tag/" + pin["HERMES_TAG"])
     assert pin["HERMES_REPO"] == "https://github.com/NousResearch/hermes-agent.git"
     extras = set(pin["HERMES_EXTRAS"].split(","))
-    assert extras == {"anthropic", "discord", "mcp"}      # no browser, voice or computer-use extras
+    # No browser, voice or computer-use extras; "web" is fastapi + uvicorn for `hermes dashboard`.
+    assert extras == {"anthropic", "discord", "mcp", "web"}
+    assert re.fullmatch(r"22\.\d+\.\d+", pin["NODE_VERSION"])
+    for key in ("NODE_SHA256_LINUX_X64", "NODE_SHA256_LINUX_ARM64"):
+        assert re.fullmatch(r"[0-9a-f]{64}", pin[key])
 
 
 def test_pin_command_prints_the_pin(lock, capsys):
@@ -123,15 +128,20 @@ BUNDLES = ("safe", "coding", "debugging", "hermes-cli", "hermes-discord", "herme
 
 def test_allowed_sets_match_the_decision(lock):
     assert lock.PLATFORM_TOOLSETS["discord"] == D4_DISCORD
-    assert lock.PLATFORM_TOOLSETS["cron"] == D4_DISCORD - {"cronjob", "kanban", "discord"}
+    # Jobs get no skill tools: a job's tool calls are not shown in Discord, so a skill it changed
+    # would not be posted to you (D4 item 5). The command line keeps them (you watch it run).
+    assert lock.PLATFORM_TOOLSETS["cron"] == D4_DISCORD - {"cronjob", "kanban", "discord", "skills"}
+    assert lock.PLATFORM_TOOLSETS["cli"] == D4_DISCORD - {"cronjob", "kanban", "discord"}
+    assert lock.CRON_TOOLSETS == lock.PLATFORM_TOOLSETS["cron"]
     assert lock.ALLOWED_TOOLSETS == D4_DISCORD
     assert lock.ALLOWED_MODELS == {"claude-haiku-5-5", "claude-sonnet-5-5"}
     assert lock.DEFAULT_MODEL == "claude-haiku-5-5"
     assert set(STILL_OFF) <= set(lock.FORBIDDEN_TOOLSETS)
     assert not set(lock.FORBIDDEN_TOOLSETS) & lock.ALLOWED_TOOLSETS
     assert not set(BUNDLES) & set(lock.FORBIDDEN_TOOLSETS)    # a bundle there would strip vision/skills
-    assert {"bg", "loop", "goal", "skills"} <= lock.SAFE_SLASH_COMMANDS
-    assert {"model", "yolo", "tools", "heartbeat", "moa"} <= set(lock.RISKY_SLASH_COMMANDS)
+    assert {"loop", "goal", "skills"} <= lock.SAFE_SLASH_COMMANDS
+    # /bg: a background run posts only its answer, so a skill change in it would go unposted.
+    assert {"model", "yolo", "tools", "heartbeat", "moa", "bg", "cron"} <= set(lock.RISKY_SLASH_COMMANDS)
     assert not lock.SAFE_SLASH_COMMANDS & set(lock.RISKY_SLASH_COMMANDS)
 
 
@@ -151,7 +161,7 @@ def test_every_still_forbidden_toolset_is_rejected(lock, good_cfg, values, name)
 
 
 @pytest.mark.parametrize("platform,name", [("cron", "cronjob"), ("cron", "kanban"), ("cron", "discord"),
-                                           ("cli", "kanban"), ("webhook", "vision"), ("api_server", "skills")])
+                                           ("cron", "skills"), ("cli", "kanban"), ("webhook", "vision"), ("api_server", "skills")])
 def test_a_toolset_allowed_elsewhere_is_rejected_where_it_is_not(lock, good_cfg, values, platform, name):
     cfg = copy.deepcopy(good_cfg)
     cfg["platform_toolsets"][platform].append(name)
@@ -306,6 +316,10 @@ def _mutations():
         "fallback": (set_("fallback_providers", [{"provider": "openrouter"}]), "fallback_providers is not empty"),
         "schema version": (set_("_config_version", 51), "_config_version is not"),
         "plugins": (set_("plugins.enabled", ["x"]), "plugins are enabled"),
+        "botsy plus another plugin": (set_("plugins.enabled", ["botsy", "x"]), "plugins are enabled"),
+        "plugins auto-applied": (set_("plugins.auto_apply", True), "plugins are enabled or auto-applied"),
+        "plugins in a host process": (set_("plugins.isolation", "host"), "plugins.isolation is not in_process"),
+        "dashboard public url": (set_("dashboard.public_url", "https://hermes.example"), "dashboard.public_url is set"),
         "hooks": (set_("hooks", {"on_start": ["sh"]}), "hooks are configured"),
         "quick commands": (set_("quick_commands", {"x": {"type": "exec", "command": "id"}}), "quick_commands"),
         "lazy installs": (set_("security.allow_lazy_installs", True), "allow_lazy_installs is not off"),
@@ -319,6 +333,13 @@ def _mutations():
         "/model opened": (set_("discord.user_allowed_commands", ["new", "model"]), "opens the slash commands model"),
         "/yolo opened in groups": (set_("discord.group_user_allowed_commands", ["/yolo"]), "opens the slash commands yolo"),
         "/cron opened": (set_("discord.user_allowed_commands", ["cron"]), "opens the slash commands cron"),
+        "/bg opened": (set_("discord.user_allowed_commands", ["new", "bg"]), "opens the slash commands bg"),
+        "tool calls hidden in Discord": (set_("display.platforms.discord.tool_progress", "off"),
+                                         "tool_progress is not pinned to all"),
+        "tool calls only new": (set_("display.platforms.discord.tool_progress", "new"),
+                                "tool_progress is not pinned to all"),
+        "display pin dropped": (drop("display"), "tool_progress is not pinned to all"),
+        "/verbose opened": (set_("display.tool_progress_command", True), "tool_progress is not pinned to all"),
         "no mention needed": (set_("discord.require_mention", False), "require_mention is not on"),
     }
 
@@ -599,7 +620,7 @@ def test_check_fails_on_hooks_plugins_or_a_project_folder(installed):
     (root / "home" / "hermes" / ".hermes" / "profiles" / "other").mkdir()
     (root / "opt" / "hermes" / "work" / "AGENTS.md").write_text("x", encoding="utf-8")
     problems = _problems(mod, root)
-    assert any("plugins is not empty" in p for p in problems), problems
+    assert any("plugins holds files that are not the Botsy dashboard tab (evil.py)" in p for p in problems), problems
     assert any("profiles is not empty" in p for p in problems), problems
     assert any("/opt/hermes/work is not empty" in p for p in problems), problems
 
@@ -636,7 +657,9 @@ def test_check_without_a_hermes_user_is_a_problem(installed):
 
 # Recorded 2026-10-21 from the real pinned Hermes v0.21.7 (commit 71d34bad), installed in a
 # throwaway venv and given this template: the toolsets and built-in tools it really gives each place.
-_JOB_PLACE = {"toolsets": ["botsy-act", "botsy-read", "memory", "session_search", "skills", "todo", "vision"],
+_JOB_PLACE = {"toolsets": ["botsy-act", "botsy-read", "memory", "session_search", "todo", "vision"],
+              "tools": ["memory", "session_search", "todo_list", "vision_analyze"]}
+_CLI_PLACE = {"toolsets": ["botsy-act", "botsy-read", "memory", "session_search", "skills", "todo", "vision"],
               "tools": ["memory", "session_search", "skill_manage", "skill_view", "skills_list", "todo_list",
                         "vision_analyze"]}
 RECORDED_PLATFORMS = {
@@ -647,7 +670,7 @@ RECORDED_PLATFORMS = {
                           "kanban_link", "kanban_list", "kanban_request_changes", "kanban_request_review",
                           "kanban_schedule", "kanban_show", "kanban_unblock", "memory", "session_search",
                           "skill_manage", "skill_view", "skills_list", "todo_list", "vision_analyze"]},
-    "cron": _JOB_PLACE, "cli": _JOB_PLACE,
+    "cron": _JOB_PLACE, "cli": _CLI_PLACE,
     "webhook": {"toolsets": ["botsy-act", "botsy-read", "memory"], "tools": ["memory"]},
     "api_server": {"toolsets": ["botsy-act", "botsy-read", "memory"], "tools": ["memory"]},
 }
@@ -666,7 +689,7 @@ def _good_probe(lock):
             "background": {"curator": False, "review": False},
             "web_blocked": {"https://cdn.discordapp.com/x.png": True, "https://example.com/x.png": True,
                             "https://i.etsystatic.com/x.jpg": True, "https://www.etsy.com/x.jpg": True},
-            "discord_actions": ["fetch_messages", "create_thread"],
+            "discord_actions": ["fetch_messages", "create_thread"], "discord_tool_progress": "all",
             "memory_write_approval": True, "skills_write_approval": True, "memory_provider": "",
             "agent_scheduling": False, "model": "claude-haiku-5-5", "provider": "anthropic",
             "allow_from": [USER_ID], "env": env, "version": pin["HERMES_VERSION"], "commit": pin["HERMES_COMMIT"],
@@ -699,6 +722,10 @@ def test_probe_judgement(lock, values):
         (lambda d: d.update(discord_actions=None), "Discord tool allows actions beyond"),
         (lambda d: d.update(discord_actions=["fetch_messages", "add_role"]), "Discord tool allows actions beyond"),
         (lambda d: d.update(allow_from=[]), "allowlist"),
+        (lambda d: d["platforms"]["cron"]["tools"].append("skill_manage"), "gives cron the built-in tools skill_manage"),
+        (lambda d: d.update(discord_tool_progress="new"), "does not show every tool call in Discord"),
+        (lambda d: d.pop("discord_tool_progress"), "does not show every tool call in Discord"),
+        (lambda d: d["slash"]["dm"].update(open=["bg"]), "/bg in Discord (dm chats)"),
         (lambda d: d["env"].update(GATEWAY_ALLOW_ALL_USERS="true"), "GATEWAY_ALLOW_ALL_USERS"),
         (lambda d: d.update(version="0.22.3"), "not the pinned"),
         (lambda d: d["slash"]["dm"].update(gated=False), "not gated in Discord (dm chats)"),
@@ -775,7 +802,14 @@ def test_botsy_control_socket_services_run_as_botsy():
         svc = _unit(f"botsy-control-{kind}@.service")
         assert svc["User"] == ["botsy"] and svc["NoNewPrivileges"] == ["yes"]
         assert svc["ExecStart"] == [f"/usr/local/bin/botsy-control-{kind}"]
-    assert _unit("botsy-control-read@.service")["IPAddressDeny"] == ["any"]
+    # trend_search (D4.8) needs HTTPS to TinyFish; local and private ranges stay closed, only the
+    # DNS stub is allowed on loopback. botsy-act keeps no network at all.
+    read = _unit("botsy-control-read@.service")
+    deny = read["IPAddressDeny"][0].split()
+    assert "any" not in deny and {"localhost", "link-local", "10.0.0.0/8", "172.16.0.0/12",
+                                  "192.168.0.0/16", "fc00::/7"} <= set(deny)
+    assert read["IPAddressAllow"] == ["127.0.0.53/32"]
+    assert read["RestrictAddressFamilies"] == ["AF_UNIX AF_NETLINK AF_INET AF_INET6"]
     # Read-only file system except Botsy's own records; no home folders at all.
     for kind, rw in (("read", ["/opt/botsy"]), ("act", ["/opt/botsy", "-/srv/botsy-inbox/outbox"])):
         svc = _unit(f"botsy-control-{kind}@.service")
@@ -838,6 +872,13 @@ def test_nftables_limits_only_the_hermes_user():
     assert any(r.startswith("counter reject") for r in rules)
     assert "160.79.104.0/23" in text and "2607:6bc0::/48" in text
     assert "flush ruleset" not in text                # never touches other tables
+    # A job's URL monitor has no address check (v0.21.7 cron/monitor.py): the hermes user may not
+    # open new connections to the dashboard on loopback (its page carries a session token).
+    dash = rules.index('oifname "lo" tcp dport 9119 counter reject with tcp reset')
+    assert rules.index('ct state established,related accept') < dash < rules.index('oifname "lo" accept')
+    # The botsy user (downloaded files) never opens the dashboard either; root and sshd stay allowed.
+    botsy = 'meta skuid "botsy" oifname "lo" tcp dport 9119 ct state new counter reject with tcp reset'
+    assert rules.index(botsy) < rules.index('meta skuid != "hermes" accept')
 
 
 def test_resolver_skips_local_addresses():
@@ -951,6 +992,8 @@ JOB_CASES = {
     "terminal": (dict(enabled_toolsets=["botsy-read", "terminal"]), "turns on terminal"),
     "kanban in a job": (dict(enabled_toolsets=["kanban"]), "turns on kanban"),
     "cronjob in a job": (dict(enabled_toolsets=["cronjob"]), "turns on cronjob"),
+    "skill writes in a job": (dict(enabled_toolsets=["botsy-read", "skills"]), "turns on skills"),
+    "bundle in a job": (dict(enabled_toolsets=["hermes-cron"]), "turns on hermes-cron"),
     "every 30 minutes": (dict(schedule={"kind": "interval", "minutes": 30}), "runs every 30 minutes"),
     "every minute cron": (dict(schedule={"kind": "cron", "expr": "* * * * *"}), "more often than hourly"),
     "every 15 minutes cron": (dict(schedule={"kind": "cron", "expr": "*/15 * * * *"}), "more often than hourly"),
@@ -1039,3 +1082,143 @@ def test_secrets_example_and_readme_say_ten_dollars():
         text = path.read_text(encoding="utf-8")
         assert "$10" in text, path.name
         assert "$5 monthly" not in text, path.name
+
+
+# ---------------------------------------------------------------------------- the dashboard tab
+
+DASH_FILES = ("manifest.json", "plugin_api.py", "botsy_tab.py", "dist/index.js", "dist/style.css")
+
+
+def test_template_enables_only_the_botsy_tab(good_cfg, lock, values):
+    assert good_cfg["plugins"] == {"enabled": ["botsy"], "auto_apply": False, "auto_update_check_hours": 0,
+                                   "isolation": "in_process"}
+    assert not (good_cfg.get("dashboard") or {}).get("public_url")
+    cfg = copy.deepcopy(good_cfg)
+    cfg["plugins"]["enabled"] = []
+    assert lock.check_config(cfg, values, "socket") == []          # no tab is fine too
+
+
+def test_install_lays_out_the_dashboard_tab(installed):
+    root, mod = installed
+    plugin = root / "home" / "hermes" / ".hermes" / "plugins" / "botsy" / "dashboard"
+    ref = root / "usr" / "local" / "lib" / "botsy-hermes" / "dashboard"
+    found = sorted(str(p.relative_to(plugin)) for p in plugin.rglob("*") if p.is_file())
+    assert found == sorted(DASH_FILES)                               # never the .service or __pycache__
+    for f in DASH_FILES:
+        assert (plugin / f).read_bytes() == (HERMES / "dashboard" / f).read_bytes() == (ref / f).read_bytes()
+        assert stat.S_IMODE((plugin / f).stat().st_mode) == 0o644
+    units = root / "etc" / "systemd" / "system"
+    assert (units / "hermes-dashboard.service").read_text(encoding="utf-8") == \
+        (HERMES / "dashboard" / "hermes-dashboard.service").read_text(encoding="utf-8")
+    assert (units / "hermes-dashboard.service.d" / "firewall.conf").exists()
+    assert "DASHBOARD=1" in (root / "etc" / "hermes" / "install.conf").read_text(encoding="utf-8")
+    assert mod.check(_ctx(mod, root)) == []
+
+
+@pytest.mark.parametrize("change, expect", [
+    ("edit", "botsy_tab.py differs from"),
+    ("plugin.yaml", "not the Botsy dashboard tab (botsy/dashboard/plugin.yaml)"),
+    ("pycache", "not the Botsy dashboard tab (botsy/dashboard/__pycache__"),
+    ("link", "is a symbolic link"),
+    ("mode", "botsy_tab.py has mode 0664"),
+    ("missing", "dist/style.css is missing"),
+])
+def test_check_refuses_a_changed_dashboard_tab(installed, change, expect):
+    root, mod = installed
+    plugin = root / "home" / "hermes" / ".hermes" / "plugins" / "botsy" / "dashboard"
+    if change == "edit":
+        (plugin / "botsy_tab.py").write_text("print('x')\n", encoding="utf-8")
+    elif change == "plugin.yaml":
+        (plugin / "plugin.yaml").write_text("name: botsy\n", encoding="utf-8")
+    elif change == "pycache":
+        (plugin / "__pycache__").mkdir()
+    elif change == "link":
+        (plugin / "dist" / "index.js").unlink()
+        (plugin / "dist" / "index.js").symlink_to(HERMES / "dashboard" / "dist" / "index.js")
+    elif change == "mode":
+        (plugin / "botsy_tab.py").chmod(0o664)
+    elif change == "missing":
+        (plugin / "dist" / "style.css").unlink()
+    problems = _problems(mod, root)
+    assert any(expect in p for p in problems), problems
+
+
+def test_install_moves_foreign_plugins_aside_and_keeps_the_tab(installed):
+    root, mod = installed
+    plugins = root / "home" / "hermes" / ".hermes" / "plugins"
+    (plugins / "evil").mkdir()
+    (plugins / "evil" / "plugin.yaml").write_text("name: evil\n", encoding="utf-8")
+    (plugins / "botsy" / "dashboard" / "extra.py").write_text("x", encoding="utf-8")
+    r = _install(root)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert sorted(p.name for p in plugins.iterdir()) == ["botsy"]
+    assert not (plugins / "botsy" / "dashboard" / "extra.py").exists()
+    assert list(root.glob("root/hermes-backup-*/evil/plugin.yaml"))
+    assert mod.check(_ctx(mod, root)) == []
+
+
+def test_install_without_the_dashboard(installed):
+    root, mod = installed
+    r = _install(root, "--no-dashboard")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (root / "etc" / "systemd" / "system" / "hermes-dashboard.service").exists()
+    assert not any((root / "home" / "hermes" / ".hermes" / "plugins").iterdir())
+    assert "DASHBOARD=0" in (root / "etc" / "hermes" / "install.conf").read_text(encoding="utf-8")
+    assert mod.check(_ctx(mod, root)) == []
+    r = _install(root)                                   # remembered: still off
+    assert r.returncode == 0 and not (root / "etc" / "systemd" / "system" / "hermes-dashboard.service").exists()
+
+
+def test_check_refuses_a_foreign_dashboard_dropin(installed):
+    root, mod = installed
+    d = root / "etc" / "systemd" / "system" / "hermes-dashboard.service.d"
+    (d / "open.conf").write_text("[Service]\nIPAddressAllow=any\n", encoding="utf-8")
+    problems = _problems(mod, root)
+    assert any("open.conf changes hermes-dashboard.service" in p for p in problems), problems
+
+
+GOOD_DASH_SHOW = """FragmentPath=/etc/systemd/system/hermes-dashboard.service
+DropInPaths=/etc/systemd/system/hermes-dashboard.service.d/firewall.conf
+User=hermes
+NoNewPrivileges=yes
+IPAddressDeny=0.0.0.0/0 ::/0
+IPAddressAllow=127.0.0.0/8 ::1/128
+ExecStart={ path=/opt/hermes/venv/bin/hermes ; argv[]=/opt/hermes/venv/bin/hermes dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+"""
+
+
+def test_dashboard_show_good(lock):
+    assert lock.dashboard_show_problems(GOOD_DASH_SHOW, True) == []
+    unit = (HERMES / "dashboard" / "hermes-dashboard.service").read_text(encoding="utf-8")
+    assert "ExecStart=/opt/hermes/venv/bin/hermes dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build" in unit
+    assert "EnvironmentFile" not in unit.split("[Service]", 1)[1].split("#")[0]
+    assert not re.search(r"^EnvironmentFile=", unit, re.M)          # the dashboard holds no secret
+
+
+@pytest.mark.parametrize("old, new, expect", [
+    ("--host 127.0.0.1", "--host 0.0.0.0", "127.0.0.1 only"),
+    ("--host 127.0.0.1", "--host 127.0.0.1 --ho=0.0.0.0", "127.0.0.1 only"),
+    ("--host 127.0.0.1", "--hos ::", "127.0.0.1 only"),
+    ("--port 9119", "--port 9200", "port 9119"),
+    ("User=hermes", "User=root", "runs as root"),
+    ("NoNewPrivileges=yes", "NoNewPrivileges=no", "NoNewPrivileges"),
+    ("IPAddressDeny=0.0.0.0/0 ::/0", "IPAddressDeny=", "IPAddressDeny=any"),
+    ("IPAddressAllow=127.0.0.0/8 ::1/128", "IPAddressAllow=127.0.0.0/8 ::1/128 10.0.0.0/8", "more than loopback"),
+    ("firewall.conf", "firewall.conf /etc/systemd/system/hermes-dashboard.service.d/zz.conf", "zz.conf"),
+    ("FragmentPath=/etc/systemd/system/", "FragmentPath=/run/systemd/system/", "loads hermes-dashboard.service from"),
+])
+def test_dashboard_show_problems(lock, old, new, expect):
+    out = GOOD_DASH_SHOW.replace(old, new, 1)
+    problems = lock.dashboard_show_problems(out, True)
+    assert any(expect in p for p in problems), problems
+
+
+def test_installer_builds_the_web_ui_as_nobody_from_the_pinned_lock():
+    text = INSTALL.read_text(encoding="utf-8")
+    body = text.split("build_web_ui() {", 1)[1].split("\n}\n", 1)[0]
+    assert "setpriv --reuid=nobody" in body and "--ignore-scripts" in body and "npm ci" in body
+    assert 'sha256sum "$WORK/$name"' in body and "https://nodejs.org/dist/v$NODE_VERSION/" in body
+    assert "HERMES_USER" not in body and "-u hermes" not in body
+    # The dashboard starts only after the lock check passed.
+    final = text.split("final_check() {", 1)[1].split("\n}\n", 1)[0]
+    assert final.index("run_check --probe") < final.index("systemctl restart hermes-dashboard.service")

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import grp
+import hashlib
 import json
 import os
 import pwd
@@ -53,6 +54,15 @@ PIN_FILE = HERE / "hermes-pin.env"
 BRIDGE = HERE / "botsy-control-connect"
 UNIT_DIR_SRC = HERE / "systemd"
 SUDOERS_SRC = HERE / "sudoers.botsy-control"     # install_hermes.sh copies deploy/lightsail's rule here
+# The Botsy dashboard tab (docs/OVERSEER.md "Botsy dashboard tab"): the reference copy sits in
+# dashboard/ next to this file (the repo's deploy/hermes/dashboard, or install_hermes.sh's copy in
+# /usr/local/lib/botsy-hermes/dashboard), and the plugin folder must hold exactly these files.
+DASHBOARD_SRC = HERE / "dashboard"
+DASHBOARD_FILES = ("manifest.json", "plugin_api.py", "botsy_tab.py", "dist/index.js", "dist/style.css")
+DASHBOARD_DIRS = ("botsy", "botsy/dashboard", "botsy/dashboard/dist")
+DASHBOARD_UNIT = "hermes-dashboard.service"
+DASHBOARD_PORT = "9119"
+PLUGINS_ALLOWED = ([], ["botsy"])
 
 HERMES_USER = "hermes"
 PLATFORMS = ("discord", "cron", "cli", "webhook", "api_server")
@@ -64,13 +74,15 @@ MCP_NAMES = ("botsy-read", "botsy-act")
 # 2026-10-21), this is the one check on Botsy's action tools that does not depend on the model.
 MCP_TRUST = {"botsy-read": "full", "botsy-act": "untrusted"}
 # What each place gets (decided 2026-10-21, "too cautious; I want Hermes pulling its weight"):
-# Discord chat gets everything below; scheduled jobs and the command line get no Discord tool, task
-# board or job tools; webhooks and the API server (unused) keep the minimum. Exact allowlists.
-_JOB_TOOLSETS = ("botsy-read", "botsy-act", "memory", "vision", "session_search", "todo", "skills")
+# Discord chat gets everything below; the command line gets no Discord tool, task board or job
+# tools; scheduled jobs also get no skill tools (a skill a job changed would not be posted to you:
+# a job's tool calls are not shown in Discord; a job can still preload a skill by name); webhooks
+# and the API server (unused) keep the minimum. Exact allowlists.
+_JOB_TOOLSETS = ("botsy-read", "botsy-act", "memory", "vision", "session_search", "todo")
 PLATFORM_TOOLSETS = {
-    "discord": frozenset(_JOB_TOOLSETS + ("cronjob", "kanban", "discord")),
+    "discord": frozenset(_JOB_TOOLSETS + ("skills", "cronjob", "kanban", "discord")),
     "cron": frozenset(_JOB_TOOLSETS),
-    "cli": frozenset(_JOB_TOOLSETS),
+    "cli": frozenset(_JOB_TOOLSETS + ("skills",)),
     "webhook": frozenset({"botsy-read", "botsy-act", "memory"}),
     "api_server": frozenset({"botsy-read", "botsy-act", "memory"}),
 }
@@ -78,16 +90,16 @@ ALLOWED_TOOLSETS = frozenset().union(*PLATFORM_TOOLSETS.values())
 CRON_TOOLSETS = PLATFORM_TOOLSETS["cron"]       # what a scheduled job may name in enabled_toolsets
 # Built-in tool names the probe may see per place (v0.21.7 toolsets.py; MCP tools register at
 # connect). A tool the pin does not list here is refused, so an update cannot add one quietly.
-_JOB_TOOLS = frozenset({"memory", "vision_analyze", "session_search", "todo_list",
-                        "skills_list", "skill_view", "skill_manage"})
+_JOB_TOOLS = frozenset({"memory", "vision_analyze", "session_search", "todo_list"})
+SKILL_TOOLS = frozenset({"skills_list", "skill_view", "skill_manage"})
 KANBAN_TOOLS = frozenset({"kanban_attach", "kanban_attach_url", "kanban_attachments", "kanban_block",
                           "kanban_comment", "kanban_complete", "kanban_create", "kanban_heartbeat",
                           "kanban_link", "kanban_list", "kanban_request_changes", "kanban_request_review",
                           "kanban_schedule", "kanban_show", "kanban_unblock"})
 PLATFORM_PROBE_TOOLS = {
-    "discord": _JOB_TOOLS | KANBAN_TOOLS | {"cronjob_manage", "discord"},
+    "discord": _JOB_TOOLS | SKILL_TOOLS | KANBAN_TOOLS | {"cronjob_manage", "discord"},
     "cron": _JOB_TOOLS,
-    "cli": _JOB_TOOLS,
+    "cli": _JOB_TOOLS | SKILL_TOOLS,
     "webhook": frozenset({"memory"}),
     "api_server": frozenset({"memory"}),
 }
@@ -113,12 +125,14 @@ DISCORD_ACTIONS = frozenset({"fetch_messages", "create_thread"})
 BLOCK_ALL_HOSTS = "*.*"                       # security.website_blocklist: vision never downloads
 # Slash commands (gateway/slash_access.py): an admin list that names no real account turns the
 # gate on with nobody as admin; you keep /help, /whoami and these. Hermes gates per user and you
-# are the only allowed user, so /bg, /loop and /goal are yours alone ("/goal gate add" runs a
-# shell command and needs an admin, so it stays refused). /cron is command-line only in v0.21.7.
+# are the only allowed user, so /loop and /goal are yours alone ("/goal gate add" runs a shell
+# command and needs an admin, so it stays refused). /bg stays off: a background run posts only its
+# answer, not its tool calls, so a skill it changed would not be posted to you (D4 item 5). /cron
+# is command-line only in v0.21.7.
 NO_ADMIN = ("0",)
 SAFE_SLASH_COMMANDS = frozenset({"new", "retry", "status", "stop", "compress", "memory", "skills",
-                                 "bg", "loop", "goal", "help", "whoami"})
-RISKY_SLASH_COMMANDS = ("model", "yolo", "cron", "heartbeat", "moa", "tools", "approvals",
+                                 "loop", "goal", "help", "whoami"})
+RISKY_SLASH_COMMANDS = ("model", "yolo", "cron", "bg", "heartbeat", "moa", "tools", "approvals",
                         "reasoning", "fast", "personality", "import", "snapshot", "learn", "refine",
                         "review", "kanban", "curator", "btw", "queue", "steer", "subgoal", "plan",
                         "init", "suggestions")
@@ -208,6 +222,11 @@ try:
     out["discord_actions"] = _load_allowed_actions_config()
 except Exception as e:
     out["discord_actions_error"] = type(e).__name__
+try:
+    from gateway.display_config import resolve_tool_progress
+    out["discord_tool_progress"] = resolve_tool_progress(cfg, "discord")[0]
+except Exception as e:
+    out["discord_tool_progress_error"] = type(e).__name__
 out["model"] = sec("model").get("default")
 out["provider"] = sec("model").get("provider")
 out["allow_from"] = sec("discord").get("allow_from")
@@ -495,14 +514,27 @@ def check_config(cfg, values: dict[str, str], mode: str, *, where: str = "config
                        if str(c).lstrip("/").lower() not in SAFE_SLASH_COMMANDS)
         if extra:
             p.append(f"{where}: discord.{key} opens the slash commands {', '.join(extra)}")
+    display = sec("display")
+    plats = display.get("platforms") if isinstance(display.get("platforms"), dict) else {}
+    shown = plats.get("discord") if isinstance(plats.get("discord"), dict) else {}
+    if shown.get("tool_progress") != "all" or display.get("tool_progress_command") is not False \
+            or "tool_progress_overrides" in display or "tool_progress" in display:
+        p.append(f"{where}: display.platforms.discord.tool_progress is not pinned to all (each skill change "
+                 f"and each job Hermes makes must be shown to you in Discord)")
     if sec("gateway").get("allow_all_users") is not False:
         p.append(f"{where}: gateway.allow_all_users is not off")
     if sec("gateway").get("unauthorized_dm_behavior") != "ignore":
         p.append(f"{where}: gateway.unauthorized_dm_behavior is not ignore")
 
     plugins = sec("plugins")
-    if plugins.get("enabled") not in ([], None) or plugins.get("auto_apply"):
-        p.append(f"{where}: plugins are enabled or auto-applied")
+    enabled = plugins.get("enabled")
+    if (enabled is not None and enabled not in PLUGINS_ALLOWED) or plugins.get("auto_apply"):
+        p.append(f"{where}: plugins are enabled or auto-applied (only the Botsy dashboard tab, plugins.enabled: "
+                 f"[botsy], may be on)")
+    if "isolation" in plugins and plugins.get("isolation") != "in_process":
+        p.append(f"{where}: plugins.isolation is not in_process")
+    if sec("dashboard").get("public_url"):
+        p.append(f"{where}: dashboard.public_url is set (the dashboard is reached only through an SSH tunnel)")
     if cfg.get("hooks") or cfg.get("hooks_auto_accept"):
         p.append(f"{where}: hooks are configured or auto-accepted")
     if cfg.get("quick_commands"):
@@ -737,6 +769,9 @@ def check_home(ctx: Ctx) -> None:
                 "home/hermes/.hermes/scripts"):
         st = locked_path(ctx, rel, kind="dir")
         check_mode(ctx, rel, st, 0o755, group="root")
+        if rel.endswith("/plugins"):
+            check_plugins(ctx, rel)
+            continue
         try:
             if any(ctx.path(rel).iterdir()):
                 ctx.add(f"/{rel} is not empty (Hermes would load what is in it at start)")
@@ -747,6 +782,40 @@ def check_home(ctx: Ctx) -> None:
     if ctx.path("etc/hermes/install.conf").exists():
         st = locked_path(ctx, "etc/hermes/install.conf")
         check_mode(ctx, "etc/hermes/install.conf", st, 0o644, group="root")
+
+
+def _sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def check_plugins(ctx: Ctx, rel: str) -> None:
+    """~/.hermes/plugins holds nothing, or exactly the Botsy dashboard tab: root-owned folders and
+    files (755 / 644), each file identical to the reference copy, nothing else (no plugin.yaml,
+    plugin.json, __init__.py, __pycache__ or link). Hermes loads what it finds there."""
+    base = ctx.path(rel)
+    try:
+        found = sorted(str(p.relative_to(base)) for p in base.rglob("*"))
+    except OSError:
+        return
+    if not found:
+        return
+    want = set(DASHBOARD_DIRS) | {f"botsy/dashboard/{f}" for f in DASHBOARD_FILES}
+    extra = [f for f in found if f not in want]
+    if extra:
+        ctx.add(f"/{rel} holds files that are not the Botsy dashboard tab ({', '.join(extra[:5])}); "
+                f"Hermes would load what is in it at start")
+    for d in DASHBOARD_DIRS:
+        st = locked_path(ctx, f"{rel}/{d}", kind="dir")
+        check_mode(ctx, f"{rel}/{d}", st, 0o755, group="root")
+    for f in DASHBOARD_FILES:
+        frel = f"{rel}/botsy/dashboard/{f}"
+        st = locked_path(ctx, frel)
+        check_mode(ctx, frel, st, 0o644, group="root")
+        if st is not None and _sha256(ctx.path(frel)) != _sha256(DASHBOARD_SRC / f):
+            ctx.add(f"/{frel} differs from {DASHBOARD_SRC / f} (edited by hand or out of date: run install_hermes.sh)")
 
 
 def check_code(ctx: Ctx, quick: bool) -> None:
@@ -847,6 +916,90 @@ def check_bridge_and_units(ctx: Ctx, mode: str, firewall: bool) -> None:
             ctx.add("systemctl show hermes-gateway.service failed")
         for problem in unit_show_problems(r.stdout or "", mode, firewall):
             ctx.add(problem)
+    check_dashboard_unit(ctx, firewall)
+
+
+DASHBOARD_DROPIN_DIRS = tuple(d.replace("hermes-gateway.service.d", f"{DASHBOARD_UNIT}.d") for d in DROPIN_DIRS)
+
+
+def check_dashboard_unit(ctx: Ctx, firewall: bool) -> None:
+    """hermes-dashboard.service (optional): the installer's copy, only the firewall drop-in, and,
+    on the server, what systemd really loaded (dashboard_show_problems)."""
+    rel = f"etc/systemd/system/{DASHBOARD_UNIT}"
+    if not ctx.path(rel).exists() and not ctx.path(rel).is_symlink():
+        return
+    st = locked_path(ctx, rel)
+    check_mode(ctx, rel, st, 0o644)
+    if st is not None:
+        same_text(ctx, rel, (DASHBOARD_SRC / DASHBOARD_UNIT).read_text(encoding="utf-8"), f"dashboard/{DASHBOARD_UNIT}")
+    fw = (UNIT_DIR_SRC / "firewall.conf").read_text(encoding="utf-8")
+    for d in DASHBOARD_DROPIN_DIRS:
+        folder = ctx.path(d)
+        if not folder.is_dir():
+            continue
+        for entry in sorted(folder.iterdir()):
+            if d == DASHBOARD_DROPIN_DIRS[0] and entry.name == "firewall.conf" and firewall:
+                if locked_path(ctx, f"{d}/{entry.name}") is not None:
+                    same_text(ctx, f"{d}/{entry.name}", fw, "systemd/firewall.conf")
+                continue
+            ctx.add(f"/{d}/{entry.name} changes {DASHBOARD_UNIT} (a drop-in install_hermes.sh did not write)")
+    if firewall and not ctx.path(f"{DASHBOARD_DROPIN_DIRS[0]}/firewall.conf").exists():
+        ctx.add(f"/{DASHBOARD_DROPIN_DIRS[0]}/firewall.conf is missing")
+    if ctx.system:
+        # The web UI root built at install time (HERMES_WEB_DIST); the hermes user never builds it.
+        locked_path(ctx, "opt/hermes/web_dist", kind="dir")
+        locked_path(ctx, "opt/hermes/web_dist/index.html")
+        r = subprocess.run(["systemctl", "show", "-p", "FragmentPath", "-p", "DropInPaths", "-p", "User",
+                            "-p", "NoNewPrivileges", "-p", "IPAddressDeny", "-p", "IPAddressAllow",
+                            "-p", "ExecStart", DASHBOARD_UNIT], capture_output=True, text=True)
+        if r.returncode != 0:
+            ctx.add(f"systemctl show {DASHBOARD_UNIT} failed")
+        for problem in dashboard_show_problems(r.stdout or "", firewall):
+            ctx.add(problem)
+
+
+_HOST_ARG = re.compile(r"^--ho(?:s(?:t)?)?(?:=(.*))?$")
+
+
+def dashboard_show_problems(output: str, firewall: bool) -> list[str]:
+    """Judge `systemctl show hermes-dashboard.service`: loaded from /etc, as hermes, no new
+    privileges, loopback only both ways, only the firewall drop-in, and one --host 127.0.0.1."""
+    props = {}
+    for line in output.splitlines():
+        key, _, value = line.partition("=")
+        props[key.strip()] = value.strip()
+    u = DASHBOARD_UNIT
+    problems = []
+    if props.get("FragmentPath") != f"/etc/systemd/system/{u}":
+        problems.append(f"systemd loads {u} from {props.get('FragmentPath') or 'nowhere'}, not /etc/systemd/system/{u}")
+    allowed = {f"/{DASHBOARD_DROPIN_DIRS[0]}/firewall.conf"} if firewall else set()
+    for d in (x for x in props.get("DropInPaths", "").split() if x):
+        if d not in allowed:
+            problems.append(f"systemd applies the drop-in {d} to {u} (install_hermes.sh did not write it)")
+    if props.get("User") != HERMES_USER:
+        problems.append(f"{u} runs as {props.get('User') or 'root'}, not {HERMES_USER}")
+    if props.get("NoNewPrivileges") != "yes":
+        problems.append(f"{u} does not have NoNewPrivileges=yes")
+    if set(props.get("IPAddressDeny", "").split()) != {"0.0.0.0/0", "::/0"}:
+        problems.append(f"{u} does not refuse every address (IPAddressDeny=any)")
+    if set(props.get("IPAddressAllow", "").split()) != {"127.0.0.0/8", "::1/128"}:
+        problems.append(f"{u} allows more than loopback (IPAddressAllow=localhost)")
+    m = re.search(r"argv\[\]=([^;]*)", props.get("ExecStart", ""))
+    argv = m.group(1).split() if m else []
+    hosts, port = [], None
+    for i, a in enumerate(argv):
+        hm = _HOST_ARG.match(a)
+        if hm:
+            hosts.append(hm.group(1) if hm.group(1) is not None else (argv[i + 1] if i + 1 < len(argv) else ""))
+        if a == "--port" and i + 1 < len(argv):
+            port = argv[i + 1]
+        elif a.startswith("--port="):
+            port = a.split("=", 1)[1]
+    if hosts != ["127.0.0.1"]:
+        problems.append(f"{u} does not listen on 127.0.0.1 only (its --host must be 127.0.0.1, once)")
+    if port != DASHBOARD_PORT:
+        problems.append(f"{u} does not use port {DASHBOARD_PORT} (the firewall's dashboard rules name that port)")
+    return problems
 
 
 def unit_show_problems(output: str, mode: str, firewall: bool) -> list[str]:
@@ -1191,6 +1344,8 @@ def judge_probe(ctx: Ctx, data: dict, values: dict[str, str], mode: str) -> None
     actions = data.get("discord_actions")
     if not isinstance(actions, list) or not actions or not set(actions) <= DISCORD_ACTIONS:
         ctx.add(f"Hermes's Discord tool allows actions beyond {sorted(DISCORD_ACTIONS)}")
+    if data.get("discord_tool_progress") != "all":
+        ctx.add("Hermes does not show every tool call in Discord (a skill change could go unseen)")
     allow = data.get("allow_from")
     if allow != [values.get("DISCORD_ALLOWED_USER_ID")]:
         ctx.add("Hermes's Discord allowlist is not exactly your user ID")

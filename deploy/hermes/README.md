@@ -12,12 +12,14 @@ Hermes now has, in Discord:
 
 | Capability | What it means here | The limit |
 |---|---|---|
-| Vision | Looks at our own product previews (botsy-read's `review_preview`) and at images you attach. | It cannot download from the web (every host is on its blocklist, and the firewall lets it reach only Anthropic and Discord) and cannot see Botsy's folders or other programs' data. Never send it a competitor's image. |
+| Vision | Looks at our own product previews, pages and mockups (botsy-read's `review_preview` and `view_item_images`, at most 6 images a call) and at images you attach. | It cannot download from the web (every host is on its blocklist, and the firewall lets it reach only Anthropic and Discord) and cannot see Botsy's folders or other programs' data. Never send it a competitor's image. |
 | Models | Haiku 5.5 for chat and routine jobs; Sonnet 5.5 for the weekly plan and the creative-director review. | Sonnet runs only in the two jobs you pin to it ("Sonnet jobs" below). Hermes's own workspace limit is **$10** a month. |
 | Its own check-ins | Hermes may schedule its own jobs (for example "every morning, tell me what waits for review"). | On Haiku, read-only for Botsy (a job can never approve), at most 10, none more often than hourly, no scripts or web monitors. Checked every hour; a job that breaks a limit stops Hermes until you remove it. |
 | Past-chat search, a to-do list, a task board | `session_search`, `todo`, `kanban`. | The task board starts no other agents. |
-| Skills | Hermes may write and improve its own how-to notes. | Every new or changed skill waits for you: `/skills pending`, `/skills diff <id>`, `/skills approve <id>` or `reject`. |
+| Skills | Hermes may write and improve its own how-to notes, in your Discord chat. | Every tool call is shown in the chat (pinned), so each skill change is posted to you, and nothing is saved until you approve it: `/skills pending`, `/skills diff <id>`, `/skills approve <id>` or `reject`. Scheduled jobs and `/bg` cannot write skills (their tool calls are not shown). |
 | Discord | Reads recent messages and starts threads; adds status reactions to your messages. | No pins, deletes, roles or member search (those are Discord administration, off). |
+| Watchdog fixes | Five fixed repairs through botsy-act: `fix_retry_run`, `fix_clear_stale_lock`, `fix_rerun_qa`, `fix_resend_daily_log`, `fix_retry_notify`. | Botsy checks each one's preconditions itself (twice), allows 6 a day, and posts each fix. Because botsy-act is `trust: untrusted`, each fix call waits for your **Allow** click like every other Botsy action, and a scheduled job can never run one. |
+| Trend search | botsy-read's `trend_search` (TinyFish Search, `TINYFISH_API_KEY` in Botsy's `.env`). | Botsy drops every marketplace listing (Etsy, Amazon incl. Goodreads/AbeBooks, Pinterest, eBay, Redbubble, Teepublic, Zazzle, Creative Market, Gumroad and more) before Hermes sees a result, so no competitor title, description or image reaches the model. At most 30 searches a day (`trend_searches_per_day` in the limits file). A trend reading, never a brief by itself. |
 
 Still off, and why: terminal, files, code execution, browser and computer use (they reach the
 machine); Hermes's own web and search tools (competitor listings must never reach a model, see
@@ -48,6 +50,7 @@ https://github.com/NousResearch/hermes-agent/releases/tag/v0.21.7. The pin lives
 | `botsy-control-connect` | The tiny stdio-to-socket link Hermes starts for each Botsy tool server. |
 | `systemd/` | The Hermes service, Botsy's two tool sockets, the daily lock check, the hourly job check and the firewall. |
 | `nftables-hermes.conf`, `botsy-hermes-resolve` | The egress limit (required since 2026-10-21). |
+| `dashboard/` | The Botsy tab for Hermes's dashboard (a dashboard plugin) and `hermes-dashboard.service`. |
 
 ## Before you start (about 30 minutes, all in your browser)
 
@@ -164,8 +167,12 @@ It ends with `Hermes lock: OK (...)` and `Hermes is running`. If it says `STOPPE
 
 The installer also limits the `hermes` user's network to Anthropic and Discord only (an
 nftables table of its own). This is required since 2026-10-21: Hermes's scheduled jobs, task
-board and vision can each fetch a web address, and this table is what stops that.
-`--no-firewall` is refused, and an older install with the firewall off is switched on. Other
+board and vision can each fetch a web address, and this table is what stops that. It also
+refuses the hermes user new connections to the Hermes dashboard's port (127.0.0.1:9119): a job's
+URL monitor has no address check in v0.21.7, and the dashboard page carries a session token.
+Your SSH tunnel to the dashboard still works. `--no-firewall` is refused, and an older install
+with the firewall off is switched on. The `botsy` user is also refused new connections to that
+port (it handles downloaded files and must never reach the dashboard's token); otherwise other
 users on the server, Botsy included, are not affected.
 
 ### What the installer sets up
@@ -174,8 +181,12 @@ users on the server, Botsy included, are not affected.
   Botsy group, and no way into `/opt/botsy`, `/etc/botsy`, `/home/botsy` or the inbox.
 - The pinned Hermes in `/opt/hermes` (root-owned): the git tag, checked against the pinned
   commit; Hermes's own pinned `uv` and Python, sha256 checked; its locked dependencies
-  (`uv sync --frozen`) with only the `anthropic`, `discord` and `mcp` extras. No browser,
-  voice or computer-use parts.
+  (`uv sync --frozen`) with only the `anthropic`, `discord`, `mcp` and `web` extras (`web` is
+  the dashboard's web server). No browser, voice or computer-use parts.
+- The dashboard's web UI in `/opt/hermes/web_dist` (root-owned), built once by the installer from
+  Hermes's pinned `package-lock.json` (`npm ci --ignore-scripts`, integrity hashes checked) with
+  a pinned, sha256-checked Node.js 22 (`hermes-pin.env`), as the user `nobody`. Hermes never
+  runs npm. `--no-dashboard` skips it.
 - `/etc/hermes/config.yaml` and `/home/hermes/.hermes/config.yaml`: the locked settings,
   root-owned, read-only to Hermes, so Hermes cannot change its own locks.
 - `/etc/hermes/hermes.env`: your secrets, `root:hermes`, mode 0640.
@@ -189,6 +200,10 @@ users on the server, Botsy included, are not affected.
 - `botsy-hermes-jobs.timer`: every hour, `check_lock.py jobs` checks Hermes's scheduled jobs
   (the limits in "Scheduled jobs" below) and stops Hermes if one breaks them.
 - An empty, root-owned `/home/hermes/.hermes/scripts`, so no scheduled job can run a script.
+- `hermes-dashboard.service` (127.0.0.1:9119 only) and the Botsy tab in
+  `/home/hermes/.hermes/plugins/botsy/dashboard` (root-owned; the lock check compares each file
+  with its copy in `/usr/local/lib/botsy-hermes/dashboard` and refuses anything else in
+  `plugins/`). It starts only after the lock check passes. See "Dashboard (Botsy tab)" below.
 
 ## After installing: test that the lock holds
 
@@ -219,10 +234,11 @@ journalctl -u hermes-gateway -n 50
 
 Hermes's own slash commands are locked too. Hermes checks them per user, and you are the only
 allowed user, so these are yours alone: `/new` (fresh chat), `/retry`, `/status`, `/stop`,
-`/compress`, `/memory`, `/skills` (review Hermes's skill changes), `/bg` (a background chat),
-`/loop` (repeat a prompt), `/goal` (a standing goal), `/help` and `/whoami`. `/bg`, `/loop` and
-`/goal` run on Haiku and count against the $10 limit; stop a loop with `/loop stop`.
-Everything else is refused, including `/model` (a pricier model), `/yolo`, `/tools`,
+`/compress`, `/memory`, `/skills` (review Hermes's skill changes), `/loop` (repeat a prompt),
+`/goal` (a standing goal), `/help` and `/whoami`. `/loop` and `/goal` run in the same chat on
+Haiku and count against the $10 limit; stop a loop with `/loop stop`. `/bg` (a background chat)
+stays off: it posts only its final answer, not its tool calls, so a skill it changed would not
+be posted to you. Everything else is refused, including `/model` (a pricier model), `/yolo`, `/tools`,
 `/heartbeat` and `/moa`, and `/goal gate add` (it runs a shell command). `/cron` is not a
 Discord command in v0.21.7; ask Hermes in chat to make or change a check-in. The config does
 this with an admin list that names no real account (`allow_admin_from: ["0"]`); the lock check
@@ -245,9 +261,10 @@ every start) enforces these and stops Hermes when one is broken:
 
 - at most 10 jobs on; none more often than hourly;
 - no scripts, no web-address monitors, no work folder, no other provider or endpoint;
-- only the scheduled-job toolsets (Botsy's tools, memory, vision, past-chat search, to-do,
-  skills); a job never gets Discord, the task board or the job tool, and every Botsy action in
-  a job is declined (nobody is there to click Allow);
+- only the scheduled-job toolsets (Botsy's tools, memory, vision, past-chat search, to-do); a
+  job never gets Discord, the task board, the job tool or the skill tools (a job may still name
+  skills to preload), and every Botsy action in a job is declined (nobody is there to click
+  Allow);
 - Haiku, except the two Sonnet jobs below.
 
 See and remove jobs from the server (Hermes may be stopped; this works anyway):
@@ -280,6 +297,27 @@ Jobs Hermes makes from chat post back to the chat they were made in.
 When you ask in chat ("run the creative review now"), Hermes may run either job at once; the
 $10 limit caps that.
 
+## Dashboard (Botsy tab)
+
+Reach it only through an SSH tunnel from your computer:
+
+```
+ssh -N -L 9119:127.0.0.1:9119 <you>@<server>
+```
+
+then open http://127.0.0.1:9119/botsy. The Botsy tab shows Botsy's status, money, this week's
+and next week's plan, the review queue (with thumbnails), recent orders and fixes, KDP slots
+and the daily log. It can only **Pause** and **Lower cap**. A Pause from the tab is recorded as
+Hermes's (`created_by: hermes`), so you or Hermes can lift it. For a pause only you can lift,
+use `botsy service control pause` on the server; asking Hermes in Discord also records a Hermes
+pause. Approvals and cap raises stay in Discord.
+
+Never start it with `--host 0.0.0.0`, behind a reverse proxy or with `dashboard.public_url`: the
+dashboard has no login on 127.0.0.1, the lock check refuses it, and the tab refuses to load.
+The dashboard has no secrets and no internet access (its own Chat page does not work; chat in
+Discord). Only you (through sshd) and root may open its port: the firewall refuses the `hermes`
+and `botsy` users. Details: `docs/OVERSEER.md` "Botsy dashboard tab".
+
 ## Everyday commands
 
 | What | Command |
@@ -291,6 +329,7 @@ $10 limit caps that.
 | Check the lock now | `sudo bash /usr/local/lib/botsy/src/deploy/hermes/install_hermes.sh --check` |
 | Change a secret | `sudo nano /etc/hermes/hermes.env`, then run the installer again |
 | Hermes's scheduled jobs | "Scheduled jobs" above; `journalctl -u botsy-hermes-jobs -n 20` |
+| The dashboard | `systemctl status hermes-dashboard`; tunnel as in "Dashboard (Botsy tab)" |
 
 ## Updating Hermes
 

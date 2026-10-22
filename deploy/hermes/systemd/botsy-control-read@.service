@@ -1,6 +1,10 @@
 # One botsy-control read session for Hermes (started by botsy-control-read.socket). The program
 # is the same root-owned wrapper the sudo rule names; it checks it runs as botsy and takes no
-# argument. Reads only: no network at all.
+# argument. Reads only. The one network use is trend_search (control/trend.py, D4.8, 2026-10-21):
+# HTTPS to TinyFish Search (api.search.tinyfish.ai, a fixed URL Botsy builds; Hermes never names a
+# host). TinyFish publishes no fixed address ranges, so the public internet is open to this unit,
+# but loopback (except systemd-resolved's DNS stub), private and link-local ranges (cloud metadata
+# at 169.254.169.254 included), multicast and the other local ranges stay refused.
 [Unit]
 Description=Botsy: botsy-control read tools for Hermes (one session)
 CollectMode=inactive-or-failed
@@ -33,8 +37,9 @@ RestrictNamespaces=yes
 LockPersonality=yes
 CapabilityBoundingSet=
 SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
-IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+IPAddressDeny=localhost link-local multicast 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 172.16.0.0/12 192.168.0.0/16 fc00::/7
+IPAddressAllow=127.0.0.53/32
 InaccessiblePaths=-/etc/hermes -/home/hermes
 MemoryMax=512M
 TasksMax=64

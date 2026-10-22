@@ -380,32 +380,33 @@ runs, Botsy makes only the plan's packs (at most 10 new ones a check); packs mad
 still go on to QA, listing and drafts; uploads are still taken in and studied at once, and
 the new briefs wait for next Sunday's plan.
 
-**Your first 4 plans wait for your OK** (no codes: decided 2026-10-21). Approve on the
-server, or, once Hermes is installed, tell Hermes in Discord:
+**Plans start by themselves from week 1** (user, 2026-10-21): on Monday at 8 am (the 8:05
+check starts it) unless you hold it, whatever the plan costs (the money left this month still
+limits every plan). No codes. On the server, or, once Hermes is installed, by telling Hermes
+in Discord:
 
 ```
-botsy service plan status          what the plan is, its deadline and progress
-botsy service plan approve         approve the plan; it starts at once
+botsy service plan status          what the plan is, its start time and progress
+botsy service plan start-now       start it at once
 botsy service plan hold            hold the plan
+botsy service plan approve         lift your hold / approve a plan that waits; it starts at once
 ```
 
-Reminders come Monday at 8 am and 7 pm. A plan you have not approved by Tuesday at 8 pm
-expires, and Botsy runs on its normal rules for the rest of that week (an approval after
-the deadline does not start it). When you approve, Botsy starts one check right away, so
-work begins that night.
+**A Hold you set sticks** until you lift it: Hermes's Start now, approve or revision can never
+lift or bypass it, and the hourly check and the Monday start skip a held plan. A Hold Hermes
+sets can be lifted by either of you.
+
+`botsy service plan again` makes every plan wait for your approval from now on (a plan that
+has not started yet then waits too); reminders then come Monday at 8 am and 7 pm, and a plan
+not approved by Tuesday at 8 pm expires, so Botsy runs on its normal rules for the rest of
+that week. `botsy service plan auto` switches back to automatic starts.
 
 Every approval of a plan that waits for you, and every switch to automatic starts, is
 posted at once in the main Discord channel, even at night: what changed, who asked (you on
-the server, or Hermes) and how to undo it (`plan hold`, `plan again`). At most 10 of these
-happen in 24 hours (`level3_per_day` in `/etc/botsy/limits.yaml`); more are refused
-until 24 hours after the oldest one.
-
-**From plan 5 a plan starts by itself** on Monday at 8 am (the 8:05 check starts it) unless
-you hold it. `botsy service plan start-now` starts it at once (on a plan that waits for you
-it is the same as approve). A plan that costs more than $10 (40% of the cap) still waits for
-your approval, as in the first month. `botsy service plan again` makes every plan wait for
-your approval from now on (a plan that has not started yet then waits too); `botsy service
-plan auto` switches back to automatic starts, or goes automatic before 4 plans.
+the server, or Hermes) and how to undo it (`plan hold`, `plan again`). Toward the daily
+limit (`level3_per_day`, 10 in 24 hours, in `/etc/botsy/limits.yaml`) count every approval
+Hermes makes and yours only when they lead to posting on Etsy or KDP (review approvals, KDP
+kit approvals); your own plan, pause and cap commands are not counted (D1, 2026-10-21).
 
 If the server was off on Sunday evening, the plan runs when it starts again, or is skipped
 when that is more than 24 hours late ("this week's plan was missed"; normal rules that

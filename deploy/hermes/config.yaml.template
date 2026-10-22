@@ -75,19 +75,26 @@ curator:
 # ------------------------------------------------------------------ tools
 # Each place Hermes runs the model gets exactly its list below (an allowlist: any toolset or MCP
 # server not named stays off). Discord chat gets the most; scheduled jobs get no Discord, task
-# board or job tools (Hermes's own scheduler also denies cronjob there, so a job never makes jobs).
+# board, job or skill-writing tools (Hermes's own scheduler also denies cronjob there, so a job
+# never makes jobs). A job may still USE a skill: its "skills" field preloads the skill's text.
+# Skill writes happen only in your Discord chat, where every tool call is shown (display below),
+# so each new or changed skill is posted to you; nothing is saved until you approve it.
 toolsets: [botsy-read, botsy-act, memory, vision, cronjob, session_search, todo, kanban, skills, discord]
 platform_toolsets:
   discord: [botsy-read, botsy-act, memory, vision, cronjob, session_search, todo, kanban, skills, discord]
-  cron: [botsy-read, botsy-act, memory, vision, session_search, todo, skills]
+  cron: [botsy-read, botsy-act, memory, vision, session_search, todo]
   cli: [botsy-read, botsy-act, memory, vision, session_search, todo, skills]
   webhook: [botsy-read, botsy-act, memory]
   api_server: [botsy-read, botsy-act, memory]
 
 agent:
   # How images reach the model: "native" attaches them to Haiku itself (no extra call). Images
-  # come from botsy-read's review_preview tool (our own previews, re-encoded by Botsy, returned as
-  # MCP image content) and from what you attach in Discord.
+  # come from botsy-read's review_preview and view_item_images tools (our own previews, pages and
+  # mockups, re-encoded by Botsy, returned as MCP image content; view_item_images at most 6 images
+  # and about 3 MB a call) and from what you attach in Discord. Scheduled jobs have botsy-read too,
+  # so a job may call view_item_images (its image tokens count against Hermes's $10 budget) and
+  # trend_search (it counts toward limits trend_searches_per_day, 30); botsy-act calls in a job
+  # are always declined (approvals.cron_mode: deny).
   image_input_mode: native
   # Applied LAST, after every list above, by Hermes's own resolver: these stay off whatever any
   # other setting, adapter, scheduled job or update says. Everything that touches the machine, the
@@ -251,12 +258,14 @@ discord:
   # "/goal gate add", a shell command, refused) and you keep only the commands listed below, plus
   # /help and /whoami. Hermes gates these per user, and you are the only allowed user:
   #   /memory and /skills  approve or reject Hermes's pending memory and skill writes
-  #   /bg /loop /goal      a background chat, a repeating prompt, a standing goal (all on Haiku)
+  #   /loop /goal          a repeating prompt, a standing goal (both run in this chat, on Haiku)
+  # /bg stays off: a background run posts only its final answer, not its tool calls, so a skill
+  # it changed would not be posted to you (gateway/run_turn.py _run_background_task_inner).
   # /cron is not a Discord command in v0.21.7 (command-line only); ask Hermes in chat instead.
   allow_admin_from: ["0"]
   group_allow_admin_from: ["0"]
-  user_allowed_commands: [new, retry, status, stop, compress, memory, skills, bg, loop, goal]
-  group_user_allowed_commands: [new, retry, status, stop, compress, memory, skills, bg, loop, goal]
+  user_allowed_commands: [new, retry, status, stop, compress, memory, skills, loop, goal]
+  group_user_allowed_commands: [new, retry, status, stop, compress, memory, skills, loop, goal]
   history_backfill: false
   missed_message_backfill:
     enabled: false
@@ -266,15 +275,30 @@ discord:
   # out (other people's details). Pins, deleting messages and roles are discord_admin in v0.21.7
   # and stay off.
   server_actions: [fetch_messages, create_thread]
+# Every tool call Hermes makes in Discord is shown in the chat ("all" is v0.21.7's Discord
+# default; pinned here so no update or /verbose can hide it). That is how each skill change
+# (skill_manage, with the skill's name) and each scheduled job Hermes makes reaches you.
+display:
+  tool_progress_command: false
+  platforms:
+    discord:
+      tool_progress: all
 gateway:
   allow_all_users: false
   unauthorized_dm_behavior: ignore
 
 # ------------------------------------------------------------------ no add-ons, no self-updates
+# The Botsy dashboard tab only (deploy/hermes/dashboard, docs/OVERSEER.md "Botsy dashboard tab"):
+# its folder (~/.hermes/plugins/botsy, root-owned, checked file by file) has no plugin.yaml, so the
+# gateway loads nothing from it; only `hermes dashboard` mounts its tab and API. Never set
+# dashboard.public_url: the dashboard is reached only through an SSH tunnel to 127.0.0.1:9119.
 plugins:
-  enabled: []
+  enabled: [botsy]
   auto_apply: false
   auto_update_check_hours: 0
+  isolation: in_process
+dashboard:
+  public_url: ""                 # pinned empty: no public address, no reverse proxy
 hooks: {}
 hooks_auto_accept: false
 quick_commands: {}

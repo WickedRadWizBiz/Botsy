@@ -1,0 +1,16 @@
+# Hourly: Hermes may make its own scheduled check-ins (decided 2026-10-21), but Hermes v0.21.7 has
+# no setting for how many, how often or what they run. This runs deploy/hermes/check_lock.py jobs:
+# at most 10 jobs on, none more often than hourly, no scripts, web-address monitors, work folders,
+# other providers or toolsets, and Sonnet only on botsy-weekly-plan and botsy-creative-director
+# (at most weekly). On a problem, or if the check cannot finish, it stops hermes-gateway.service;
+# the journal says which job:
+#     journalctl -u botsy-hermes-jobs.service -n 20
+[Unit]
+Description=Botsy: check Hermes's scheduled jobs (and stop Hermes if one breaks the limits)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/botsy-hermes/check_lock.py jobs --stop hermes-gateway.service
+ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || /usr/bin/systemctl stop --no-block hermes-gateway.service'
+TimeoutStartSec=2min
+Nice=10

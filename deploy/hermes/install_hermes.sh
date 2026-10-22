@@ -8,6 +8,7 @@
 #   sudo bash .../install_hermes.sh --bridge sudo    (fallback: Hermes starts botsy-control with sudo)
 #   sudo bash .../install_hermes.sh --bridge socket  (default: systemd starts it; no sudo for hermes)
 #   sudo bash .../install_hermes.sh --check          (only run the lock check, with the Hermes probe)
+#   sudo bash .../install_hermes.sh --no-dashboard   (leave the dashboard with the Botsy tab off)
 # Options are remembered in /etc/hermes/install.conf. Safe to run again: it adds what is missing,
 # rebuilds Hermes only when the pin in hermes-pin.env changes, and keeps /etc/hermes/hermes.env.
 # It never prints a secret. Without a filled-in /etc/hermes/hermes.env it installs everything but
@@ -23,8 +24,11 @@
 # these; a hardened systemd unit; Botsy's two tool sockets; a daily lock check and an hourly check
 # of Hermes's own scheduled jobs; and an nftables table that lets only the hermes user's traffic to
 # Anthropic and Discord out (required since 2026-10-21: Hermes's scheduled jobs, task board and
-# vision can fetch web addresses, and only this table stops that). No browser, computer-use or
-# other optional tools are installed.
+# vision can fetch web addresses, and only this table stops that); and the Hermes dashboard on
+# 127.0.0.1:9119 with the Botsy tab (docs/OVERSEER.md "Botsy dashboard tab"; its web UI is built
+# once here from Hermes's pinned lock file with a pinned, sha256-checked Node.js, as the
+# unprivileged user nobody, never as hermes). No browser, computer-use or other optional tools are
+# installed.
 set -euo pipefail
 umask 022
 
@@ -37,11 +41,12 @@ SKIP_FETCH=0
 CHECK_ONLY=0
 BRIDGE=""
 FIREWALL=""
+DASHBOARD=""
 
 say()  { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 die()  { printf '\nSTOPPED: %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,/^# other optional tools are installed/p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# installed\.$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -49,6 +54,8 @@ while [[ $# -gt 0 ]]; do
     --firewall)    FIREWALL=1; shift ;;
     --no-firewall) die "the firewall is required since 2026-10-21 (Hermes's scheduled jobs, task board and vision can fetch web addresses); see deploy/hermes/README.md" ;;
     --check)       CHECK_ONLY=1; shift ;;
+    --no-dashboard) DASHBOARD=0; shift ;;
+    --dashboard)   DASHBOARD=1; shift ;;
     --skip-fetch)  SKIP_FETCH=1; shift ;;
     --root)        [[ $# -ge 2 ]] || die "--root needs a folder"; ROOT=${2%/}; shift 2 ;;
     --test-owner)  TEST_OWNER=1; shift ;;
@@ -83,6 +90,9 @@ LIB=$R/usr/local/lib/botsy-hermes
 BIN=$R/usr/local/bin
 UNITS=$R/etc/systemd/system
 DROPIN=$UNITS/hermes-gateway.service.d
+DASH_DROPIN=$UNITS/hermes-dashboard.service.d
+PLUGIN=$HHOME/plugins/botsy/dashboard
+WEB_DIST=$OPT/web_dist
 SUDOERS=$R/etc/sudoers.d/botsy-control
 WORK=$(mktemp -d)
 trap 'rm -rf -- "$WORK"' EXIT
@@ -95,6 +105,7 @@ trap 'rm -rf -- "$WORK"' EXIT
 pin() { sed -n "s/^$1=\\([^[:space:]]*\\)\$/\\1/p" "$HERE/hermes-pin.env" | head -n 1; }
 H_VERSION=$(pin HERMES_VERSION); H_TAG=$(pin HERMES_TAG); H_COMMIT=$(pin HERMES_COMMIT)
 H_REPO=$(pin HERMES_REPO); H_EXTRAS=$(pin HERMES_EXTRAS)
+NODE_VERSION=$(pin NODE_VERSION)
 [[ $H_COMMIT =~ ^[0-9a-f]{40}$ && -n $H_TAG && -n $H_VERSION && $H_REPO == https://github.com/* ]] \
   || die "$HERE/hermes-pin.env is incomplete"
 
@@ -115,14 +126,17 @@ fi
 if [[ -f $CONF ]]; then
   old_bridge=$(sed -n 's/^BRIDGE=\(socket\|sudo\)$/\1/p' "$CONF" | head -n 1)
   old_fw=$(sed -n 's/^FIREWALL=\([01]\)$/\1/p' "$CONF" | head -n 1)
+  old_dash=$(sed -n 's/^DASHBOARD=\([01]\)$/\1/p' "$CONF" | head -n 1)
   [[ -n $BRIDGE ]] || BRIDGE=${old_bridge:-}
   [[ -n $FIREWALL ]] || FIREWALL=${old_fw:-}
+  [[ -n $DASHBOARD ]] || DASHBOARD=${old_dash:-}
 fi
 BRIDGE=${BRIDGE:-socket}
 if [[ ${FIREWALL:-} == 0 ]]; then
   note "The firewall was off in $CONF; it is required now (2026-10-21), so it is turned on."
 fi
 FIREWALL=1
+DASHBOARD=${DASHBOARD:-1}
 [[ $BRIDGE == socket || $BRIDGE == sudo ]] || die "--bridge must be socket or sudo"
 
 run_check() {   # $@: extra check_lock.py options
@@ -143,7 +157,7 @@ fi
 
 install_packages() {
   [[ $SYSTEM == 1 ]] || return 0
-  local pkgs=(git curl ca-certificates python3 python3-yaml sudo tar)
+  local pkgs=(git curl ca-certificates python3 python3-yaml sudo tar xz-utils util-linux)
   [[ $FIREWALL == 1 ]] && pkgs+=(nftables)
   say "Installing system packages (${pkgs[*]})"
   DEBIAN_FRONTEND=noninteractive apt-get -q -o DPkg::Lock::Timeout=900 install -y "${pkgs[@]}" > /dev/null \
@@ -184,6 +198,15 @@ move_aside() {   # $1: path that must not stay as it is (never deleted: kept for
   mv -f -- "$1" "$backup_dir/" && note "Moved $1 to $backup_dir/ (Hermes's own copy is replaced by a locked one)."
 }
 
+DASH_FILES=(manifest.json plugin_api.py botsy_tab.py dist/index.js dist/style.css)
+install_plugin() {   # $1: the folder that gets exactly the tab's five files (root-owned 755/644)
+  local f
+  install -d -m 755 -o "$OWNER" -g "$ROOTGROUP" "${1%/dashboard}" "$1" "$1/dist"
+  for f in "${DASH_FILES[@]}"; do
+    install -m 644 -o "$OWNER" -g "$ROOTGROUP" "$HERE/dashboard/$f" "$1/$f"
+  done
+}
+
 lay_out_folders() {
   say "Creating the folders (root-owned; the hermes home is sticky)"
   mkdir -p "$R/home" "$BIN" "$UNITS"          # system folders: created only if missing, never changed
@@ -199,14 +222,31 @@ lay_out_folders() {
   # hooks/ and plugins/: Hermes runs what it finds there at start; profiles/: its scheduled-job
   # ticker visits every profile in it, whatever this config says; scripts/: the only place a
   # scheduled job may run a script from. So they are root's and empty.
+  # plugins/ may hold only our own copy of the Botsy dashboard tab (plugins/botsy, laid out again
+  # below); anything else in it is moved aside.
   for d in "$HHOME/hooks" "$HHOME/plugins" "$HHOME/profiles" "$HHOME/scripts"; do
     if [[ -L $d ]] || [[ -e $d && ! -d $d ]]; then
       move_aside "$d"
-    elif [[ -d $d ]] && [[ $(stat -c %U "$d") != "$OWNER" || -n $(ls -A "$d") ]]; then
+    elif [[ -d $d && $(stat -c %U "$d") != "$OWNER" ]]; then
+      move_aside "$d"
+    elif [[ -d $d && $d == "$HHOME/plugins" ]]; then
+      local entry
+      for entry in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+        [[ -e $entry || -L $entry ]] || continue
+        if [[ ${entry##*/} == botsy && -d $entry && ! -L $entry && $(stat -c %U "$entry") == "$OWNER" ]]; then
+          rm -rf -- "$entry"          # our own copy (root's, in a root-only folder): laid out fresh
+        else
+          move_aside "$entry"
+        fi
+      done
+    elif [[ -d $d && -n $(ls -A "$d") ]]; then
       move_aside "$d"
     fi
     install -d -m 755 -o "$OWNER" -g "$ROOTGROUP" "$d"
   done
+  if [[ $DASHBOARD == 1 ]]; then
+    install_plugin "$PLUGIN"
+  fi
   if [[ -e $HHOME/.env && -s $HHOME/.env ]] || [[ -L $HHOME/.env ]]; then
     move_aside "$HHOME/.env"     # it would override the service environment
   fi
@@ -220,7 +260,7 @@ lay_out_folders() {
     note "Created $SECRETS from hermes.env.example. Fill it in (README step 5), then run this again."
   fi
   chown "$OWNER:$HGROUP" "$SECRETS" && chmod 640 "$SECRETS"
-  printf 'BRIDGE=%s\nFIREWALL=%s\n' "$BRIDGE" "$FIREWALL" > "$WORK/install.conf"
+  printf 'BRIDGE=%s\nFIREWALL=%s\nDASHBOARD=%s\n' "$BRIDGE" "$FIREWALL" "$DASHBOARD" > "$WORK/install.conf"
   install -m 644 -o "$OWNER" -g "$ROOTGROUP" "$WORK/install.conf" "$CONF"
   note "Done."
 }
@@ -305,6 +345,61 @@ fetch_and_build() {
   note "Done: $("$VENV/bin/hermes" --version 2> /dev/null | head -n 1 || echo "v$H_VERSION")"
 }
 
+# ---------------------------------------------------------------- 4b. the dashboard web UI (pinned)
+
+build_web_ui() {
+  [[ $SKIP_FETCH == 0 && $DASHBOARD == 1 ]] || return 0
+  local stamp="$H_COMMIT node-$NODE_VERSION"
+  if [[ -f $WEB_DIST/index.html && $(cat "$WEB_DIST/.botsy-pin" 2> /dev/null) == "$stamp" ]]; then
+    say "The dashboard web UI is already built for v$H_VERSION"
+    return 0
+  fi
+  say "Building the dashboard web UI (Node.js $NODE_VERSION, npm ci from Hermes's pinned lock file)"
+  local arch target sha
+  arch=$(uname -m)
+  case $arch in
+    x86_64)  target=linux-x64;   sha=$(pin NODE_SHA256_LINUX_X64) ;;
+    aarch64) target=linux-arm64; sha=$(pin NODE_SHA256_LINUX_ARM64) ;;
+    *) die "unsupported CPU $arch" ;;
+  esac
+  [[ $NODE_VERSION =~ ^22\.[0-9]+\.[0-9]+$ && $sha =~ ^[0-9a-f]{64}$ ]] || die "$HERE/hermes-pin.env has no Node.js pin"
+  local node=$OPT/tools/node-$NODE_VERSION name=node-v$NODE_VERSION-$target.tar.xz
+  if [[ ! -x $node/bin/node || $(cat "$node/.sha256" 2> /dev/null) != "$sha" ]]; then
+    curl -fsSL --proto '=https' --tlsv1.2 -o "$WORK/$name" "https://nodejs.org/dist/v$NODE_VERSION/$name" \
+      || die "download failed: Node.js $NODE_VERSION"
+    [[ $(sha256sum "$WORK/$name" | cut -d' ' -f1) == "$sha" ]] || die "sha256 mismatch for $name. Stopped."
+    rm -rf -- "$node.new" && install -d -m 755 "$node.new"
+    tar -xJf "$WORK/$name" -C "$node.new" --strip-components=1 --no-same-owner
+    printf '%s\n' "$sha" > "$node.new/.sha256"
+    rm -rf -- "$node" && mv "$node.new" "$node"
+  fi
+  # Build as nobody in a throwaway copy of the pinned checkout: npm ci checks every package's
+  # integrity hash from package-lock.json and runs no install scripts (--ignore-scripts).
+  local build
+  build=$(mktemp -d /var/tmp/botsy-hermes-web.XXXXXX)
+  git -c safe.directory="$SRC" -C "$SRC" archive --format=tar HEAD | tar -x -C "$build" --no-same-owner
+  chown -R nobody:nogroup "$build"
+  if ! ( cd "$build" && setpriv --reuid=nobody --regid=nogroup --clear-groups --no-new-privs \
+           env -i PATH="$node/bin:/usr/bin:/bin" HOME="$build/.home" LANG=C.UTF-8 \
+               npm_config_cache="$build/.npm" npm_config_update_notifier=false npm_config_fund=false \
+               npm_config_audit=false HERMES_WEB_BUILD_LIGHT=1 \
+           sh -c 'npm ci --workspace web --include-workspace-root=false --ignore-scripts --no-audit --no-fund > /dev/null &&
+                  npm run build --workspace web > /dev/null' ); then
+    rm -rf -- "$build"
+    die "building the dashboard web UI failed (see the npm output above). Or run with --no-dashboard."
+  fi
+  [[ -f $build/hermes_cli/web_dist/index.html ]] || { rm -rf -- "$build"; die "the web UI build wrote no index.html"; }
+  rm -rf -- "$WEB_DIST.new"
+  cp -R --no-preserve=ownership,mode -- "$build/hermes_cli/web_dist" "$WEB_DIST.new"
+  rm -rf -- "$build"
+  find "$WEB_DIST.new" -type l -delete
+  printf '%s\n' "$stamp" > "$WEB_DIST.new/.botsy-pin"
+  chown -R root:root "$WEB_DIST.new"
+  find "$WEB_DIST.new" -type d -exec chmod 755 {} + && find "$WEB_DIST.new" -type f -exec chmod 644 {} +
+  rm -rf -- "$WEB_DIST" && mv "$WEB_DIST.new" "$WEB_DIST"
+  note "Done: $WEB_DIST"
+}
+
 # ---------------------------------------------------------------- 5. Botsy's lock files
 
 copy_lock_files() {
@@ -319,6 +414,9 @@ copy_lock_files() {
   for f in "$HERE"/systemd/*; do
     install -m 644 -o "$OWNER" -g "$ROOTGROUP" "$f" "$LIB/systemd/${f##*/}"
   done
+  # The dashboard tab's reference copy (check_lock.py compares the plugin folder and the unit with it).
+  install_plugin "$LIB/dashboard"
+  install -m 644 -o "$OWNER" -g "$ROOTGROUP" "$HERE/dashboard/hermes-dashboard.service" "$LIB/dashboard/hermes-dashboard.service"
   # botsy-control's wrappers and sudo rule come from deploy/lightsail (docs/OVERSEER.md
   # "botsy-control reference"); copies sit next to check_lock.py so it can compare.
   [[ -n $LIGHTSAIL && -f $LIGHTSAIL/botsy-control-read ]] || die "deploy/lightsail/botsy-control-read is missing next to this script"
@@ -388,6 +486,20 @@ install_units() {
   else
     rm -f -- "$DROPIN/firewall.conf"
   fi
+  if [[ $DASHBOARD == 1 ]]; then
+    install -m 644 -o "$OWNER" -g "$ROOTGROUP" "$HERE/dashboard/hermes-dashboard.service" "$UNITS/hermes-dashboard.service"
+    install -d -m 755 -o "$OWNER" -g "$ROOTGROUP" "$DASH_DROPIN"
+    for u in "$DASH_DROPIN"/*; do
+      [[ -e $u ]] || continue
+      [[ ${u##*/} == firewall.conf ]] || move_aside "$u"
+    done
+    install -m 644 -o "$OWNER" -g "$ROOTGROUP" "$HERE/systemd/firewall.conf" "$DASH_DROPIN/firewall.conf"
+  else
+    if [[ $SYSTEM == 1 ]]; then
+      systemctl disable --now hermes-dashboard.service > /dev/null 2>&1 || true
+    fi
+    rm -f -- "$UNITS/hermes-dashboard.service" "$DASH_DROPIN/firewall.conf"
+  fi
   note "Done."
 }
 
@@ -417,6 +529,8 @@ start_services() {
   else
     systemctl disable --now hermes-gateway.service > /dev/null 2>&1 || true
   fi
+  # The dashboard starts only after the lock check passes (final_check).
+  [[ $DASHBOARD == 1 ]] && systemctl stop hermes-dashboard.service > /dev/null 2>&1 || true
   note "Done."
 }
 
@@ -428,11 +542,18 @@ final_check() {
   fi
   say "Checking the lock (check_lock.py, including the Hermes probe)"
   if ! run_check --probe; then
-    systemctl stop hermes-gateway.service > /dev/null 2>&1 || true
+    systemctl stop hermes-gateway.service hermes-dashboard.service > /dev/null 2>&1 || true
     die "the lock check failed (problems above), so Hermes is not running. Fix them and run this again."
   fi
   systemctl restart hermes-gateway.service
   note "Hermes is running: journalctl -u hermes-gateway -f"
+  if [[ $DASHBOARD == 1 && -f $WEB_DIST/index.html ]]; then
+    systemctl enable hermes-dashboard.service > /dev/null
+    systemctl restart hermes-dashboard.service
+    note "The dashboard runs on 127.0.0.1:9119: ssh -N -L 9119:127.0.0.1:9119 <you>@<server>, then http://127.0.0.1:9119/botsy"
+  elif [[ $DASHBOARD == 1 ]]; then
+    note "The dashboard web UI is not built ($WEB_DIST), so the dashboard was not started."
+  fi
 }
 
 memory_note() {
@@ -448,6 +569,7 @@ install_packages
 create_account
 lay_out_folders
 fetch_and_build
+build_web_ui
 copy_lock_files
 render_configs
 install_units
