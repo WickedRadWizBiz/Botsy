@@ -137,7 +137,8 @@ def _approve_hint(item_id: str, item_dir: Path, review_dir: Path, settings: dict
     cmd = f"python -m qa review approve {item_id}"
     if review_dir.resolve() == review_dir_for(item_dir, settings).resolve():
         return _with_out(cmd, item_dir, settings)
-    return f"{cmd} --review-dir {shlex.quote(repo_relative(review_dir))}"
+    # --out too, so the review_approve order (qa approvals are orders, D2) finds the item's QA report.
+    return f"{_with_out(cmd, item_dir, settings)} --review-dir {shlex.quote(repo_relative(review_dir))}"
 
 
 def _load(path: Path, item_id: str) -> dict:

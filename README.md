@@ -133,6 +133,7 @@ python -m qa review reject ID --reason "..." [--out DIR]
 - An approval covers the reasons and the files and photos you saw. A QA rerun that finds a new reason or changed content, new listing review terms, or a regeneration puts the entry back to `pending`.
 - A rejection is final: the pipeline never lists or rebuilds a rejected item.
 - The publisher's refusal message prints the exact approve command (with `--out` when needed).
+- Every approval is an order (D2, 2026-10-21): it is posted to your Discord channel at once, journaled and counted toward the daily approval limit. Items that failed QA or were regenerated are refused.
 
 ## Etsy setup
 1. **App.** Register an app at [developer.etsy.com](https://developer.etsy.com) for personal use on our own shop. Add a callback URL exactly equal to `ETSY_REDIRECT_URI` (default `https://localhost:3003/callback`). Put the keystring and shared secret in `.env` (`ETSY_API_KEYSTRING`, `ETSY_SHARED_SECRET`).
@@ -212,10 +213,10 @@ The server runs these by itself: `tick` when an upload arrives, `tick --force --
 
 ### The Sunday plan and approving (no codes)
 Every Sunday at 20:00 New York time Botsy writes its own weekly plan from the current briefs: which themes and pack sizes it makes that week, within the money left this month (`docs/OVERSEER.md` Part B). While a plan runs, every check makes only the plan's lines.
-- **Your first 4 plans wait for your OK.** Until Hermes is installed, approve on the server: `botsy service plan status` shows the plan, `botsy service plan approve` starts it at once, `botsy service plan hold` holds it. Reminders come Monday 08:00 and 19:00; a plan not approved by Tuesday 20:00 expires and Botsy runs on its normal rules that week.
-- **From plan 5** a plan starts by itself on Monday 08:00 unless you hold it. A plan over 40% of the cap ($10 of $25) still waits for you. `plan again` makes every plan wait for you; `plan auto` goes back to automatic.
-- **No codes** (decided 2026-10-21). Approvals, cap raises (`control raise-cap`, never above the admin's ceiling in `/etc/botsy/limits.yaml`) and restarting paid work (`control resume-budget`) are taken straight from you, at most 10 a day (`level3_per_day`), and each is posted at once to your Discord channel with how to undo it. Hard-blocked items can never be approved, and the publisher still only makes drafts: you publish in Etsy.
-- **Hermes (later):** once installed (`deploy/hermes/README.md`), Hermes talks to Botsy only through **botsy-control**, two locked tool servers (`python -m control read|act`): it reads fixed facts and sends the same checked orders, with your Allow click on every action.
+- **Plans start by themselves from week 1** (user, 2026-10-21): Monday 08:00 New York time, unless you hold it, whatever the plan costs (the money left this month still limits every plan). `botsy service plan status` shows the plan, `botsy service plan approve` starts it at once, `botsy service plan hold` holds it. `plan again` makes every plan wait for you; `plan auto` goes back to automatic.
+- **Your Hold sticks** (D3): a Hold you set stays until you lift it. Hermes's Start now, approve or revision can never lift or bypass it; a Hold Hermes sets can be lifted by either of you.
+- **No codes** (decided 2026-10-21). Approvals, cap raises (`control raise-cap`, never above the admin's ceiling in `/etc/botsy/limits.yaml`) and restarting paid work (`control resume-budget`) are taken straight from you, and each is posted at once to your Discord channel with how to undo it. The daily limit (`level3_per_day`, 10) counts every approval Hermes makes, and yours only when they lead to posting on Etsy or KDP (review approvals, KDP kit approvals); your pause, cap and plan commands are not counted (D1). Hard-blocked items can never be approved, and the publisher still only makes drafts: you publish in Etsy.
+- **Hermes (later):** once installed (`deploy/hermes/README.md`), Hermes talks to Botsy only through **botsy-control**, two locked tool servers (`python -m control read|act`): it reads fixed facts, looks at our own product images (`view_item_images`), runs filtered trend searches (`trend_search`: TinyFish Search, every marketplace listing dropped; needs `TINYFISH_API_KEY`), and sends the same checked orders, including five fixed watchdog fixes (`fix_*`, at most 6 a day), with your Allow click on every action. The Hermes dashboard gets a Botsy tab (view, Pause, Lower cap) reached through an SSH tunnel.
 
 ## Layout
 | Folder | Role |

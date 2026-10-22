@@ -318,6 +318,29 @@ control:
   winners_file: data/performance/winners.json   # scale-ups stay refused (no_winners_yet) until this exists AND limits scale_up.enabled is true
   log_file: data/logs/botsy-control.log      # botsy-control (Hermes's MCP tools) base name; each server writes botsy-control-read.log / -act.log next to it (tool name, ok, reason codes; never an argument)
 
+# --- Watchdog fixes Hermes may ask for (service/fixes.py, D4 item 7, 2026-10-21; these are its defaults) ---
+fixes:
+  longest_run_s: 14400            # longest allowed run (botsy-tick.service TimeoutStartSec=4h); a lock younger than this is never cleared
+  requests_dir: null              # null: fix_requests/ next to the control state file (data/control/)
+  lock_wait_s: 120
+  max_tries: 3                    # a queued run retry that finds the lock busy waits for the next hourly check, at most this often
+  daily_log_max_age_hours: 36     # resend_daily_log only resends a log at most this old
+  notify_lookback_hours: 48       # retry_notify re-posts unsent approval/fix notices from this window
+  notify_max: 5                   # ... at most this many per run
+
+# --- Hermes's filtered trend search (botsy-read trend_search, control/trend.py; D4 item 8, 2026-10-21) ---
+# TinyFish Search with TINYFISH_API_KEY from .env. Marketplace listings (Etsy, Amazon, Pinterest, eBay, ...) are
+# dropped before anything reaches Hermes; the daily count is limits trend_searches_per_day.
+trend_search:
+  enabled: true                    # false = trend_search answers trend_search_off
+  location: US
+  language: en
+  timeout_s: 20
+  title_max: 120                   # characters kept per result title (20-200)
+  snippet_max: 280                 # characters kept per snippet (40-500)
+  blocked_domains: []              # more listing sites to drop (suffix match: example.com also drops shop.example.com)
+  usage_file: null                 # null = data/control/trend_search.json (next to control.state_file)
+
 # --- Discord messages and the daily log (docs/SERVER.md section 11; defaults: service/notify.py) ---
 notify:
   discord:

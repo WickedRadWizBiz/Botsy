@@ -55,7 +55,7 @@ In short: Hermes plans the week, looks at our own products, and walks you throug
 - Scheduled jobs get the same set.
 
 So (opened up on 2026-10-21, "too cautious; I want Hermes pulling its weight"):
-- each place gets an exact list: Discord chat gets the Botsy tools, memory, vision, cronjob, session_search, todo, kanban, skills and the non-admin discord tool; scheduled jobs and the command line get the Botsy tools, memory, vision, session_search, todo and skills (no Discord, task board or job tools);
+- each place gets an exact list: Discord chat gets the Botsy tools, memory, vision, cronjob, session_search, todo, kanban, skills and the non-admin discord tool; the command line gets the Botsy tools, memory, vision, session_search, todo and skills (no Discord, task board or job tools); scheduled jobs get the same without skills, and `/bg` is off, because their tool calls are not shown in Discord; in Discord every tool call is shown (pinned), so each skill change is posted to you;
 - turn off terminal, file, web, search, browser, delegation, code_execution, computer_use, image_gen, video, video_gen, tts and discord_admin (applied last, whatever else is on);
 - vision sees only our own images: every web host is on Hermes's website blocklist (vision checks it before any download), the firewall allows only Anthropic and Discord, and systemd hides Botsy's folders and other programs' data;
 - turn off sampling and elicitation for botsy-control (both are on by default);
@@ -82,7 +82,8 @@ So (opened up on 2026-10-21, "too cautious; I want Hermes pulling its weight"):
 **Dashboard:**
 - the Botsy tab is read-only, plus Pause and Lower cap;
 - no Save-to-raise or Approve buttons, because the dashboard has no login on the server itself;
-- reach it through an SSH tunnel.
+- reach it through an SSH tunnel;
+- a Pause from the tab is recorded as Hermes's (`created_by: hermes`), so you or Hermes can lift it. For a Hold only you can lift, use the server CLI (`botsy service control pause`); asking Hermes in Discord also records `hermes`. See "Botsy dashboard tab" below.
 
 **Version:**
 - pin, at install time, the newest release that is at least about 7 days old with no hotfix after it. v0.22.2 shipped Oct 15, one day ago, after releases on Oct 13 and 14, and has a known session-deletion issue;
@@ -97,7 +98,7 @@ So (opened up on 2026-10-21, "too cautious; I want Hermes pulling its weight"):
 - write image prompts or free-text instructions for Botsy's models (fixed options and approved style phrases only);
 - save a skill or a memory without your approval;
 - pick a model: chat and its own jobs run on Haiku; Sonnet only in the two weekly jobs you made;
-- make a scheduled job that runs a script, watches a web address, runs more often than hourly, or uses tools beyond the job list; or start other agents (no delegation, no task-board workers);
+- run a script from a scheduled job (the scripts folder is root's and empty); keep a job that watches a web address, runs more often than hourly or uses tools beyond the job list (Hermes v0.21.7 lets it save one; the hourly check then stops Hermes, and until then the firewall limits a URL monitor to Anthropic, Discord and loopback, never the dashboard); or start other agents (no delegation, no task-board workers);
 - install add-ons, or change Discord channels, roles, pins or members;
 - act without your Allow click: botsy-act is `trust: untrusted`, so scheduled Hermes jobs can never act;
 - lift or bypass a Hold you set (Botsy enforces that on its side).
@@ -421,7 +422,7 @@ Botsy runs this check when the plan arrives, and again before each pack is made.
      - there has been no `spend_warning` or `budget_reached` this month.
    - A plan that starts in a new month is checked against the new month's money.
    - `check_budget` still guards every paid call, as today.
-2. **Hermes's $5 limit.**
+2. **Hermes's $10 limit** (raised from $5 on 2026-10-21, D4 item 2).
    - Botsy can't see it, because it lives in a separate Anthropic workspace.
    - When it is reached, Anthropic refuses Hermes's requests with HTTP 400 ("You have reached your specified workspace API usage limits").
    - So Botsy limits Hermes's extra work instead: scale-ups add at most 3 items a week for Hermes to triage.
@@ -869,7 +870,7 @@ New timer lines (all checked with `systemd-analyze calendar`):
 
 **Decided 2026-10-21: no codes.** There are no 6-digit codes, no #botsy-codes channel, no `BOTSY_CODES_WEBHOOK_URL` and no `request_code` / `confirm_code` tools. The actions that needed a code (review approvals, also in a named batch; raising the cap; restarting paid work after a budget stop or the user's pause; approving one of the first 4 weekly plans or a plan over the cost share) are taken directly from you: through Hermes (Discord, your allowlisted user ID only) or the server CLI. Botsy's guards stay in `service/orders.py` and `service/plan.py`: a hard-blocked item is never approvable, a cap raise never goes above `limits.cap_ceiling_usd` (root-only file), at most `level3_per_day` (default 10) such actions a day and `approve_batch_max` (20) items a batch, and each one is posted at once to the main Discord channel (urgent, ignores quiet hours) with what changed, who asked (hermes, user or botsy) and how to undo it. Botsy still never activates a listing: you approve in Etsy.
 
-> **Status: built 2026-10-21** (`control/`, tests in `tests/control/`). Not yet run against a real Hermes install; Hermes itself is not installed yet. Everything here also works without Hermes: the same orders go through the server CLI (`python -m service plan approve`, `python -m qa approve ...`).
+> **Status: built 2026-10-21** (`control/`, tests in `tests/control/`; the D4 tools `view_item_images`, `trend_search` and the five `fix_*` tools added the same day). Not yet run against a real Hermes install; Hermes itself is not installed yet. Everything here also works without Hermes: the same orders go through the server CLI (`python -m service plan approve`, `python -m qa approve ...`).
 
 botsy-control is the only way Hermes reaches Botsy. It is two MCP servers over stdio, made with the official MCP Python SDK (`mcp==2.3.0`, MIT, released 2026-10-02; in mcp 2.x FastMCP is called `MCPServer`):
 
@@ -888,10 +889,11 @@ How Hermes reaches the wrappers (deploy/hermes, the Hermes install): by default 
 - Every string in a result passes a last scrub: secret values from the environment and `.env`, Discord webhook links, any URL, paths and data-file names are replaced. Only real time-zone names (`America/New_York`) and a few fixed words (`image/jpeg`, `and/or`) keep a slash; any other `word/word` is treated as a path.
 - Logs go to Botsy's own files next to `control.log_file`, one per server (`data/logs/botsy-control-read.log`, `botsy-control-act.log`; rotated at 1 MB, 3 kept), never to stdout or to Hermes. Each call logs one line: the tool name, ok, and reason codes, never an argument. Lines from the MCP SDK and other libraries keep only their logger name, level and exception type (their messages can quote a raw request); Python warnings go to the same file, and a crash prints one line with the error type, never a traceback (under the sudo bridge, stderr reaches Hermes).
 - Act calls run one at a time in a server process; across processes and against the hourly check, `service/orders.py` and `service/plan.py` hold their own file locks. A call refused before it became an order is journaled as `control_refused` with the tool and its reason codes only. If the journal cannot be written, the refusal still goes back unchanged.
-- Preview images: only files inside the item's folder, at most 8 MB and 40 megapixels (larger is "no preview", never decoded), re-encoded as JPEG without metadata.
+- Preview images (`review_preview`, `view_item_images`): only our own files inside a Botsy item's folder (a real folder directly in the output root whose manifest names that item, never a link), only from its `previews/` or `mockups/` folder, no link followed at the last step and nothing that resolves outside the folder; at most 8 MB and 40 megapixels per source (larger is "no preview", never decoded), re-encoded as JPEG without metadata. Never research files or anyone else's images (D4.1).
+- `trend_search` (D4.8) is the only tool that reaches the web, and Hermes's own web and search toolsets stay off. It calls TinyFish Search (`GET https://api.search.tinyfish.ai`, free) with `TINYFISH_API_KEY` from `.env` (only in the request header; never logged or returned), and Botsy filters every result before Hermes sees it, so no competitor listing's title, description or image reaches the model. The rule is recorded in `config/platform_policies.yaml` (tinyfish, `search_result_filter`): the query must pass the trademark blocklist and health terms (hard, game-system and review terms all refused) and may not name a marketplace; a result is dropped when its host is a marketplace or listing site (any host label, or hyphen-joined part of one, etsy, amazon/amzn, goodreads, abebooks, audible, pinterest, ebay, redbubble, teepublic, zazzle, creativemarket, gumroad, society6, spreadshirt, walmart, temu, aliexpress, shein, and digital-product shops such as teacherspayteachers, creativefabrica, designbundles, payhip or myshopify; so also m.media-amazon.com; pin.it, a.co, TikTok Shop, Google Shopping, Facebook Marketplace; archive, cache and translation proxies such as web.archive.org or translate.goog; plus `trend_search.blocked_domains`), when a path segment names a marketplace (an archived `.../https:/www.etsy.com/listing/...` page), when its title, snippet or site name names a marketplace (a blog quoting an Etsy price; checked after NFKC normalization and with zero-width characters removed, so fullwidth or split spellings do not slip through), when it reads like a product listing (a price with "add to cart", "sold", "in stock", "free shipping" and similar, or two such cues), when its text or page path hits the blocklist, or when its link is not plain http(s). What is kept: site, page (domain + path only, @handles removed), title (120 characters), snippet (280), date. Every result set is labelled "trend reading only, never a brief by itself". At most `limits trend_searches_per_day` (default 30) in any 24 hours, counted before the request in `data/control/trend_search.json` (also a per-day TinyFish usage counter; no query text). A refused, rate-limited or failed search is not retried.
 - OS layer (`deploy/lightsail/sudoers.d/botsy-control`, root:root 0440, sudo bridge only): the hermes user may run exactly the two wrapper commands, as botsy, with no arguments (`""`), no password (`NOPASSWD`), no terminal needed (`!requiretty`), a reset environment it cannot add to (`env_reset`, `NOSETENV`, `!setenv`) and no I/O logging. It passes `visudo -cf`. The wrappers (root-owned 0755 in `/usr/local/bin`) refuse any argument (exit 64) and any user but botsy (exit 77). They `cd /opt/botsy` and start Python with an empty environment (`env -i`) and `-E -s -B`.
 
-**Read tools (botsy-read, Level 0).** They only read, and write nothing.
+**Read tools (botsy-read, Level 0).** They only read, and write nothing (except `trend_search`, which writes only its own usage counter).
 
 | Tool | Arguments | Returns |
 |---|---|---|
@@ -905,6 +907,8 @@ How Hermes reaches the wrappers (deploy/hermes, the Hermes install): by default 
 | `briefs_summary` | `niche`, `limit` (1-20) | The newest brief file per niche: date, age in days, stage, and per brief: id, niche, theme, pack sizes, opportunity, needs_review. Never evidence rows, keywords, sources or file names. |
 | `capacity` | none | The capacity check (capacity/v1): ok, reason codes, numeric facts and thresholds. |
 | `orders_recent` | `days` (1-60), `kind`, `status` (waiting_approval, accepted, applied, undone, cancelled, failed), `limit` (1-100) | Stored orders, newest first: id, kind, level, who, created, week, status, needs_approval, applied, and the checked payload fields. |
+| `view_item_images` | `item_id`, `kind` (pages, mockups), `start` (0-199), `max` (1-6) | Up to 6 of our own images of one Botsy item as images for Hermes's vision: `pages` = the generator's page renders (manifest `previews`, else `previews/`), `mockups` = QA's listing photos (review entry, else `mockups/`). At most 1024 px, JPEG without metadata, about 3 MB per call (`truncated`), plus index, page, bytes, `available`, `more`. Refuses `not_found` (not a Botsy item), `no_preview`. |
+| `trend_search` | `query` (lowercase, 80 characters, letters, digits, spaces, `' & -`), `recency` (week, month, year), `max` (1-10) | Filtered TinyFish results (rule above): `label`, `results` [{site, page, title, snippet, date}], `received`, `dropped` per reason (marketplace, names_marketplace, listing_like, blocklist, bad_url, duplicate), `searches_24h`, `limit`, `left`. Refuses `not_configured` (no key), `trend_search_off`, `trend_search_limit`, `query_blocked`, `query_needs_review`, `query_marketplace`, `search_failed`, `search_rate_limited`, `search_auth_failed`, `search_allowance_used`, `usage_unreadable`. |
 | `events_recent` | `hours` (1-168), `kinds` (a list; "plan" = the plan service's kinds), `limit` (1-200) | Journal events as fixed fields only, each signed with `BOTSY_EVENT_KEY` (`"sig": "v1=<hex>"`) over exactly the fields returned; `signed: false` until the key is set. Never error text, titles, listing ids, file names or export rows. |
 
 **Act tools (botsy-act).**
@@ -918,10 +922,31 @@ How Hermes reaches the wrappers (deploy/hermes, the Hermes install): by default 
 | `lower_cap` | 2 | `cap_usd` | A `lower_cap` order (only lower). |
 | `search_ideas` | 1 | `ideas`: 1-5 of {niche, query} | A `search_ideas` order (5 a week; blocklist and health checks; marked exploratory). |
 | `undo_order` | 2 | `order_id` | `orders.undo(..., by="hermes")`. |
+| `fix_retry_run` | 2 | `tick_started` (optional ISO time) | A `fix_retry_run` order (service/fixes.py `retry_last_failed_run`): one retry of the last check when it failed only for a passing reason; counts toward `run_now_per_day`; the next hourly plan check runs it. |
+| `fix_clear_stale_lock` | 2 | `lock` (service, plans) | A `fix_clear_stale_lock` order: empties the PID note of a lock whose process is dead, older than the longest run, held by nobody. |
+| `fix_rerun_qa` | 2 | `item_id` | A `fix_rerun_qa` order: QA again for an item whose QA crashed (never one that failed real checks, a drafted or rejected item). |
+| `fix_resend_daily_log` | 2 | none | A `fix_resend_daily_log` order: posts the newest daily log again (at most 36 hours old, once). |
+| `fix_retry_notify` | 2 | none | A `fix_retry_notify` order: re-posts approval and fix notices Discord did not take. |
 
-**Not on the menu:** a shell, files, the web, raw research data, the compliance lists, settings writes beyond orders, live listings, listing edits (second wave), deleting anything on Etsy, `plan auto` and `plan again` (server CLI only).
+The `fix_*` tools (D4.7) map 1:1 to the order kinds of the same name and call `orders.submit` with `created_by: "hermes"`; Botsy checks each recipe's preconditions itself (and again when it runs), allows `limits fixes_per_day` (6) in 24 hours, and posts and journals each fix. Hermes never names a file, a process, a command or a time beyond the optional `tick_started`. They are also `submit_order` kinds. Because botsy-act is `trust: untrusted`, each fix call also waits for your Allow click in Discord, and fixes are declined inside scheduled Hermes jobs (`approvals.cron_mode: deny`).
 
-**Refusal codes of this layer:** `unknown_tool`, `not_an_object`, `unknown_argument`, `missing_argument`, `bad_argument`, `too_large`, `settings_unreadable`, `internal_error`, `not_found`, `no_preview`, `money_unknown`, `not_waiting`, `approval_unavailable`, `plan_service_missing`. Orders, plans and capacity add their own (docs/CONTRACTS.md).
+Fix preconditions (service/fixes.py; checked when the order is checked and again when it runs; a refusal is journaled as `order_refused` with the precondition facts, never posted):
+- `fix_retry_run`: the last check (outbox/status.json) failed (`no_failed_run`) and every error in it names only passing exception classes (network timeout, dropped connection, busy lock, API overload). If any class named in an error is not on that list (for example `ConnectionError ... BudgetExceeded`) the retry is refused (`not_retryable`). Also refused: a newer check already ran (`newer_run_ok`), paid work is paused or budget-stopped (`paid_work_stopped`), a retry is already queued (`retry_pending`), `run_now_per_day` used up (`run_now_limit`). With `tick_started`, it must still be the last check (`run_changed`).
+- `fix_clear_stale_lock`: the lock file exists (`lock_missing`) and names a PID (`lock_no_pid`), that process is dead (`lock_process_alive`), the lock is older than max(`service.lock_timeout_s`, `fixes.longest_run_s` = 4 h) (`lock_too_young`), and a non-blocking flock succeeds (`lock_held`). Only the stale PID note is cleared.
+- `fix_rerun_qa`: the item exists (`item_unknown`), is not drafted (`already_drafted`) or rejected (`already_rejected`), its QA crashed rather than failed (`qa_not_crashed`), and the main lock is free (`service_busy`).
+- `fix_resend_daily_log`: `outbox/daily-log.txt` exists (`no_daily_log`), is at most 36 hours old (`daily_log_stale`), was not resent already (`already_resent`), Discord is set up (`discord_off`).
+- `fix_retry_notify`: there are unsent approval or fix notices from the last 48 hours (`nothing_unsent`); at most 5 a run.
+- Every fix: at most `limits fixes_per_day` (6) from Hermes in 24 hours (`fixes_limit`); a missing or broken limits file refuses them (`limits_unavailable`). Applied fixes are posted and journaled as `fix_applied` (and a queued retry's run as `fix_run`), which `events_recent` shows with the facts.
+
+**Your Hold sticks (D3, user 2026-10-21).** A plan Hold records who set it (`held_by`: user, hermes or botsy; `plan_status` shows it). On a week you hold, Hermes's `plan_start_now`, `approve_order` on that plan, `plan_revision` and `weekly_plan`, and Hermes undoing your `plan_hold`, are all refused with `held_by_user`. The hourly check and the Monday auto-start never lift your Hold, and a Hold Hermes sets never replaces yours. A Hold Hermes set can be lifted by either of you.
+
+**Which approvals count toward the daily limit (D1).** `level3_per_day` counts every approval-type order from Hermes, and your own only when it leads to posting on Etsy or KDP (`review_approve`, batches included, and `kdp_kit_approve`). Your pause, resume, cap and plan commands are not counted, but are still posted and journaled. `python -m qa review approve` is a `review_approve` order from `user` (D2): posted at once, journaled and counted.
+
+**`kdp_kit_approve`** {"kit_id"} (Level 3) is on the menu for the KDP build and is always refused with `kdp_not_built` until it exists.
+
+**Not on the menu:** a shell, files, fetching web pages (only the filtered `trend_search`), raw research data, the compliance lists, settings writes beyond orders, live listings, listing edits (second wave), deleting anything on Etsy, `plan auto` and `plan again` (server CLI only).
+
+**Refusal codes of this layer:** `unknown_tool`, `not_an_object`, `unknown_argument`, `missing_argument`, `bad_argument`, `too_large`, `settings_unreadable`, `internal_error`, `not_found`, `no_preview`, `money_unknown`, `not_waiting`, `approval_unavailable`, `plan_service_missing`, and for `trend_search` `not_configured`, `trend_search_off`, `trend_search_limit`, `query_blocked`, `query_needs_review`, `query_marketplace`, `search_failed`, `search_rate_limited`, `search_auth_failed`, `search_allowance_used`, `usage_unreadable`. Orders, plans and capacity add their own (docs/CONTRACTS.md).
 
 **Installing (root, after Hermes's user exists),** always from root's own copy of the code, never from /opt/botsy:
 ```
@@ -933,7 +958,7 @@ visudo -cf "$SRC/deploy/lightsail/sudoers.d/botsy-control" && \
 sudo -l -U hermes        # shows exactly the two commands, (botsy) NOPASSWD
 ```
 
-**Tested (offline):** an in-process MCP client calls every tool against a temp Botsy data dir, over the 2026 discovery mode and the legacy initialize handshake; a real stdio round trip in a child process; that read tools never return research-input paths, export names, shop names, listing links, review terms or secrets from the environment or `.env`; that read tools write nothing; that act tools reach `orders.validate` with `created_by: hermes` (a spy) and that bad input never does; that no result mentions a code; that `approve_order` binds the plan service to the named order with `first_check=False` and refuses a plan service that cannot; that a hard-blocked item is refused; `visudo -c` and `cvtsudoers` on the sudoers rule. **Not tested yet:** Hermes's own MCP client, the socket and sudo bridges on the Lightsail server, and whether Hermes passes tool images on to the model.
+**Tested (offline):** an in-process MCP client calls every tool against a temp Botsy data dir, over the 2026 discovery mode and the legacy initialize handshake; a real stdio round trip in a child process; that read tools never return research-input paths, export names, shop names, listing links, review terms or secrets from the environment or `.env`; that read tools write nothing; that act tools reach `orders.validate` with `created_by: hermes` (a spy) and that bad input never does; that no result mentions a code; that `approve_order` binds the plan service to the named order with `first_check=False` and refuses a plan service that cannot; that a hard-blocked item is refused; `view_item_images` (downscaling, the 6-image and byte caps, refusing non-items, links out of the item and paths outside its folders, writing nothing); `trend_search` with a fake TinyFish (the filter on tricky results: etsy.com subdomains, etsy.me, amazon.co.uk, smile/aws.amazon.com, pin.it, TikTok Shop, a configured domain, a blog quoting an Etsy price, listing-like snippets, a blocklisted result; archived and proxied Etsy pages, m.media-amazon.com, Teachers Pay Teachers, Creative Fabrica, Shopify stores, Google Shopping, Facebook Marketplace, fullwidth and zero-width spellings, a trademark in the page path; URL stripping; the query blocklist; the daily limit; no key; HTTP errors not retried; the key never returned); each `fix_*` tool reaching the real `orders.submit` with `created_by: hermes` (refused on failing preconditions, applied and posted on passing ones) and bad input never doing so; `kdp_kit_approve` refused with `kdp_not_built`; `visudo -c` and `cvtsudoers` on the sudoers rule. **Not tested yet:** a real TinyFish Search call (offline tests only), Hermes's own MCP client, the socket and sudo bridges on the Lightsail server, and whether Hermes passes tool images on to the model.
 
 ## Hermes setup
 
@@ -1007,26 +1032,41 @@ was mapped onto v0.21.7, read in its code:
    board would normally spawn `hermes -p <profile>` worker processes for cards (effectively
    sub-agents) and run a Triage decomposer: `kanban.dispatch_in_gateway: false`,
    `dispatch_profiles: []` (claims nothing), `auto_decompose: false`, `review_dispatch: false`,
-   `max_in_progress: 1`. `kanban_attach_url` can fetch a URL; the firewall stops that.
+   `max_in_progress: 1`. `kanban_attach_url` can fetch a URL (it refuses private addresses);
+   the firewall stops the rest.
 5. *Skills.* `skills` on, `skills.write_approval: true`: every `skill_manage` change, foreground
    or background, is only staged in `~/.hermes/pending/skills/` (`tools/write_approval.py`)
    until you run `/skills approve <id>` (`/skills pending`, `/skills diff <id>`); `/skills` is
    now an allowed slash command. `guard_agent_created: true` scans each one. Background review
    and the curator stay off: the review summary leaves out staged skill writes
    (`agent/background_review.py`), and the curator archives skills without the gate, so neither
-   meets "every change is posted to you".
+   meets "every change is posted to you". Posted: in Discord every tool call is shown in the chat
+   with its argument (the skill's name for `skill_manage`); `display.platforms.discord.tool_progress:
+   all` and `display.tool_progress_command: false` pin that, and the lock check and the probe
+   (`gateway/display_config.py resolve_tool_progress`) refuse anything else. Where tool calls are
+   not shown, skills cannot be written: scheduled jobs have no `skills` toolset (a job's own
+   `skills` field still preloads a skill's text, `cron/scheduler_prompt.py`) and `/bg` stays off
+   (a background run posts only its answer, `gateway/run_turn.py _run_background_task_inner`).
 6. *Discord.* The `discord` toolset is the core tool (fetch messages, search members, create
    threads); pins, unpins, deletes and roles are `discord_admin` in v0.21.7, which stays off.
    `discord.server_actions: [fetch_messages, create_thread]` (member search left out: other
    people's details). Reactions are the adapter's own status reactions (`discord.reactions`).
-   Slash commands: Hermes gates them per user and you are the only allowed user, so `/bg`,
-   `/loop` and `/goal` are now yours; `/goal gate add` (a shell command) needs an admin and stays
-   refused; `/cron` is command-line only in v0.21.7.
+   Slash commands: Hermes gates them per user and you are the only allowed user, so `/loop` and
+   `/goal` (both run as turns in the same chat) are now yours; `/bg` stays off (see 5);
+   `/goal gate add` (a shell command) needs an admin and stays refused; `/cron` is command-line
+   only in v0.21.7.
+7. *Job URL monitors.* The cronjob tool accepts a `monitor` URL, and v0.21.7 fetches it with a
+   plain `urllib` GET (`cron/monitor.py _fetch_monitor_url`): no website blocklist and no
+   private-address check, and a manual "run now" fetches at once. `check_lock.py jobs` stops
+   Hermes within the hour when a job has one; until then the firewall limits the fetch to
+   Anthropic, Discord and loopback, and refuses the hermes user new connections to the
+   dashboard's port 9119 (its page carries a session token).
 
 **The keys used (config schema 50).** `model.provider: anthropic`, `model.default:
 claude-haiku-5-5`, no `fallback_providers`; `platform_toolsets.discord` = `[botsy-read,
-botsy-act, memory, vision, cronjob, session_search, todo, kanban, skills, discord]`, `cron` and
-`cli` = `[botsy-read, botsy-act, memory, vision, session_search, todo, skills]`, `webhook` and
+botsy-act, memory, vision, cronjob, session_search, todo, kanban, skills, discord]`, `cli` =
+`[botsy-read, botsy-act, memory, vision, session_search, todo, skills]`, `cron` = the same
+without `skills`, `webhook` and
 `api_server` = `[botsy-read, botsy-act, memory]`, `toolsets` = the Discord list;
 `agent.disabled_toolsets` (applied last; single toolsets only, since a bundle such as `safe`
 would also strip vision) turns off terminal, file, web, search, browser, delegation,
@@ -1047,7 +1087,8 @@ both on when the key is missing), `botsy-read` `trust: full` and `botsy-act` `tr
 `gateway.unauthorized_dm_behavior: ignore`; slash commands gated with
 `discord.allow_admin_from` and `group_allow_admin_from` = `["0"]` (no real account, so nobody
 is admin) and `user_allowed_commands` / `group_user_allowed_commands` = `new, retry, status,
-stop, compress, memory, skills, bg, loop, goal` (plus `/help` and `/whoami`, always allowed); plugins, hooks, quick commands, lazy installs,
+stop, compress, memory, skills, loop, goal` (plus `/help` and `/whoami`, always allowed);
+`display.platforms.discord.tool_progress: all`; plugins, hooks, quick commands, lazy installs,
 update checks, telemetry, the background review and the curator off; chat history compressed at
 60,000 tokens (Haiku 5.5 costs 5x above 100,000). The managed `.env` also pins
 `GATEWAY_ALLOW_ALL_USERS=false`, `DISCORD_ALLOWED_USERS` and an empty `DISCORD_IGNORED_CHANNELS`.
@@ -1085,9 +1126,9 @@ Discord actions it allows, and what its merged settings and environment say.
 `check_lock.py jobs` (hourly) runs only the job limits.
 
 **Firewall (required since 2026-10-21; `--no-firewall` is refused).** One nftables table, `inet botsy_hermes`, for the hermes
-user's traffic only: loopback, HTTPS to Anthropic's published ranges (160.79.104.0/23,
+user's traffic only: loopback (except new connections to the dashboard's 127.0.0.1:9119), HTTPS to Anthropic's published ranges (160.79.104.0/23,
 2607:6bc0::/48) and to the addresses of a fixed list of Discord and Anthropic host names,
-refreshed every 10 minutes; everything else is refused and logged. Other users are not affected.
+refreshed every 10 minutes; everything else is refused and logged. The botsy user is also refused new connections to the dashboard's port; otherwise other users are not affected.
 
 **Verified** (on 2026-10-21, against the pinned v0.21.7 source and a throwaway install of it in
 the scratchpad, never on this machine's system): every key name above in its code
@@ -1103,10 +1144,11 @@ your ID, and turning on `terminal` and `web` in the managed config is reported a
 opening D4 items 1-6, against a fresh throwaway v0.21.7 install (`uv sync --frozen`, commit
 71d34bad) with the rendered template: the probe reports exactly the lists above (Discord:
 `cronjob_manage`, `discord`, 15 `kanban_*` tools, `memory`, `session_search`, `skill_manage`,
-`skill_view`, `skills_list`, `todo_list`, `vision_analyze`; jobs and CLI: the same without
-Discord, task board and job tools), slash commands gated with nothing risky open, the website
-policy refusing every test address, Discord actions `fetch_messages, create_thread`, and no
-problems. The recorded output is the probe fixture in the tests. The test suite runs
+`skill_view`, `skills_list`, `todo_list`, `vision_analyze`; CLI: the same without Discord, task
+board and job tools; jobs: also without the skill tools), slash commands gated with nothing risky
+open (`/bg` included), Discord tool progress `all`, the website policy refusing every test
+address, Discord actions `fetch_messages, create_thread`, and no problems (rerun after the review
+fixes below). The recorded output is the probe fixture in the tests. The test suite runs
 `install_hermes.sh` in its test mode (`--root DIR --test-owner`) and checks good and broken
 layouts and configs.
 
@@ -1117,7 +1159,8 @@ reads; Hermes's MCP client against botsy-control over the socket bridge; that
 memory approval prompts and the `botsy-act` Allow/Deny button work in Discord; RAM use on the 4 GB Lightsail server (measure, add a
 2 GB swapfile first); whether the Anthropic workspace limit stops calls at exactly $10; that
 Hermes runs with the extra hidden paths (`/var/lib` and the rest); `/skills approve` and the
-`/bg`, `/loop`, `/goal` commands in a real Discord chat; Hermes-made jobs posting back to the
+`/loop`, `/goal` commands in a real Discord chat, and that each `skill_manage` call shows in the
+chat; the nftables rule for port 9119; Hermes-made jobs posting back to the
 chat; and the two Sonnet jobs created with `hermes cron create --model`.
 
 **Review fixes (2026-10-21).** Found by reading the pinned source and checked against the
@@ -1131,7 +1174,8 @@ throwaway install with the probe:
   outside the safe set, and the probe now asks Hermes's own slash-access policy for DM, group and
   unknown chats and reports every risky command still open. This also answers "should `/model`
   be blocked": it is. The workspace limit ($10 since 2026-10-21) stays the money guard behind it.
-  (2026-10-21: `/skills`, `/bg`, `/loop` and `/goal` were then opened for you, see above.)
+  (2026-10-21: `/skills`, `/loop` and `/goal` were then opened for you, see above; `/bg` was
+  opened too, then closed again in review because its tool calls are not shown.)
 - *Profiles.* Hermes's scheduled-job ticker visits every profile under `~/.hermes/profiles/`
   whatever the config says, so `profiles/` is now root-owned and empty, like `hooks/` and
   `plugins/`, and the check refuses anything in it.
@@ -1160,3 +1204,139 @@ throwaway install with the probe:
 - *botsy-control sandboxes (reviewer).* `botsy-control-read@` and `-act@` now use
   `ProtectSystem=strict` with write access only to `/opt/botsy` (and, for act, the status
   outbox) instead of `ProtectSystem=full`, which had left `/opt`, `/srv` and `/var` writable.
+- *botsy-control-read network (integrated 2026-10-22, D4.8).* `trend_search` needs HTTPS to
+  TinyFish Search, which publishes no fixed address ranges, so `botsy-control-read@` now allows
+  IPv4/IPv6 sockets with `IPAddressDeny=localhost link-local multicast` plus the private ranges
+  (10/8, 172.16/12, 192.168/16, 100.64/10, 0/8, fc00::/7; the cloud metadata address
+  169.254.169.254 is link-local) and only `IPAddressAllow=127.0.0.53/32` (the DNS stub). It
+  takes no host from Hermes: the URL is fixed in `control/trend.py`. `botsy-control-act@` is
+  unchanged.
+
+## Botsy dashboard tab
+
+A Botsy tab in Hermes's own web dashboard (pinned v0.21.7). It shows what botsy-read shows
+Hermes, and it can do two things: **Pause** and **Lower cap** (user, 2026-10-21). No approve,
+resume, raise-cap, plan, review or settings buttons. Files: `deploy/hermes/dashboard/`
+(`manifest.json`, `plugin_api.py`, `botsy_tab.py`, `dist/index.js`, `dist/style.css`,
+`hermes-dashboard.service`); tests: `tests/deploy/test_dashboard_tab.py`.
+
+**How Hermes v0.21.7 runs plugins** (read in its source and docs, `website/docs/user-guide/features/extending-the-dashboard.md`,
+`hermes_cli/web_server_dashboard.py`; then tried on a throwaway v0.21.7 install, 2026-10-21):
+- A dashboard plugin is a folder `~/.hermes/plugins/<name>/dashboard/` with `manifest.json`
+  (tab path, icon, entry script, CSS, `api` file), a pre-built JavaScript file that calls
+  `window.__HERMES_PLUGINS__.register(name, Component)` with React from
+  `window.__HERMES_PLUGIN_SDK__`, and an optional Python file whose FastAPI `router` is mounted at
+  `/api/plugins/<name>/`.
+- A plugin in `~/.hermes/plugins/` (a "user" plugin) loads only when its name is in
+  `plugins.enabled`: its JavaScript is not served and its Python is not imported otherwise. The
+  folder has no `plugin.yaml`, so the gateway's own plugin loader finds nothing to run in it.
+- The routes sit behind the dashboard's checks: the Host header must match the bound address, and
+  every `/api/` request needs the session token the dashboard makes at each start and writes into
+  its page (`SDK.fetchJSON` adds it).
+- The Python file runs in the dashboard process. It cannot call Hermes's MCP tools, so the tab
+  speaks MCP itself to the same two sockets Hermes uses, `/run/botsy-control/read.sock` and
+  `act.sock`. systemd starts a fresh botsy-control as the botsy user for each connection, and
+  that botsy-control checks everything again.
+- Login: on 127.0.0.1 the dashboard has **no login of its own**. On any other address
+  (`--host 0.0.0.0`, or a `dashboard.public_url`) it requires a password or OAuth provider and
+  refuses to start without one.
+
+**Reaching it.** `hermes-dashboard.service` runs `hermes dashboard --host 127.0.0.1 --port 9119
+--no-open --skip-build` as the hermes user, in the same sandbox as the gateway, with
+`IPAddressDeny=any` / `IPAddressAllow=localhost`: nobody off the server can reach it, and it
+reaches nothing on the internet itself. Its own Chat page cannot answer; chat in Discord.
+From your computer:
+
+    ssh -N -L 9119:127.0.0.1:9119 <you>@<server>      then open http://127.0.0.1:9119/botsy
+
+Never bind it elsewhere or put a reverse proxy in front of it. The tab checks this twice:
+- `plugin_api.py` refuses to load when the command line has any `--host` (or an abbreviation
+  argparse accepts, `--ho` / `--hos`) that is not a loopback IP or `localhost`;
+  Hermes then logs "Failed to load plugin botsy API routes" (tried: `--host 0.0.0.0` with a
+  password provider).
+- Every route answers 403 unless the dashboard reports a loopback bind, no login gate, no
+  public URL, and the request came from the server itself.
+
+The two POST routes also need an `X-Botsy-Tab: 1` header, which a form on another website
+cannot send.
+
+**What it shows** (botsy-read only: `status`, `spend`, `plan_status`, `review_list`,
+`orders_recent`, `capacity`, `daily_log`, `view_item_images`), refreshed every minute:
+- Botsy status: running, paused (by whom, since when, why) or budget stop; the last check;
+  practice or live; the approvals counted toward `level3_per_day` in the last 24 hours (every
+  one Hermes makes, and yours only when they lead to posting on Etsy or KDP; D1) and Hermes's
+  fixes in the last 24 hours;
+- money: spent, cap and warn line for the month (UTC), money left;
+- this week's and next week's plan: lines made / total, packs, cost, waiting for you, and held
+  (by user or hermes, from the plan service's state);
+- the review queue: item ids, niches, themes, reason codes, approvable. **Show** loads the item's
+  first mockup (else its first page) through `view_item_images`, our own image only, as a small
+  JPEG;
+- recent orders and, separately, fixes (`fix_*` orders) from the last 14 days, with who asked
+  and the status;
+- KDP slots left and the KDP kits in the plans;
+- the newest daily log, scrubbed as botsy-read scrubs it.
+
+**The two actions** go through botsy-act, so through `service/orders.py` like any other order:
+- `pause` takes a reason code only (default `user_request`);
+- `lower_cap` first reads the cap in force, so a value that is not lower is refused before
+  botsy-act is called. Botsy checks it again.
+
+Both ask for a confirmation in the page and show Botsy's answer or reason codes.
+
+**Who it is recorded as: created_by "hermes".** botsy-act records every order it takes as
+`created_by "hermes"` and has no way to tell the dashboard from Hermes. The dashboard cannot
+prove it is you either: on 127.0.0.1 it has no login, only the per-start token it writes into its
+page for anyone who can open 127.0.0.1:9119 on the server. So:
+- a Pause from the tab is a Hermes pause: you or Hermes may lift it (D3);
+- pause and lower_cap are stop-only orders (`service/orders.py` STOP_ONLY): always allowed, never
+  limited, and they use none of Hermes's change limit or of `level3_per_day`;
+- for a pause only you can lift, use `botsy service control pause` on the server. Asking Hermes
+  in Discord does not help: botsy-act records that as a Hermes pause too;
+- lowering the cap is safe whoever asks.
+
+The dashboard's Allow button for botsy-act (`trust: untrusted`) is Hermes's MCP client and is
+not involved here; the page's confirmation and the SSH tunnel stand in for it.
+
+**The rest of the dashboard** is Hermes's own admin pages (config, keys, sessions, cron, skills,
+MCP). They run as the hermes user in the same sandbox, the root-owned managed config in
+`/etc/hermes` still wins, and the hourly lock check still applies. Treat the tunnel like your SSH
+login.
+
+Its Chat page starts `hermes --tui` inside the same sandbox, which cannot reach Anthropic, so it
+cannot answer. Anything on the server that can open 127.0.0.1:9119 gets what the tunnel gets
+(the page hands out its session token). The hermes user is refused new connections to that port
+by the `inet botsy_hermes` firewall table (so a scheduled job cannot fetch the page), and so is
+the botsy user (`meta skuid "botsy" oifname "lo" tcp dport 9119 ct state new reject`, integrated
+2026-10-22), so a Botsy job that handles downloaded files can never drive Hermes's admin pages.
+Your own login (the user sshd forwards the tunnel as) and root stay allowed. The unit has no
+`EnvironmentFile`: the dashboard holds no Anthropic key or Discord token, so Hermes's Keys page
+has none to show.
+
+**Install steps** (built into install_hermes.sh and check_lock.py, 2026-10-22; `--no-dashboard`
+leaves it all out and is remembered):
+1. copy the tab's five files (`manifest.json`, `plugin_api.py`, `botsy_tab.py`, `dist/index.js`,
+   `dist/style.css`; never the unit or `__pycache__`) root-owned 755/644 to
+   `/home/hermes/.hermes/plugins/botsy/dashboard/`, and the same files plus the unit to the
+   reference copy in `/usr/local/lib/botsy-hermes/dashboard/`; anything else found in `plugins/`
+   is moved aside to `/root/hermes-backup-*`;
+2. `plugins.enabled: [botsy]`, `plugins.isolation: in_process`, `dashboard.public_url: ""` in the
+   managed config (the gateway's own plugin discovery loads nothing from the tab's folder: checked
+   against v0.21.7, which found only its bundled plugins);
+3. the `web` extra (fastapi, uvicorn) in `hermes-pin.env`;
+4. the web UI built once into `/opt/hermes/web_dist` (root-owned): Node.js 22.23.3 from
+   nodejs.org, sha256 pinned in `hermes-pin.env`; a throwaway copy of the pinned checkout;
+   `npm ci --workspace web --include-workspace-root=false --ignore-scripts` (integrity hashes from
+   `package-lock.json`, no install scripts) and `npm run build --workspace web`, both as the user
+   `nobody` (`setpriv`), never as root or hermes. Tried on 2026-10-22 in the scratchpad with the
+   pinned checkout: about 30 seconds, it writes `index.html` and the assets;
+5. `hermes-dashboard.service` plus the firewall drop-in, started only after the lock check passes.
+
+The lock check accepts exactly that plugin (each file's sha256 equal to the reference copy,
+root-owned, no `plugin.yaml`, `plugin.json`, `__init__.py`, `__pycache__` or link) or an empty
+`plugins/`; refuses `plugins.enabled` other than `[]` or `[botsy]`, `auto_apply`, another
+`plugins.isolation` and a non-empty `dashboard.public_url` in any scope; and, on the server, asks
+systemd what it loaded for `hermes-dashboard.service`: `/etc/systemd/system`, user hermes,
+`NoNewPrivileges=yes`, `IPAddressDeny=any`, `IPAddressAllow=localhost`, no drop-in but the
+firewall one, exactly one `--host` (abbreviations `--ho`/`--hos` included) and it is 127.0.0.1,
+port 9119, and a root-owned `/opt/hermes/web_dist/index.html`.
